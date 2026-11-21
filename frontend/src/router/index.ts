@@ -26,7 +26,7 @@ declare module 'vue-router' {
     roles?: SystemAccountRole[]
     // 部署级能力位（2026-11-09）：false 时菜单隐藏且路由守卫重定向。
     requiresCapability?: RouteCapability
-    // AI 账户能力域拆分（M2）：四域路由共用 AccountsView，按域装载/裁剪列表。
+    // AI 账户能力域拆分（M2）：六域路由共用 AccountsView，按域装载/裁剪列表。
     capabilityDomain?: AccountCapabilityDomain
   }
 }
@@ -55,6 +55,32 @@ export const menuRoutes: RouteRecordRaw[] = [
       title: '对话账户',
       description: '创建和维护自己的对话 AI 账户。',
       capabilityDomain: 'chat',
+      menuGroup: 'my-accounts',
+      menuGroupTitle: 'AI 账户',
+      viewScope: 'self',
+      heavy: true
+    }
+  },
+  {
+    path: '/my-accounts/embedding',
+    component: () => import('@/views/accounts/AccountsView.vue'),
+    meta: {
+      title: '向量账户',
+      description: '创建和维护自己的向量 AI 账户。',
+      capabilityDomain: 'embedding',
+      menuGroup: 'my-accounts',
+      menuGroupTitle: 'AI 账户',
+      viewScope: 'self',
+      heavy: true
+    }
+  },
+  {
+    path: '/my-accounts/rerank',
+    component: () => import('@/views/accounts/AccountsView.vue'),
+    meta: {
+      title: '重排账户',
+      description: '创建和维护自己的重排 AI 账户。',
+      capabilityDomain: 'rerank',
       menuGroup: 'my-accounts',
       menuGroupTitle: 'AI 账户',
       viewScope: 'self',
@@ -185,7 +211,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/authorizations/AuthorizationCenterView.vue'),
     meta: {
       title: '授权中心',
-      description: '查看收到的授权并主动接受、绑定分组或启用授权分组；管理自己发出的授权与团队审批。',
+      description: '查看收到的授权并领取：分组领取即生效，账户领取时选自己的分组一步进组；管理自己发出的授权。',
       menuGroup: 'my-authorization',
       menuGroupTitle: '我的授权',
       viewScope: 'self',
@@ -326,6 +352,34 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/accounts/embedding',
+    component: () => import('@/views/accounts/AccountsView.vue'),
+    meta: {
+      title: '向量账户',
+      description: '按系统账户管理向量 AI 账户，统一查看状态、并发和代理。',
+      capabilityDomain: 'embedding',
+      menuGroup: 'ai-assets',
+      menuGroupTitle: 'AI 账户',
+      viewScope: 'admin',
+      roles: managementRoles,
+      heavy: true
+    }
+  },
+  {
+    path: '/accounts/rerank',
+    component: () => import('@/views/accounts/AccountsView.vue'),
+    meta: {
+      title: '重排账户',
+      description: '按系统账户管理重排 AI 账户，统一查看状态、并发和代理。',
+      capabilityDomain: 'rerank',
+      menuGroup: 'ai-assets',
+      menuGroupTitle: 'AI 账户',
+      viewScope: 'admin',
+      roles: managementRoles,
+      heavy: true
+    }
+  },
+  {
     path: '/accounts/video',
     component: () => import('@/views/accounts/AccountsView.vue'),
     meta: {
@@ -368,11 +422,24 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/media-jobs',
+    component: () => import('@/views/media-jobs/MediaJobsView.vue'),
+    meta: {
+      title: '任务中心',
+      description: '查看异步媒体任务的类型、状态、归属 API Key / AI 账户、成本和错误摘要。',
+      menuGroup: 'ai-assets',
+      menuGroupTitle: 'AI 账户',
+      viewScope: 'admin',
+      roles: managementRoles,
+      heavy: true
+    }
+  },
+  {
     path: '/authorizations',
     component: () => import('@/views/authorizations/AuthorizationCenterView.vue'),
     meta: {
       title: '统一授权',
-      description: '管理全量授权业务记录、审批状态、暂停/延长/回收和屏蔽记录，不展示接收方分组。',
+      description: '管理全量授权业务记录，支持暂停、延长与回收，不展示接收方分组。',
       menuGroup: 'authorization',
       menuGroupTitle: '统一授权管理',
       viewScope: 'admin',
@@ -437,8 +504,6 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '用量统计管理',
       description: '按系统账户查看可使用账户的每日消耗趋势，仅统计所选用户发起的调用。',
-      menuGroup: 'ai-observability',
-      menuGroupTitle: '监控与任务',
       viewScope: 'admin',
       roles: managementRoles,
       heavy: true,
@@ -452,8 +517,6 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: 'AI性能监控',
       description: '按系统账户查看其可使用 AI 账户的小时级性能趋势，包含授权实例。',
-      menuGroup: 'ai-observability',
-      menuGroupTitle: '监控与任务',
       viewScope: 'admin',
       roles: managementRoles,
       heavy: true,
@@ -467,8 +530,6 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: 'AI健康监控',
       description: '按账户查看最近一个月逐小时的健康检查结果。',
-      menuGroup: 'ai-observability',
-      menuGroupTitle: '监控与任务',
       viewScope: 'admin',
       roles: managementRoles,
       heavy: true,
@@ -484,19 +545,6 @@ export const menuRoutes: RouteRecordRaw[] = [
       description: '按系统账户查看网关请求、命中账户、Token 用量、成本和错误状态。',
       menuGroup: 'ai-assets',
       menuGroupTitle: 'AI 账户',
-      viewScope: 'admin',
-      roles: managementRoles,
-      heavy: true
-    }
-  },
-  {
-    path: '/media-jobs',
-    component: () => import('@/views/media-jobs/MediaJobsView.vue'),
-    meta: {
-      title: '媒体任务',
-      description: '查看异步媒体任务的类型、状态、归属 API Key / AI 账户、成本和错误摘要。',
-      menuGroup: 'ai-observability',
-      menuGroupTitle: '监控与任务',
       viewScope: 'admin',
       roles: managementRoles,
       heavy: true

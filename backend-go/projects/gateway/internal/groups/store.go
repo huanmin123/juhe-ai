@@ -366,7 +366,6 @@ type Detail struct {
 	GroupAuthorizationID   *string                      `json:"groupAuthorizationId,omitempty"`
 	AuthorizationStatus    *string                      `json:"authorizationStatus,omitempty"`
 	AuthorizationExpiresAt *string                      `json:"authorizationExpiresAt,omitempty"`
-	AuthorizationLimits    any                          `json:"authorizationLimits"`
 	AuthorizationSources   []AuthorizationSourceSummary `json:"authorizationSources,omitempty"`
 	Permissions            ResourcePermissions          `json:"permissions"`
 	// UpdatedAt stays a Go-side superset field: the delegated/aipublic faces
@@ -498,7 +497,6 @@ type accessListRow struct {
 	authorizationID        sql.NullString
 	authorizationStatus    sql.NullString
 	authorizationExpiresAt sql.NullString
-	authorizationLimits    sql.NullString
 }
 
 func scanAccessListRowWithAuth(scan func(...any) error) (accessListRow, error) {
@@ -506,7 +504,7 @@ func scanAccessListRowWithAuth(scan func(...any) error) (accessListRow, error) {
 	var enabled, isDefault int
 	err := scan(&out.row.id, &out.row.systemAccountID, &out.row.name, &out.row.description,
 		&enabled, &isDefault, &out.row.groupType, &out.row.groupKind, &out.row.schedulingJSON, &out.row.createdAt, &out.row.updatedAt,
-		&out.accessType, &out.authorizationID, &out.authorizationStatus, &out.authorizationExpiresAt, &out.authorizationLimits)
+		&out.accessType, &out.authorizationID, &out.authorizationStatus, &out.authorizationExpiresAt)
 	if err != nil {
 		return accessListRow{}, err
 	}
@@ -515,7 +513,7 @@ func scanAccessListRowWithAuth(scan func(...any) error) (accessListRow, error) {
 	return out, nil
 }
 
-const ownerAccessColumns = `'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_expires_at, NULL AS authorization_limits_json`
+const ownerAccessColumns = `'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_expires_at`
 
 // authorizedListArm mirrors the authorized arm of queryGroupRowsForAccess:
 // grantee-scoped runtime rows with the management-list status guard. Group
@@ -535,8 +533,7 @@ func (s *Store) authorizedListArm() string {
 			'authorized' AS access_type,
 			ra.id AS authorization_id,
 			ra.status AS authorization_status,
-			ra.expires_at AS authorization_expires_at,
-			ra.limits_json AS authorization_limits_json
+			ra.expires_at AS authorization_expires_at
 		FROM ` + s.table("resource_authorizations") + ` ra
 		INNER JOIN ` + s.table("groups") + ` g ON g.id = ra.resource_id
 		` + s.authorizationSettingsJoin() + `
@@ -590,7 +587,7 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, page, pageSize
 		}
 		queryText = `SELECT id, system_account_id, name, description, enabled, is_default,
 				group_type, group_kind, scheduling_policy_json, created_at, updated_at,
-				access_type, authorization_id, authorization_status, authorization_expires_at, authorization_limits_json
+				access_type, authorization_id, authorization_status, authorization_expires_at
 			FROM (
 				SELECT ` + groupRowColumns + `, ` + ownerAccessColumns + `
 				FROM ` + s.table("groups") + ` g
@@ -618,7 +615,7 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, page, pageSize
 			var enabled, isDefault int
 			err := scanFn(&out.row.id, &out.row.systemAccountID, &out.row.name, &out.row.description,
 				&enabled, &isDefault, &out.row.groupType, &out.row.groupKind, &out.row.schedulingJSON, &out.row.createdAt, &out.row.updatedAt,
-				&out.accessType, &out.authorizationID, &out.authorizationStatus, &out.authorizationExpiresAt, &out.authorizationLimits)
+				&out.accessType, &out.authorizationID, &out.authorizationStatus, &out.authorizationExpiresAt)
 			if err != nil {
 				return accessListRow{}, err
 			}
@@ -1180,7 +1177,7 @@ func (s *Store) hydrateDetailUsage(ctx context.Context, stats *AccountStats, row
 // FindDetail mirrors findGroupRowForAccessAsync + buildGroupSummaries: the
 // admin-unscoped branch reads the direct owner query, every other scope reads
 // the owner UNION ALL authorized rows; the authorized view returns empty
-// accountIds, the limits document, sanitized sources and the effective
+// accountIds, sanitized sources and the effective
 // permissions. nil when the group is missing or invisible (route renders
 // 404 分组不存在).
 func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (*Detail, error) {
@@ -1204,7 +1201,7 @@ func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (
 		}
 		queryText = `SELECT id, system_account_id, name, description, enabled, is_default,
 				group_type, group_kind, scheduling_policy_json, created_at, updated_at,
-				access_type, authorization_id, authorization_status, authorization_expires_at, authorization_limits_json
+				access_type, authorization_id, authorization_status, authorization_expires_at
 			FROM (
 				SELECT ` + groupRowColumns + `, ` + ownerAccessColumns + `
 				FROM ` + s.table("groups") + ` g
@@ -1221,8 +1218,7 @@ func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (
 					'authorized' AS access_type,
 					ra.id AS authorization_id,
 					ra.status AS authorization_status,
-					ra.expires_at AS authorization_expires_at,
-					ra.limits_json AS authorization_limits_json
+					ra.expires_at AS authorization_expires_at
 				FROM ` + s.table("resource_authorizations") + ` ra
 				INNER JOIN ` + s.table("groups") + ` g ON g.id = ra.resource_id
 				` + s.authorizationSettingsJoin() + `
@@ -1289,10 +1285,6 @@ func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (
 	// (owner and authorized views alike; the authorized view reads the
 	// group_authorization scope).
 	s.hydrateDetailUsage(ctx, &accountStats, row.row.id, row.row.systemAccountID, row.accessType, nullText(row.authorizationID))
-	limits, err := parseAuthorizationLimitsView(row.authorizationLimits)
-	if err != nil {
-		return nil, err
-	}
 	permissions := ownerPermissions()
 	if authorizedView {
 		canBind, bindErr := s.canBindAccessRowValues(row.row.enabled, row.authorizationStatus, row.authorizationExpiresAt)
@@ -1318,7 +1310,6 @@ func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (
 		GroupAuthorizationID:   nullPtrString(row.authorizationID),
 		AuthorizationStatus:    nullPtrString(row.authorizationStatus),
 		AuthorizationExpiresAt: nullPtrString(row.authorizationExpiresAt),
-		AuthorizationLimits:    limits,
 		Permissions:            permissions,
 		UpdatedAt:              row.row.updatedAt,
 	}
@@ -1885,7 +1876,7 @@ func (s *Store) Delete(ctx context.Context, id string, access AccessScope) (*Del
 	if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorization_grants")+`
 		SET status = 'revoked', ended_at = COALESCE(ended_at, ?),
 			ended_reason = COALESCE(ended_reason, 'group_deleted'),
-			pending_expires_at = NULL, updated_at = ?
+			updated_at = ?
 		WHERE resource_type = 'group' AND resource_id = ?
 		  AND status NOT IN ('revoked','returned','declined','expired')`), deletedAt, deletedAt, id); err != nil {
 		return nil, err
@@ -1893,14 +1884,14 @@ func (s *Store) Delete(ctx context.Context, id string, access AccessScope) (*Del
 	if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorization_sources")+`
 		SET status = 'revoked', ended_at = COALESCE(ended_at, ?),
 			ended_reason = COALESCE(ended_reason, 'group_deleted'),
-			pending_expires_at = NULL, updated_at = ?
+			updated_at = ?
 		WHERE authorization_id IN (SELECT id FROM `+s.table("resource_authorizations")+`
 			WHERE resource_type = 'group' AND resource_id = ?)
-		  AND status IN ('pending','active','dormant','needs_review')`), deletedAt, deletedAt, id); err != nil {
+		  AND status IN ('pending','active','active')`), deletedAt, deletedAt, id); err != nil {
 		return nil, err
 	}
 	if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorizations")+`
-		SET status = 'revoked', status_reason = 'group_deleted', status_changed_at = ?,
+		SET status = 'revoked',
 			effective_source_type = NULL, effective_source_team_id = NULL,
 			revoked_reason = COALESCE(revoked_reason, 'group_deleted'),
 			last_source_changed_at = ?, updated_at = ?
@@ -2083,7 +2074,7 @@ func (s *Store) activeBindingCountsExcludingGroup(ctx context.Context, q queryer
 		WHERE route_strategy_groups.status = 'active'
 			AND (
 				groups.system_account_id = route_strategy_groups.system_account_id
-				OR (group_authorization.id IS NOT NULL AND COALESCE(group_authorization_settings.enabled, 0) = 1 AND COALESCE(group_authorization_settings.snapshot_revision, '') <> '')
+				OR (group_authorization.id IS NOT NULL AND group_authorization_settings.authorization_id IS NOT NULL)
 			)
 			AND route_strategy_groups.group_id <> ?
 			AND route_strategy_groups.route_strategy_id IN (`+strings.Join(placeholders, ",")+`)

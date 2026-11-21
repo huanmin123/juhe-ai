@@ -84,7 +84,7 @@ import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import StatsChartCard from '@/views/stats/StatsChartCard.vue'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
 import { useStatsWorkspaceFilters } from '@/views/stats/useStatsWorkspaceFilters'
-import { formatDuration, formatInteger } from '@/views/stats/statsFormatters'
+import { formatDuration } from '@/views/stats/statsFormatters'
 import { buildAiPerformanceOption, type AiPerformanceMetric } from './aiPerformanceChartOptions'
 import AiPerformanceFilterToolbar, { type CapabilityDomainFilterValue } from './AiPerformanceFilterToolbar.vue'
 import { buildAiPerformanceRequestSignature, createAiPerformanceRequestGate } from './aiPerformanceRequestGate'
@@ -290,7 +290,6 @@ const performanceCharts = computed(() => [
 const summaryCards = computed(() => {
   const summary = overview.value?.summary
   return [
-    { key: 'requests', label: '范围请求', value: formatInteger(summary?.requestCount), extra: `监控账户 ${formatInteger(visibleAccounts.value.length)} / ${currentWindowLabel.value}` },
     { key: 'firstToken', label: '平均首 token', value: formatDuration(summary?.averageFirstTokenMs), extra: `最大首 token ${formatDuration(summary?.maxFirstTokenMs)}` },
     { key: 'maxFirstToken', label: '最大首 token', value: formatDuration(summary?.maxFirstTokenMs), extra: `平均首 token ${formatDuration(summary?.averageFirstTokenMs)}` },
     { key: 'duration', label: '平均总耗时', value: formatDuration(summary?.averageDurationMs), extra: `最大总耗时 ${formatDuration(summary?.maxDurationMs)}` },

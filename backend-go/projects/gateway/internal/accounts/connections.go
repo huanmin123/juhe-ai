@@ -93,8 +93,11 @@ func connectorComboSurface(driver, accountType, oauthType, preset, domain string
 //   - preset 必须与账户 (driver, account_type, oauth_type, domain) 组合在
 //     registry 允许（IsAllowedConnectorCombo）；
 //   - protocolSurfaceCode 回显非空时必须等于 registry surface；
-//   - endpointModes 非空、无重复、∈ AllowedModes(domain, preset, account_type,
-//     oauth_type)（服务端不补齐、不去重、不裁剪，§2.2）；
+//   - chat 域：endpointModes 非空、无重复、∈ AllowedModes(domain, preset,
+//     account_type, oauth_type)（服务端不补齐、不去重、不裁剪，§2.2）；
+//   - 五域（image/audio/video/embedding/rerank，2026-11-21 五域退役设计 §3）：
+//     preset modes 组合校验退役——endpointModes 载荷仅作形状入口，不做词表
+//     组合校验，resolved modes 恒空（连接行不写 account_endpoint_modes）；
 //   - baseUrl 走 §2.1 registry 数据驱动 validator（invalid_connection_base_url）。
 func resolveConnectionSet(domain, driver, accountType, oauthType string, connections []accountscore.ConnectionInput) ([]resolvedConnection, error) {
 	if len(connections) == 0 {
@@ -103,6 +106,7 @@ func resolveConnectionSet(domain, driver, accountType, oauthType string, connect
 	if len(connections) > 1 {
 		return nil, &ValidationError{Message: "账户只支持一个上游连接（一个 Base URL）；多个 API Key 请在账户凭据中配置，不支持多连接"}
 	}
+	declarationRetired := accountscore.EndpointModesDeclarationRetired(domain)
 	resolved := make([]resolvedConnection, 0, len(connections))
 	seenPresets := map[string]bool{}
 	for index, connection := range connections {
@@ -121,26 +125,33 @@ func resolveConnectionSet(domain, driver, accountType, oauthType string, connect
 		if echo := strings.TrimSpace(connection.ProtocolSurfaceCode); echo != "" && echo != surface {
 			return nil, &ValidationError{Message: fmt.Sprintf("connection_capability_unsupported: connections[%d] protocolSurfaceCode %q 与 registry 预设 %q 的协议面不一致", index, echo, preset)}
 		}
-		if len(connection.EndpointModes) == 0 {
-			return nil, &ValidationError{Message: fmt.Sprintf("connection_capability_unsupported: connections[%d]（%s）endpointModes 不能为空", index, preset)}
-		}
-		allowed := contracts.AllowedModes(domain, preset, accountType, oauthType)
-		allowedSet := map[string]bool{}
-		for _, mode := range allowed {
-			allowedSet[mode] = true
-		}
-		seenModes := map[string]bool{}
-		modes := make([]string, 0, len(connection.EndpointModes))
-		for _, rawMode := range connection.EndpointModes {
-			mode := strings.TrimSpace(rawMode)
-			if mode == "" || seenModes[mode] {
-				return nil, &ValidationError{Message: fmt.Sprintf("connection_capability_unsupported: connections[%d]（%s）endpointModes 存在空值或重复值", index, preset)}
+		var modes []string
+		if declarationRetired {
+			// 五域声明面退役：modes 仅作载荷形状入口，不做组合校验、不落连接行
+			// （insertAccountConnections / beginAccountConnectionsReplacement 按
+			// 空 modes 集自然不写/清理旧行）。
+		} else {
+			if len(connection.EndpointModes) == 0 {
+				return nil, &ValidationError{Message: fmt.Sprintf("connection_capability_unsupported: connections[%d]（%s）endpointModes 不能为空", index, preset)}
 			}
-			if !allowedSet[mode] {
-				return nil, &ValidationError{Message: fmt.Sprintf("connection_capability_unsupported: connections[%d]（%s）endpoint mode %s 不在该组合允许集合内", index, preset, mode)}
+			allowed := contracts.AllowedModes(domain, preset, accountType, oauthType)
+			allowedSet := map[string]bool{}
+			for _, mode := range allowed {
+				allowedSet[mode] = true
 			}
-			seenModes[mode] = true
-			modes = append(modes, mode)
+			seenModes := map[string]bool{}
+			modes = make([]string, 0, len(connection.EndpointModes))
+			for _, rawMode := range connection.EndpointModes {
+				mode := strings.TrimSpace(rawMode)
+				if mode == "" || seenModes[mode] {
+					return nil, &ValidationError{Message: fmt.Sprintf("connection_capability_unsupported: connections[%d]（%s）endpointModes 存在空值或重复值", index, preset)}
+				}
+				if !allowedSet[mode] {
+					return nil, &ValidationError{Message: fmt.Sprintf("connection_capability_unsupported: connections[%d]（%s）endpoint mode %s 不在该组合允许集合内", index, preset, mode)}
+				}
+				seenModes[mode] = true
+				modes = append(modes, mode)
+			}
 		}
 		baseURL := strings.TrimSpace(connection.BaseURL)
 		templates, ok := connectionURLContract(driver, accountType, oauthType, preset, domain)
@@ -412,6 +423,12 @@ func (s *Store) syncSingleConnectionEndpointModes(ctx context.Context, q queryer
 		FROM `+s.table("accounts")+` WHERE id = ?`), accountID).Scan(&accountType, &providerCode, &oauthTypeColumn, &domain); err != nil {
 		return err
 	}
+	// 五域声明面退役（2026-11-21 五域退役设计 §3）：五域账户连接行不写
+	// account_endpoint_modes，批量编辑的连接行三档同步对五域整体跳过（批量
+	// 准备段已按域退役该字段；此处兜底直调路径，幂等 no-op）。
+	if accountscore.EndpointModesDeclarationRetired(domain) {
+		return nil
+	}
 	// oauth 判定值的凭据回落（PATCH 连接臂同款 accountOAuthTypeForRegistry）：
 	// 仅 google_oauth 账户携带，列缺失时解密现凭据兜底；其余类型恒空串。
 	oauthType := ""
@@ -519,7 +536,10 @@ func (s *Store) finishAccountConnectionsReplacement(ctx context.Context, q query
 // 在该连接已启用 mode 内；同一 UPDATE 写入三字段并在提交前读回校验非 NULL
 // （§9 事务级校验硬规则）。connectionTest=true 时三字段仅为记录值（连接测试
 // 不调用模型），跳过「检查模型声明该形态」的成员校验，其余归属校验保持。
-func (s *Store) finalizeAccountHealthCheckTrio(ctx context.Context, q queryer, accountID, vendor, owner, preset, mode, model string, supportedModels []string, connectionTest bool) error {
+// 五域声明面退役（2026-11-21 五域退役设计 §3/§5）：五域连接行无 modes，
+// 「检查形态属于连接已启用 mode」的成员校验按域跳过——检查形态按域默认落值
+// （DefaultHealthCheckEndpointModeForDomain），只是记录值。
+func (s *Store) finalizeAccountHealthCheckTrio(ctx context.Context, q queryer, accountID, vendor, owner, preset, mode, model string, supportedModels []string, connectionTest bool, capabilityDomain string) error {
 	var connectionID string
 	err := q.QueryRowContext(ctx, s.bind(`SELECT id FROM `+s.table("account_connections")+`
 		WHERE account_id = ? AND connection_preset_code = ? AND enabled = 1`), accountID, preset).Scan(&connectionID)
@@ -533,12 +553,14 @@ func (s *Store) finalizeAccountHealthCheckTrio(ctx context.Context, q queryer, a
 	if err != nil {
 		return &ValidationError{Message: fmt.Sprintf("health_check_connection_conflict: 检查模型 %s 不在本账户可见支持模型内", model)}
 	}
-	connectionModes, err := s.entryConnectionEndpointModes(ctx, q, connectionID)
-	if err != nil {
-		return err
-	}
-	if !entryModeSet(connectionModes)[mode] {
-		return &ValidationError{Message: fmt.Sprintf("health_check_connection_conflict: 检查形态 %s 不在该连接已启用 mode 内", mode)}
+	if !accountscore.EndpointModesDeclarationRetired(capabilityDomain) {
+		connectionModes, err := s.entryConnectionEndpointModes(ctx, q, connectionID)
+		if err != nil {
+			return err
+		}
+		if !entryModeSet(connectionModes)[mode] {
+			return &ValidationError{Message: fmt.Sprintf("health_check_connection_conflict: 检查形态 %s 不在该连接已启用 mode 内", mode)}
+		}
 	}
 	// 模型测试账户的检查形态必须是真实对话生成形态（设计 §“测试方式分层”）：
 	// 否则 J1 不会按该形态派发，连通性通道又因账户含生成形态而排除，形成

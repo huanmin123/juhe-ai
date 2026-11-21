@@ -13,7 +13,7 @@ import (
 )
 
 // capabilityDomainCorrectColumn 是与 maintenance DDL 同构的正确列声明。
-const capabilityDomainCorrectColumn = `capability_domain TEXT NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image'))`
+const capabilityDomainCorrectColumn = `capability_domain TEXT NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image','embedding','rerank'))`
 
 // TestCapabilityDomainSchemaPostgresArms 在 w12c 覆盖库上以独立 scratch schema
 // 验证 PG 方言判定；覆盖库不可用时跳过。

@@ -16,11 +16,11 @@ import (
 
 // TestPostgresCapabilityDomainSchemaContract pins the PG text contract along
 // the expedited-recovery precedent: the CREATE TABLE declaration line and the
-// legacy ALTER guard statement.
+// legacy ALTER guard statement (词表经 revision 29 扩为六值).
 func TestPostgresCapabilityDomainSchemaContract(t *testing.T) {
 	accountsDDL := findPostgresStatementContaining(t, "CREATE TABLE IF NOT EXISTS accounts (")
 	domainLine := pgColumnDeclarationLine(t, accountsDDL, "capability_domain")
-	want := "      capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image')),"
+	want := "      capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image','embedding','rerank')),"
 	if domainLine != want {
 		t.Fatalf("accounts.capability_domain declaration drifted:\n got %q\nwant %q", domainLine, want)
 	}
@@ -36,13 +36,29 @@ func TestPostgresCapabilityDomainSchemaContract(t *testing.T) {
 			continue
 		}
 		alterFound = true
-		wantAlter := `ALTER TABLE "juhe_business"."accounts" ADD COLUMN IF NOT EXISTS capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image'))`
+		wantAlter := `ALTER TABLE "juhe_business"."accounts" ADD COLUMN IF NOT EXISTS capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image','embedding','rerank'))`
 		if statement.SQL != wantAlter {
 			t.Fatalf("capability domain legacy ALTER drifted:\n got %q\nwant %q", statement.SQL, wantAlter)
 		}
 	}
 	if !alterFound {
 		t.Fatal("account-capability-domain-pg-column ALTER guard statement missing")
+	}
+	// revision 29（向量/重排拆分设计 §6）：存量库具名重建 DO 块必须在位。
+	checkFound := false
+	for _, statement := range postgresSchemaStatements {
+		if statement.Source != "account-capability-domain-vector-rerank-pg-check" {
+			continue
+		}
+		checkFound = true
+		for _, marker := range []string{"NOT LIKE '%embedding%'", "accounts_capability_domain_check", "''embedding''", "''rerank''"} {
+			if !strings.Contains(statement.SQL, marker) {
+				t.Fatalf("account-capability-domain-vector-rerank-pg-check DO 块缺少标记 %q", marker)
+			}
+		}
+	}
+	if !checkFound {
+		t.Fatal("account-capability-domain-vector-rerank-pg-check DO 块语句缺失")
 	}
 }
 

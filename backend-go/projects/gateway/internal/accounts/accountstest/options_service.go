@@ -322,9 +322,17 @@ func (s *Service) FindManualTestCapabilitiesContext(ctx context.Context, account
 func (s *Service) manualTestContextFromRow(row *ManualTestContextRow, credentials accountscore.Credentials, mappings []accountscore.ModelMapping) *ManualTestContext {
 	// 有效连接形态优先（与账户列表 testKind 同源）；连接未配形态的老数据
 	// 回落凭据声明，保持既有语义。
+	// 五域退役修订（AI 账户上游接口能力设计 §3/§5）：图像 / 音频 / 视频 /
+	// 向量 / 重排五域账户不再持有声明（revision 30 清洗后凭据无键、连接行
+	// 无 modes），检查形态声明集改按域默认形态集派生
+	//（capabilitydomain.LaneModesForDomain）；chat 域保持连接行优先 / 凭据
+	// 回落逻辑不变。
 	supportedEndpointModes := row.EndpointModes
 	if len(supportedEndpointModes) == 0 {
 		supportedEndpointModes = SupportedEndpointModesFromCredentials(credentials)
+	}
+	if lane := capabilitydomainLaneModesForAccount(row.capabilityDomain); lane != nil {
+		supportedEndpointModes = lane
 	}
 	return &ManualTestContext{
 		ID:                        row.viewAccountID,
@@ -342,6 +350,19 @@ func (s *Service) manualTestContextFromRow(row *ManualTestContextRow, credential
 		SupportedEndpointModes:    supportedEndpointModes,
 		ModelMappings:             mappings,
 	}
+}
+
+// capabilitydomainLaneModesForAccount 返回五域账户的域默认形态集（与
+// accountprobe 连接测试同一域口径）；chat 域与空值 / 词表外值返回 nil（chat
+// 声明不退役，保持既有声明集语义）。
+func capabilitydomainLaneModesForAccount(domain string) []string {
+	switch capabilitydomain.Domain(strings.ToLower(strings.TrimSpace(domain))) {
+	case capabilitydomain.DomainImage, capabilitydomain.DomainAudio,
+		capabilitydomain.DomainVideo, capabilitydomain.DomainEmbedding,
+		capabilitydomain.DomainRerank:
+		return capabilitydomain.LaneModesForDomain(capabilitydomain.Domain(strings.ToLower(strings.TrimSpace(domain))))
+	}
+	return nil
 }
 
 // SupportedEndpointModesFromCredentials mirrors

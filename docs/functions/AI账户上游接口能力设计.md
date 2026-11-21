@@ -1,98 +1,72 @@
 # AI 账户上游接口能力设计
 
-> **2026-11-07 退役标注：** 跨协议模型映射与 `Responses -> Chat` bridge 已整体退役（见 [供应商与上游协议面重构设计](供应商与上游协议面重构设计.md) §5.2）。本文的接口能力门（映射右侧协议必须在账户已启用的上游能力内）仍然现行；文中 `Responses -> Chat Completions` 映射、bridge `chat_sse` 载体与 Chat 跨供应商切号上下文物化的表述已随 bridge 退役作废，`credentials.supported_endpoint_modes` 的现行配置面为 `account_endpoint_modes`（`credentials.supported_endpoint_modes` 为历史字段名）。
+> **2026-11-21 五域退役修订（用户裁决「非对话域彻底去掉上游接口能力」）：** 「上游接口能力」自本修订起仅对话域（chat）账户持有。图像 / 音频 / 视频 / 向量 / 重排五个非对话域账户彻底去除该配置：前端不再展示、写侧不再校验与落库、`/v1` 派发不再按 endpoint mode 过滤——候选按「账户能力域 = 请求域」圈定，上游不支持时返回的错误原样透传，网关不关心也不限制。本文其余章节已按该口径重写；历史脉络（bridge 退役、向量/重排拆分）见文末修订记录。
 
-## 1. 目标
+## 1. 目标与非目标
 
-本文固定 AI 账户 `credentials.supported_endpoint_modes`、账号模型别名、客户端画像和人工测试请求形态之间的边界，避免把“真实上游支持什么”和“客户端以什么形态请求”混成同一层。
+**目标**：固定「上游接口能力」（endpoint mode 声明）在六值能力域中的适用边界——chat 域保留声明、校验与派发过滤；五域退役后域闸门成为唯一的候选域隔离防线；endpoint mode 词表继续作为健康检查 / 连通性探测的执行面词表存在。
 
-页面统一使用名称“上游接口能力”。不再展示或保存“可承接请求”“客户端请求限制”或泛化客户端兼容配置。
+**非目标**：
 
-## 2. 单一事实来源
+- 不改变 capability_domain 六值域本身（菜单、统计、调度偏好「无调度偏好」占位不动）。
+- 不改变模型目录的 `supported_endpoint_modes_json`（模型协议面，另一体系）。
+- 不删除 endpoint mode 词表（27 值）、探测规格（`ConnectivityProbeForModes`）、`health_check_endpoint_mode` 列与词表、`RequestSupportedEndpointMode`、exactkeyprobe——它们是健康检查与连通性探测的执行面，不是账户声明面。
+- 不新增客户端请求限制配置，不展示派生的「可承接请求」列表。
 
-`credentials.supported_endpoint_modes` 是账户真实上游接口能力的最终配置来源：
+## 2. 适用范围：chat 域专用声明
 
-- OpenAI v1：`chat_json`、`chat_sse`、`responses_json`、`responses_sse`。图片模型健康检查和人工测试专用的 `images_json` 不写入此字段；只有模型目录证明模型支持 `images` 时，才可将它作为 `healthCheckEndpointMode` 使用。
-- Anthropic v1：`messages_json`、`messages_sse`、`message_token_counting`。
-- Gemini native：`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`、`count_tokens`、`embed_content`。
-- xAI OpenAI v1：`chat_json`、`chat_sse`、`responses_json`、`responses_sse`。
+「上游接口能力」仅 chat 域账户持有，双层存储与运行时口径不变：
 
-用户显式启用某项能力后，网关按该声明尝试请求上游。模型目录的 `supportedApiProtocols` 只用于模型候选、默认选择和风险提示，不覆盖账户显式能力；上游最终返回不支持路径、模型或参数时，按真实上游失败进入诊断和切号流程。
+- 账户级：加密凭据 `credentials.supported_endpoint_modes`（历史字段名，现行配置面为 `account_endpoint_modes` 连接行）。
+- 连接级：`account_endpoint_modes` 表行（endpoint_mode CHECK 27 值），运行时投影连接行优先、回落凭据键。
 
-## 3. 网关判定顺序
+chat 域可声明集合 = 域 lane（13 值对话锚集）∩ 供应商写侧词表 × 域×供应商矩阵（`accountscore.AllowedEndpointModes` 权威）。chat 域账户的声明校验、缺省播种（`DefaultEndpointModesForDomain`）、PATCH 严格校验、批量编辑覆盖、模型映射右侧协议校验全部保留现状。
 
-请求进入候选账户筛选后，固定按以下顺序判断：
+## 3. 五域退役（本批核心契约）
 
-1. 识别下游请求路径、JSON / SSE、模型和客户端画像。
-2. 按 `sourceModel + sourceEndpointFamily` 查找启用的账号模型映射。
-3. 命中映射时，以映射右侧确定真实上游模型和协议；未命中时，下游协议就是上游协议。
-4. 使用“上游接口能力”检查最终上游 endpoint mode。
-5. 能力满足时保留账户，能力不满足时跳过账户。
+图像 / 音频 / 视频 / 向量 / 重排五域账户：
 
-客户端画像只负责请求整理、上下文恢复、失败事件、重试、响应检查和审计，不再作为账户候选硬门槛。OpenAI-compatible API Key 账户只要显式启用 Responses，就可以承接 Codex `/responses`；Codex 请求整理仍按请求画像执行。GPT OAuth 等专用链路继续由账户类型、协议驱动和专用 adapter 约束。
+1. **前端**：创建 / 编辑 / 批量编辑表单不再出现「上游接口能力」勾选区；详情只读凭证不展示该行；导入协议页对五域不再声明枚举与回填口径。
+2. **写侧**：创建不播种默认集、不做 ⊆ allowed 校验；PATCH / 批量编辑不再做声明校验、connections-only 变更不回写影子副本；凭据归一化不落 `supported_endpoint_modes` 键；连接行不写 `account_endpoint_modes`；克隆不透传 modes；连接 preset modes 组合校验仅服务 chat 域连接。
+3. **导入**：native 导入文件中的 `supported_endpoint_modes` 仅用于 `DeriveDomain` 推域（历史文件兼容），落库时剥离凭据键、不写连接行 modes、不做五域 allowed 校验；modes 缺省 / 非法时沿用既有导入失败清单语义（不猜域）。
+4. **派发**：五域账户运行时声明投影恒空；候选按域闸门圈定（§4），不再做 mode 级过滤；上游不支持该接口时返回的 4xx / 5xx 按真实上游失败透传（诊断、切号、计费口径不变）。
+5. **存量清洗**：schema revision 30（`capability-domain-declaration-retirement`，`RequiredBeforeStartup=true`）删除五域账户凭据中的 `supported_endpoint_modes` 键与 `account_endpoint_modes` 中五域账户行，输出清洗报告。回滚安全：旧二进制读空声明 = 不受限，行为与目标一致。
+6. **迁移 / 升级核验兼容（revision 30 清洗的直接推论）**：历史域步骤（revision 4 m2 迁移器、revision 29 v2 升级执行器）的扫描 / 核验按共享包 `capabilitydomain.DeclarationRetired`（gateway `EndpointModesDeclarationRetired` 同源委托，五域清单单一权威）把「落库域属五域 + 凭据缺 `supported_endpoint_modes` 键」识别为合法退役终态——不再判 `modes_missing`，域以 `capability_domain` 列为权威；五域源的授权实例继承源落库域，不再判 `instance_source_failed`。解密损坏仍阻断；键存在但格式错误（空数组 / null / 非数组 / 未知值）仍入失败清单（revision 30 自身核验同判键残留）；**chat 行凭据缺键仍判 `modes_missing`**（chat 声明契约保留，豁免不外溢）。m2/v2 共用判定入口为 maintenance `retiredDeclarationTerminal`。
 
-## 4. 模型映射联动
+## 4. 域闸门（新增候选隔离防线）
 
-接口能力约束映射右侧的真实上游协议，不约束映射左侧的客户端入口协议：
+候选池 SQL（`chainCandidateWhere`）按分组圈定、不按域圈定；五域退役后 mode 过滤对五域不再生效，必须补显式域闸门防跨域漏调度：
 
-- （已随 2026-11-07 退役）`Responses -> Chat Completions` 只要求账户启用至少一种 Chat Completions 上游能力；关闭原生 Responses 不影响该映射。跨协议映射退役后该方向不再可保存，Responses 映射只能回到 `Responses -> Responses`。
-- `Responses -> Responses` 要求账户启用至少一种 Responses 上游能力。
-- Messages 或 Gemini native 映射同样按右侧协议族检查真实上游能力。
-- Gemini Interactions 是原生 endpoint family，不参与普通 OpenAI v1 模型映射；模型目录声明 `interactions` 且账户启用对应 JSON / SSE mode 时才进入人工测试和网关候选。
-- 新建或编辑映射时，右侧协议只能选择当前上游能力允许的协议族。
-- 修改上游能力后，如果启用映射的右侧协议失去能力，保存必须失败并指出冲突；不能静默删除映射。
-- 已停用映射可以保留，之后重新启用能力时再恢复。
-- 运行时只使用已启用且右侧上游能力仍满足的映射。
+- 请求域由请求形态派生（chat / responses / messages / gemini 族 → chat；images → image；语音 / 转写 / realtime → audio；video 族 → video；embeddings → embedding；rerank → rerank）。
+- 候选 driver 过滤（`gatewayRequestCapabilityMismatchReasonFor` 链）按 `账户 capability_domain` vs 请求域匹配，不匹配拒绝（reason `capability_domain_mismatch`）。账户投影（`AccountCandidate` / `OpenAIAccountSecret`）携带 `capability_domain`。
+- 切号冻结门（`FilterAccountsForSwitchTarget`）、演练场账户选择同步按域。
+- chat 域请求仍按既有声明 mode 过滤 chat 账户（`endpoint_mode_unsupported` 语义保留）；chat-pinned 直取路径目标账户明确，不经域闸门。
 
-## 5. 切号时的有效上游目标
+## 5. 健康检查与连通性探测（执行面保留）
 
-本节只约束已发生切号的请求，不改变初始候选筛选和显式 mapping 的允许矩阵。初始请求可以使用 `sourceModel + sourceEndpointFamily` 解析映射；一旦某个账号完成状态恢复、协议转换和上游请求构造，调度器必须冻结本次请求的有效上游目标，再用该目标筛选后续账号。
+- 五域恒连接测试（`TestKindForAccount` 不变）；探测规格选择从「账户声明集 × preset 规格优先级」改为「域默认形态集（`LaneModesForDomain`）× preset 规格优先级」——audio 域仍按 preset 差异落 `audio_job_create`（qwen）或 `audio_speech`（volcengine / glm / gemini native / minimax）等。
+- `health_check_endpoint_mode` 列继续按域默认落值（`DefaultHealthCheckEndpointModeForDomain`：chat=chat_sse、image=images_json、audio=audio_speech、video=video_create、embedding=embeddings_json、rerank=rerank_json），作为检查记录值；前端「检查请求形态」对五域按域默认派生展示。
+- jobs `account-connectivity-health` 候选按域判定（五域恒连接，不看 modes）。
+- 媒体准入 SQL 臂沿用 `health_check_endpoint_mode='video_create'` 域代理，不受本批影响。
 
-冻结目标至少包含：
+## 6. 网关判定顺序（修订后）
 
-```text
-providerCode
-providerProtocolProfileID
-upstreamModel
-upstreamEndpointFamily
-upstreamEndpointMode     # 例如 chat_json、chat_sse、responses_json、responses_sse
-contextContract          # 例如 chat_messages_v1、native_responses_v1
-```
+1. 识别下游请求路径、JSON / SSE、模型和客户端画像；派生请求域。
+2. 按 `sourceModel + sourceEndpointFamily` 查找启用的账号模型映射（chat 域语义不变；五域映射不再按声明校验，见 [AI账户模型映射选择规则](AI账户模型映射选择规则.md)）。
+3. 候选过滤：先域闸门（账户域 = 请求域），chat 域内再按声明 mode 过滤。
+4. 模型过滤（`supportedModels`）与既有可用性闸不变。
 
-`upstreamEndpointMode` 是实际上游采用的精确 JSON / SSE 形态，不是客户端形态的别名。（已随 2026-11-07 退役）原 `Responses -> Chat` bridge 以 `chat_sse` 作为上游载体的表述随 bridge 删除作废。`chat_json` 和 `chat_sse`、`responses_json` 和 `responses_sse` 不能在切号时互换。
+## 7. 验证
 
-切号候选只检查两类账号事实：
+- 五域创建 / 编辑 / 批量编辑表单无「上游接口能力」；存量五域账户经 revision 30 清洗后凭据无该键、连接行无 modes。
+- chat 请求候选不出现五域账户、媒体 / 向量 / 重排请求候选不出现 chat 账户（域闸门回归钉死）。
+- chat 账户声明过滤不变：未启用目标 endpoint mode 的 chat 账户仍被 `endpoint_mode_unsupported` 过滤。
+- 媒体 / 向量 / 重排请求在上游不支持时收到上游原始错误（透传），不产生网关侧 mode 拒绝。
+- 五域连接测试按域默认形态探测成功；健康检查形态列值为域默认。
 
-1. `supported_endpoint_modes` 是否包含冻结的精确 mode；
-2. `supportedModels` 是否直接支持冻结的 `upstreamModel`，或启用且有效的账号模型别名 RHS 是否同时匹配冻结的 `upstreamModel + upstreamEndpointFamily`。
+## 修订记录
 
-mapping 左侧 `SourceModel`、`SourceEndpointFamily`、客户端协议和客户端画像不参与切号资格判断；不能复用只按 source 查找的 `ResolveAccountModelMapping`。候选被选中后，provider driver 必须使用冻结的同族目标重建请求（bridge 执行计划已随 2026-11-07 退役删除），不能再把原始客户端 body 交给候选账号。
-
-供应商边界固定为：冻结目标是 `chat_completions` 时允许跨供应商，但模型、Chat 协议族、精确 mode 和上下文形态必须一致；冻结目标是 `responses` 或其他非 Chat 协议时必须保持同一供应商，并保持兼容的 provider profile、模型、协议族和 mode。目标缺失或无法证明时不放宽为客户端协议，停止跨账号切换。
-
-（已随 2026-11-07 退役）原 `Responses -> Chat` 上下文物化后跨供应商切号的例外已随 bridge 与网关状态层（`juhe_codex_context`）删除；`previous_response_id` 状态与 opaque `encrypted_content` 请求只能保持原生 Responses 的同供应商约束。
-
-完整契约见 [切号时有效上游目标与上下文迁移设计](切号时有效上游目标与上下文迁移设计.md)。
-
-## 6. 人工测试契约
-
-账户列表保持轻量，不返回凭据或完整模型目录。用户打开单账户测试时，前端立即读取当前账户作用域内的 `test-options`，运行按钮在该请求完成前保持禁用；加载失败时必须展示原始错误并阻止提交，不能使用账户中可能过期的请求形态静默测试。
-
-`test-options` 对每个候选模型返回人工测试所需的最小数据 `{ id, name, testEndpointModes }`。其中 `testEndpointModes` 由账户已启用的上游能力和该模型目录 `supportedApiProtocols` 的交集计算，不返回原始凭据或无关模型的完整协议详情。目录确认只支持图片生成的模型，其唯一测试形态为 `images_json`；前端必须同步草稿 `healthCheckEndpointMode` 并显示 `Images API`。切换模型时必须重新取得该模型的可测试形态。新增 / 编辑表单可使用供应商模型选项携带的协议与当前草稿账户能力计算交集，但提交测试时后端仍重新以模型目录验证，不能相信客户端传值。
-
-## 7. 非目标
-
-- 不新增独立的图片账户能力字段；`images_json` 仅是 `healthCheckEndpointMode` 的精确检查形态，不替代 `credentials.supported_endpoint_modes`。
-- 不新增客户端请求限制配置。
-- 不展示派生的“可承接请求”列表。
-- 不让客户端画像创造账户没有声明的上游协议能力。
-- 不把模型目录协议标签改成账户运行时能力事实。
-- 不自动删除与能力冲突的模型映射。
-
-## 8. 验证
-
-- 普通 OpenAI-compatible API Key 显式启用 `responses_sse` 后，可以进入 Codex `/responses` 候选并执行 Codex 请求整理。
-- 未启用目标上游 endpoint mode 的账户仍被候选过滤。
-- 人工测试首次打开时完成 `test-options` 加载；每项返回 `{ id, name, testEndpointModes }`，加载中或加载失败时不得提交测试。纯图片模型只提供 `images_json`，并在界面显示为 `Images API`。
-- 关闭映射右侧上游协议能力时，启用映射阻止保存，停用映射允许保留。
-- 页面、批量编辑和导入说明统一使用“上游接口能力”。
+- 2026-11-07：跨协议模型映射与 `Responses -> Chat` bridge 退役；接口能力门保留；`credentials.supported_endpoint_modes` 现行配置面为 `account_endpoint_modes`。
+- 2026-11-21（向量/重排拆分）：`embeddings_json` / `rerank_json` 移出对话锚集，落独立 embedding / rerank 域（[AI账户能力域向量重排拆分设计](AI账户能力域向量重排拆分设计.md)）。
+- 2026-11-21（五域退役，本批）：五域彻底去除声明 / 校验 / 过滤；新增域闸门；revision 30 清洗。见 §3/§4。
+- 2026-11-21（dev 演练收口）：m2/v2 迁移核验按 §3.6 兼容五域退役终态（dev 库 postflight 19/19 全绿验证）；mockdata 造数对齐声明契约——chat 域 mock 账户凭据落声明键（首个 chat plan 形态集）、五域 mock 不落键。

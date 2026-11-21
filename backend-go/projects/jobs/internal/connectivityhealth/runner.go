@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -37,13 +38,19 @@ const (
 	// transientRetryDelay 是网络/5xx 等非认证失败的复测间隔上限：只记录事实、
 	// 不改账户状态，但也不按 24h 周期把上游故障拖到一天后才重试。
 	transientRetryDelay = 5 * time.Minute
-	probeTimeout        = 2 * time.Minute
-	defaultBatchSize    = 50
-	defaultConcurrency  = 4
-	// maxConcurrency 是连通性通道的独立并发上限：job 调度 timeout 为 3 分钟，
-	// 单账户硬上限 2 分钟，必须保证一批候选在一波内完成（batch ≤ concurrency），
-	// 否则最坏耗时 = ceil(batch/concurrency)*2m 会超过调度 timeout。
-	maxConcurrency = 8
+	probeTimeout       = 60 * time.Second
+	defaultConcurrency = 4
+	// maxConcurrency 是连通性通道的总并发上限（2026-11-22 用户裁决：与对话
+	// 通道 J1/ProbeConcurrency 的默认 512 对齐；goroutine 不占真实线程）；
+	// perUpstreamConcurrency 是同一上游 base_url origin 的并发上限（2026-11-22
+	// 用户二裁 8 → 60：候选池内同上游账户通常不多，8 并发波次严重串行）。
+	// maxBatchSize 是单轮候选批量上限，独立于并发钳制：job 调度 timeout 为
+	// 15 分钟，最坏一轮（512 候选全同上游）= ceil(512/60) = 9 波 × 60s =
+	// 540s（叠加每波 ~3s 写库 ≈ 567s）< 900s。跨上游场景峰值并发 = 批量
+	// 512/轮，吞吐 512/分钟。
+	maxConcurrency         = 512
+	maxBatchSize           = 512
+	perUpstreamConcurrency = 60
 )
 
 // AccountReader 是 proberepo.Store 的窄读取面。
@@ -121,7 +128,7 @@ func NewRunner(cfg Config) (*Runner, error) {
 	}
 	batchSize := cfg.BatchSize
 	if batchSize <= 0 {
-		batchSize = defaultBatchSize
+		batchSize = maxBatchSize
 	}
 	concurrency := cfg.Concurrency
 	if concurrency <= 0 {
@@ -142,10 +149,15 @@ func NewRunner(cfg Config) (*Runner, error) {
 
 // clampConnectivityBudget 把全局探针并发（JUHE_AI_JOBS_PROBE_CONCURRENCY 默认
 // 512，同时服务 J1/J2）收敛为本通道独立预算：并发不超过 maxConcurrency，批量
-// 不超过并发。这样最坏一轮 = 一波 2 分钟，小于 job 调度 3 分钟 timeout。
+// 不超过 maxBatchSize 且不超过并发。最坏一轮（候选全同上游）=
+// ceil(batch/perUpstreamConcurrency) 波 × probeTimeout，见 maxConcurrency
+// 注释的算式。
 func clampConnectivityBudget(batchSize, concurrency int) (int, int) {
 	if concurrency > maxConcurrency {
 		concurrency = maxConcurrency
+	}
+	if batchSize > maxBatchSize {
+		batchSize = maxBatchSize
 	}
 	if batchSize > concurrency {
 		batchSize = concurrency
@@ -172,6 +184,10 @@ func (r *Runner) Run(ctx context.Context) (CycleResult, error) {
 		return result, nil
 	}
 	sem := make(chan struct{}, r.concurrency)
+	// 同上游限流按 view.BaseURL 的 origin 在探测前收口（候选层无 base_url：
+	// accounts 表不落该列，凭据 JSON 也不再承载，探测视图从健康检查连接行
+	// 装载后才可派生）。获取顺序固定为全局 → 同上游，单向获取无死锁。
+	limiter := newUpstreamLimiter()
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	for _, candidate := range candidates {
@@ -185,7 +201,7 @@ func (r *Runner) Run(ctx context.Context) (CycleResult, error) {
 				return
 			}
 			defer func() { <-sem }()
-			observation := r.processCandidate(ctx, candidate, schedule)
+			observation := r.processCandidate(ctx, candidate, schedule, limiter)
 			mu.Lock()
 			defer mu.Unlock()
 			switch observation.outcome {
@@ -265,9 +281,24 @@ func (r *Runner) loadCandidates(ctx context.Context, now time.Time) ([]candidate
 	return output, nil
 }
 
+// upstreamOrigin 返回同上游限流的分组键：base_url 的 scheme://host:port。
+// 解析失败回落原始字符串（同一 base_url 恒映射同一键）；空值共享一个限流桶，
+// 按保守处理不放大瞬时压力。
+func upstreamOrigin(baseURL string) string {
+	trimmed := strings.TrimSpace(baseURL)
+	if trimmed == "" {
+		return ""
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.Host == "" {
+		return trimmed
+	}
+	return parsed.Scheme + "://" + parsed.Host
+}
+
 // connectivityCandidateSQL 选出所有到期且属于连接测试口径的账户：媒体域
-// 全部，或 chat 域只声明非对话形态的账户。对话生成形态账户留给 J1 模型
-// 检查，两者不重叠。
+// 与向量/重排域全部（向量/重排拆分设计 §7：新域恒连接测试），或 chat 域
+// 只声明非对话形态的账户。对话生成形态账户留给 J1 模型检查，两者不重叠。
 const connectivityCandidateSQL = `
 SELECT a.id, a.capability_domain, a.status, COALESCE(a.last_error_code, ''),
   a.config_revision, a.dispatch_revision,
@@ -281,9 +312,10 @@ WHERE a.deleted_at IS NULL
   AND (a.account_expires_at IS NULL OR a.account_expires_at > $1)
   AND (a.next_health_check_at IS NULL OR a.next_health_check_at <= $1
     OR (a.status = 'pending_test' AND a.last_health_check_at IS NULL))
-  -- 连接测试账户：媒体域全部，或 chat 域只声明非对话形态的账户。
+  -- 连接测试账户：媒体域与向量/重排域全部（向量/重排拆分设计 §7：新域恒
+  -- 连接测试），或 chat 域只声明非对话形态的账户。
   AND (
-    a.capability_domain IN ('video', 'audio', 'image')
+    a.capability_domain IN ('video', 'audio', 'image', 'embedding', 'rerank')
     OR (
       a.capability_domain = 'chat'
       AND EXISTS (
@@ -326,7 +358,29 @@ type candidateResult struct {
 	outcome outcomeKind
 }
 
-func (r *Runner) processCandidate(ctx context.Context, item candidate, schedule healthSchedule) candidateResult {
+// upstreamLimiter 按上游 origin 提供同源并发桶（get-or-create，mutex 保护；
+// 每轮 Run 新建，候选批量 ≤ 总并发，桶数 ≤ 批量）。
+type upstreamLimiter struct {
+	mu   sync.Mutex
+	sems map[string]chan struct{}
+}
+
+func newUpstreamLimiter() *upstreamLimiter {
+	return &upstreamLimiter{sems: make(map[string]chan struct{})}
+}
+
+func (l *upstreamLimiter) bucket(origin string) chan struct{} {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	sem, ok := l.sems[origin]
+	if !ok {
+		sem = make(chan struct{}, perUpstreamConcurrency)
+		l.sems[origin] = sem
+	}
+	return sem
+}
+
+func (r *Runner) processCandidate(ctx context.Context, item candidate, schedule healthSchedule, limiter *upstreamLimiter) candidateResult {
 	account, err := r.reader.LoadAccountForTest(ctx, item.ID)
 	if err != nil {
 		r.logger.Warn("load connectivity health account failed", "account_id", item.ID, "error", err)
@@ -387,6 +441,17 @@ func (r *Runner) processCandidate(ctx context.Context, item candidate, schedule 
 		r.logger.Warn("connectivity probe spec missing", "account_id", item.ID, "preset", view.ConnectionPresetCode)
 		return candidateResult{outcome: outcomeTransient}
 	}
+
+	// 同上游限流（2026-11-22 用户裁决）：探测请求发起前按 base_url origin
+	// 抢同源桶——同一上游并发 ≤ perUpstreamConcurrency，不同上游之间并行，
+	// 防止几十个并发探测触发同一家上游限频/风控。
+	upstreamSem := limiter.bucket(upstreamOrigin(view.BaseURL))
+	select {
+	case upstreamSem <- struct{}{}:
+	case <-ctx.Done():
+		return candidateResult{outcome: outcomeSkipped}
+	}
+	defer func() { <-upstreamSem }()
 
 	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	observation, _, probeErr := r.prober.ManualConnectivityDiagnostics(probeCtx, view, true)

@@ -22,6 +22,8 @@ func TestChainDriverGeminiSpeechAdapterDispatch(t *testing.T) {
 		VendorCode:   "gemini",
 		ProtocolCode: "gemini",
 		Type:         "api_key",
+		// 五域退役修订：gemini TTS 账户落 audio 域（域闸门按域放行语音请求）。
+		CapabilityDomain: "audio",
 		// 动机（v2 直拼契约）：gemini native lane 的 base_url 即版本根，自带
 		// /v1beta；最终 URL 形态不变。
 		BaseURL: "https://gem.example/v1beta",

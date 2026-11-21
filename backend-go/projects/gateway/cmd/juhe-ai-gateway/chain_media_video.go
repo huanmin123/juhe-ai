@@ -51,7 +51,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pricing"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/authzrevision"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/mediapricing"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamenvelope"
 )
@@ -1068,9 +1067,9 @@ func (m *mediaJobsRuntime) hydrateAccount(ctx context.Context, accountID string)
 	return &account, nil
 }
 
-// authorizationInstanceAllowed re-checks the recipient-consent runtime gate
-// for media job polling: runtime active, effective source active, accepted
-// revision equals the current source account revision.
+// authorizationInstanceAllowed re-checks the send-and-claim runtime gate for
+// media job polling: runtime active, effective source active behind an active
+// unexpired grant.
 func (m *mediaJobsRuntime) authorizationInstanceAllowed(ctx context.Context, runtimeID, sourceAccountID, granteeID string) (bool, error) {
 	if strings.TrimSpace(runtimeID) == "" || strings.TrimSpace(sourceAccountID) == "" {
 		return false, nil
@@ -1091,11 +1090,12 @@ func (m *mediaJobsRuntime) authorizationInstanceAllowed(ctx context.Context, run
 		(effectiveType != "manual" && effectiveType != "team") {
 		return false, nil
 	}
-	var acceptedRevision string
-	var acceptedVersion, revisionVersion int
+	// The source gate must not trust a stale runtime projection: the runtime's
+	// effective source has to still be active behind an active, unexpired
+	// grant at request time (send-and-claim model).
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	err = m.db.QueryRowContext(ctx, `SELECT COALESCE(s.accepted_source_revision, ''),
-			COALESCE(s.accepted_source_revision_version, 0), s.revision_version
+	var one int
+	err = m.db.QueryRowContext(ctx, `SELECT 1
 		FROM juhe_business.resource_authorization_sources s
 		JOIN juhe_business.resource_authorization_grants g ON g.id = s.grant_id
 		JOIN juhe_business.resource_authorizations ra ON ra.id = s.authorization_id
@@ -1106,26 +1106,21 @@ func (m *mediaJobsRuntime) authorizationInstanceAllowed(ctx context.Context, run
 		  AND (COALESCE(g.expires_at, '') = '' OR g.expires_at > ?)
 		  AND ((? = 'manual' AND s.source_type = 'manual')
 		    OR (? = 'team' AND s.source_type = 'team' AND s.source_team_id = ?))
-		LIMIT 1`, runtimeID, now, now, effectiveType, effectiveType, effectiveTeam).
-		Scan(&acceptedRevision, &acceptedVersion, &revisionVersion)
+		LIMIT 1`, runtimeID, now, now, effectiveType, effectiveType, effectiveTeam).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	current, version, _, err := authzrevision.Compute(ctx, m.db, sourceAccountID, m.secret)
-	if err != nil {
-		return false, err
-	}
-	return acceptedRevision == current && acceptedVersion == revisionVersion && version == revisionVersion, nil
+	return true, nil
 }
 
 // groupAuthorizationAllowed re-checks a group-source media task at poll time.
 // Group-authorized media tasks use the owner's source account (no instance row),
 // so the instance gate above cannot see them. The task snapshot freezes the
-// group authorization id/owner; re-validate runtime → parent grant → source
-// revision → settings switch → snapshot membership on every poll.
+// group authorization id/owner; re-validate runtime → parent grant → claim
+// row → live group membership on every poll.
 func (m *mediaJobsRuntime) groupAuthorizationAllowed(ctx context.Context, authorizationID, groupID, ownerID, granteeID, sourceAccountID string) (bool, error) {
 	authorizationID = strings.TrimSpace(authorizationID)
 	groupID = strings.TrimSpace(groupID)
@@ -1154,12 +1149,12 @@ func (m *mediaJobsRuntime) groupAuthorizationAllowed(ctx context.Context, author
 		(expiresAt != "" && expiresAt <= now) {
 		return false, nil
 	}
-	// settings/group owner switch + snapshot account membership.
-	var settingsEnabled int
-	var snapshotRevision, settingsGroup, settingsGrantee string
-	err = m.db.QueryRowContext(ctx, `SELECT enabled, COALESCE(snapshot_revision, ''), group_id, system_account_id
+	// The claim row is the whole settings contract (send-and-claim model);
+	// group membership is resolved live from the owner's group_accounts rows.
+	var settingsGroup, settingsGrantee string
+	err = m.db.QueryRowContext(ctx, `SELECT group_id, system_account_id
 		FROM juhe_business.group_authorization_settings WHERE authorization_id = ? LIMIT 1`, authorizationID).
-		Scan(&settingsEnabled, &snapshotRevision, &settingsGroup, &settingsGrantee)
+		Scan(&settingsGroup, &settingsGrantee)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -1169,43 +1164,20 @@ func (m *mediaJobsRuntime) groupAuthorizationAllowed(ctx context.Context, author
 	// group_authorization_settings.system_account_id is the receiver
 	// (runtime.grantee_system_account_id), not the group owner. The group owner
 	// is still enforced by the caller and by the group_accounts membership join.
-	if settingsEnabled != 1 || snapshotRevision == "" || settingsGroup != groupID || settingsGrantee != granteeID {
+	if settingsGroup != groupID || settingsGrantee != granteeID {
 		return false, nil
 	}
 	var memberCount int
 	if err := m.db.QueryRowContext(ctx, `SELECT count(*)
-		FROM juhe_business.resource_authorization_group_accounts snap
-		JOIN juhe_business.group_accounts ga
-		  ON ga.account_id = snap.account_id AND ga.group_id = ? AND ga.enabled = 1
-		 AND ga.system_account_id = ?
-		WHERE snap.authorization_id = ? AND snap.account_id = ?`,
-		groupID, ownerID, authorizationID, sourceAccountID).Scan(&memberCount); err != nil {
+		FROM juhe_business.group_accounts ga
+		WHERE ga.group_id = ? AND ga.account_id = ? AND ga.system_account_id = ? AND ga.enabled = 1`,
+		groupID, sourceAccountID, ownerID).Scan(&memberCount); err != nil {
 		return false, err
 	}
 	if memberCount == 0 {
 		return false, nil
 	}
-	var acceptedRevision string
-	var acceptedVersion, revisionVersion int
-	err = m.db.QueryRowContext(ctx, `SELECT COALESCE(s.accepted_source_revision, ''),
-			COALESCE(s.accepted_source_revision_version, 0), s.revision_version
-		FROM juhe_business.resource_authorization_sources s
-		JOIN juhe_business.resource_authorization_grants g ON g.id = s.grant_id
-		WHERE s.authorization_id = ? AND s.status = 'active'
-		  AND g.status = 'active'
-		  AND (COALESCE(g.expires_at, '') = '' OR g.expires_at > ?)
-		  AND ((? = 'manual' AND s.source_type = 'manual')
-		    OR (? = 'team' AND s.source_type = 'team' AND s.source_team_id = ?))
-		LIMIT 1`, authorizationID, now, effectiveType, effectiveType, effectiveTeam).
-		Scan(&acceptedRevision, &acceptedVersion, &revisionVersion)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	current := authzrevision.Group(m.secret, groupID, ownerID)
-	return acceptedRevision == current && acceptedVersion == revisionVersion && revisionVersion == authzrevision.Version, nil
+	return true, nil
 }
 
 // mediaAccountsTable 限定 accounts 表名（juhe_business schema）。

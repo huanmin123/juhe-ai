@@ -22,6 +22,7 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-contracts"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountquality"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamenvelope"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
@@ -32,12 +33,25 @@ import (
 // 产生真实计费）。
 const ConnectivityProbeTaskID = "probe-connectivity-check"
 
-// ConnectivityProbeModeForView 返回账户可用的连接测试形态：优先使用视图
-// 已声明形态中按注册表规格优先级命中的第一个；视图没有显式形态时回落到
-// health_check_endpoint_mode。找不到规格时 fail closed。
+// ConnectivityProbeModeForView 返回账户可用的连接测试形态：五域账户按域默认
+// 形态集（capabilitydomain.LaneModesForDomain）经注册表规格优先级命中；chat /
+// 空域账户优先使用视图已声明形态中按注册表规格优先级命中的第一个，视图没有
+// 显式形态时回落到 health_check_endpoint_mode。找不到规格时 fail closed。
 func ConnectivityProbeModeForView(view *View) (EndpointMode, contracts.ConnectorConnectivityProbe, bool) {
 	if view == nil {
 		return "", contracts.ConnectorConnectivityProbe{}, false
+	}
+	// 五域退役修订（AI 账户上游接口能力设计 §5）：五域账户连接测试按域默认
+	// 形态集圈定输入（audio 域交给注册表按 preset 优先级命中：qwen→
+	// audio_job_create、volcengine openspeech/glm/gemini native/minimax→
+	// audio_speech），五域端点模式声明退役后不再消费 modes；该 lane 无登记
+	// 规格时 fail closed，不回落对话/媒体其他形态。
+	if lane := capabilitydomainLaneModes(view); len(lane) > 0 {
+		mode, spec, ok := contracts.ConnectivityProbeForModes(view.ConnectionPresetCode, lane)
+		if !ok {
+			return "", contracts.ConnectorConnectivityProbe{}, false
+		}
+		return EndpointMode(mode), spec, true
 	}
 	modes := make([]string, 0, len(view.NormalizeEndpointModes))
 	for mode := range view.NormalizeEndpointModes {
@@ -53,6 +67,22 @@ func ConnectivityProbeModeForView(view *View) (EndpointMode, contracts.Connector
 		return "", contracts.ConnectorConnectivityProbe{}, false
 	}
 	return EndpointMode(mode), spec, true
+}
+
+// capabilitydomainLaneModes 返回五域账户的域默认形态集（AI 账户上游接口能力
+// 设计 §5）：image/audio/video/embedding/rerank 按 LaneModesForDomain 圈定连
+// 接测试输入，五域声明集退役（投影恒空）后不再依赖 modes；chat / 空值 /
+// 未知域返回 nil，由调用方走既有声明集 → health 列回落链。
+func capabilitydomainLaneModes(view *View) []string {
+	domain := capabilitydomain.Domain(strings.ToLower(strings.TrimSpace(view.CapabilityDomain)))
+	switch domain {
+	case capabilitydomain.DomainImage, capabilitydomain.DomainAudio,
+		capabilitydomain.DomainVideo, capabilitydomain.DomainEmbedding,
+		capabilitydomain.DomainRerank:
+		return capabilitydomain.LaneModesForDomain(domain)
+	default:
+		return nil
+	}
 }
 
 // isConnectivityProbeMode 判定本次 attempt 是否走连接测试分支：

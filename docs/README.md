@@ -20,6 +20,7 @@
 | `plans/计划-20260501T160541000Z-第一阶段计划.md` | 归档早期阶段范围、里程碑和完成标准 | 作为历史范围记录保留；当前功能事实以架构和 functions 文档为准 |
 | `functions/README.md` | 汇总功能说明、专题调研和存储说明 | 新字段、新接口、新流程优先关联到这里的具体文档 |
 | `functions/供应商与上游协议面重构设计.md` | 定义真实厂商、连接器、协议面、账户入口映射、模型身份、路由顺序和确定性迁移的目标契约 | OpenAI-compatible 与 Hybrid 语义重构的唯一目标设计；实现前的 schema、API 和验收以此为准 |
+| `functions/AI账户能力域向量重排拆分设计.md` | 固定向量/重排独立落库能力域契约：`capability_domain` 六值、chat 域锚集 13、embedding/rerank 独立 lane、推导规则 v2 与 schema revision 29 | 向量/重排账户、菜单、模型广场分类与探针边界以此为准；域 lane 上游契约见 `functions/供应商与上游协议面重构设计.md` §2.2 |
 | `architecture/README.md` | 汇总架构设计和通用开发 / 修复 / 重构指导 | 前端架构、专项架构和后续独立设计从这里进入 |
 | `architecture/Go三项目架构基线.md` | 说明 Go 三项目职责边界、进程分工与后端基线 | 后端接口、存储、脚本、网关或后台任务变更必须先参考 |
 | `architecture/frontend/README.md` | 说明前端实现边界和前端规范入口 | 页面、样式、品牌、交互变更必须先参考 |

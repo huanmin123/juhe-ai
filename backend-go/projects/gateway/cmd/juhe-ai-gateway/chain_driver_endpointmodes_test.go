@@ -16,6 +16,9 @@ import (
 
 // BUG-0175 W4-F：D-155（SupportedEndpointModes 派发消费）与 D-99
 // （api-key-client-compatibility 组合入口）的 chain_driver 语义测试。
+// 2026-11-21 五域退役修订：chat 域用例保留原语义；新增域闸门（§4）断言——
+// 五域账户（声明空 / 带旧声明）同域请求放行、跨域请求 capability_domain_mismatch，
+// 以及跨域隔离回归（chat 请求不选中五域账户、媒体请求不选中 chat 账户）。
 
 func newEndpointGateRequest(t *testing.T, method, path, body string) *gatewaypreauth.GatewayRequest {
 	t.Helper()
@@ -101,6 +104,7 @@ func TestEndpointModeMismatchReasonConsumesSupportedEndpointModes(t *testing.T) 
 		messagesReq := newEndpointGateRequest(t, http.MethodPost, "/v1/messages", `{"model":"claude-x","max_tokens":128}`)
 		anthropicUpstream := gatewaydispatch.AccountCandidate{
 			ID: "a6", ProtocolCode: "openai", VendorCode: "hybrid", Type: "api_key",
+			CapabilityDomain:       "chat",
 			SupportedEndpointModes: []string{"chat_json", "chat_sse", "messages_json", "messages_sse"},
 			ModelMappings: []gatewayruntimecache.AccountModelMapping{
 				{SourceModel: "claude-x", SourceEndpointFamily: "messages", UpstreamModel: "deepseek-v3", UpstreamEndpointFamily: "chat_completions", Enabled: true},
@@ -111,12 +115,139 @@ func TestEndpointModeMismatchReasonConsumesSupportedEndpointModes(t *testing.T) 
 		}
 		messagesOnly := gatewaydispatch.AccountCandidate{
 			ID: "a7", ProtocolCode: "anthropic", VendorCode: "anthropic", Type: "api_key",
+			CapabilityDomain:       "chat",
 			SupportedEndpointModes: []string{"messages_json", "messages_sse"},
 		}
 		if reason := driver.endpointModeMismatchReason(messagesReq, messagesOnly, ""); reason != "" {
 			t.Fatalf("native anthropic reason = %q, want empty", reason)
 		}
 		_ = ctx
+	})
+}
+
+// TestCapabilityDomainGateRejectsCrossDomainRequests 锁五域退役修订的域闸门
+// （AI 账户上游接口能力设计 §4）：请求域由请求形态派生，账户能力域 ≠ 请求域
+// 时拒绝（reason capability_domain_mismatch，先于既有 mode 过滤）；请求形态
+// 无法派生域（未闸门形态）不做域过滤。五域账户声明投影恒空后，域闸门是候选
+// 域隔离的唯一防线。
+func TestCapabilityDomainGateRejectsCrossDomainRequests(t *testing.T) {
+	driver := newChainProviderDriver()
+	chatReq := newEndpointGateRequest(t, http.MethodPost, "/v1/chat/completions", `{"model":"glm-4.6"}`)
+	imagesReq := newEndpointGateRequest(t, http.MethodPost, "/v1/images/generations", `{"model":"gpt-image-2","prompt":"cat"}`)
+	speechReq := newEndpointGateRequest(t, http.MethodPost, "/v1/audio/speech", `{"model":"tts-1","input":"hi"}`)
+	videoReq := newEndpointGateRequest(t, http.MethodPost, "/v1/video/generations", `{"model":"wan2.2","prompt":"cat"}`)
+	embeddingsReq := newEndpointGateRequest(t, http.MethodPost, "/v1/embeddings", `{"model":"text-embed","input":"hi"}`)
+	rerankReq := newEndpointGateRequest(t, http.MethodPost, "/v1/rerank", `{"model":"reranker","query":"hi","documents":["a"]}`)
+
+	t.Run("empty declaration five-domain account serves same-domain request", func(t *testing.T) {
+		// 五域账户声明投影恒空（revision 30 清洗后 / 双保险投影）：同域请求放行。
+		account := gatewaydispatch.AccountCandidate{
+			ID: "img-1", ProtocolCode: "openai", VendorCode: "volcengine", Type: "api_key",
+			CapabilityDomain: "image",
+		}
+		if reason := driver.gatewayRequestCapabilityMismatchReasonFor(imagesReq, account, ""); reason != "" {
+			t.Fatalf("image request on image account reason = %q, want empty", reason)
+		}
+	})
+
+	t.Run("legacy declaration five-domain account still serves same-domain request", func(t *testing.T) {
+		// revision 30 清洗前的存量声明不参与派发（运行时投影恒空双保险在
+		// openAIAccountSecretFromRow；driver 域闸门只看能力域）。
+		account := gatewaydispatch.AccountCandidate{
+			ID: "vid-1", ProtocolCode: "openai", VendorCode: "qwen", Type: "api_key",
+			CapabilityDomain:       "video",
+			SupportedEndpointModes: []string{"video_create", "video_get", "video_content", "video_cancel"},
+		}
+		if reason := driver.gatewayRequestCapabilityMismatchReasonFor(videoReq, account, ""); reason != "" {
+			t.Fatalf("video request on video account reason = %q, want empty", reason)
+		}
+	})
+
+	t.Run("chat request rejected on media account with domain reason", func(t *testing.T) {
+		account := gatewaydispatch.AccountCandidate{
+			ID: "img-2", ProtocolCode: "openai", VendorCode: "volcengine", Type: "api_key",
+			CapabilityDomain: "image",
+		}
+		if reason := driver.gatewayRequestCapabilityMismatchReasonFor(chatReq, account, ""); reason != "capability_domain_mismatch" {
+			t.Fatalf("chat request on image account reason = %q, want capability_domain_mismatch", reason)
+		}
+	})
+
+	t.Run("media requests rejected on chat account with domain reason", func(t *testing.T) {
+		chatAccount := gatewaydispatch.AccountCandidate{
+			ID: "chat-1", ProtocolCode: "openai", VendorCode: "glm", Type: "api_key",
+			CapabilityDomain:       "chat",
+			SupportedEndpointModes: []string{"chat_json", "chat_sse"},
+		}
+		chatAccountEmpty := chatAccount
+		chatAccountEmpty.ID = "chat-2"
+		chatAccountEmpty.SupportedEndpointModes = nil
+		for _, mediaReq := range []struct {
+			name string
+			req  *gatewaypreauth.GatewayRequest
+		}{
+			{"images", imagesReq},
+			{"speech", speechReq},
+			{"video", videoReq},
+			{"embeddings", embeddingsReq},
+			{"rerank", rerankReq},
+		} {
+			for _, account := range []gatewaydispatch.AccountCandidate{chatAccount, chatAccountEmpty} {
+				if reason := driver.gatewayRequestCapabilityMismatchReasonFor(mediaReq.req, account, ""); reason != "capability_domain_mismatch" {
+					t.Fatalf("%s request on %s (modes=%v) reason = %q, want capability_domain_mismatch",
+						mediaReq.name, account.ID, account.SupportedEndpointModes, reason)
+				}
+			}
+		}
+	})
+
+	t.Run("cross media domain requests rejected", func(t *testing.T) {
+		audioAccount := gatewaydispatch.AccountCandidate{
+			ID: "aud-1", ProtocolCode: "openai", VendorCode: "minimax", Type: "api_key",
+			CapabilityDomain: "audio",
+		}
+		if reason := driver.gatewayRequestCapabilityMismatchReasonFor(imagesReq, audioAccount, ""); reason != "capability_domain_mismatch" {
+			t.Fatalf("images request on audio account reason = %q", reason)
+		}
+		if reason := driver.gatewayRequestCapabilityMismatchReasonFor(videoReq, audioAccount, ""); reason != "capability_domain_mismatch" {
+			t.Fatalf("video request on audio account reason = %q", reason)
+		}
+		embeddingAccount := gatewaydispatch.AccountCandidate{
+			ID: "emb-1", ProtocolCode: "openai", VendorCode: "glm", Type: "api_key",
+			CapabilityDomain: "embedding",
+		}
+		if reason := driver.gatewayRequestCapabilityMismatchReasonFor(rerankReq, embeddingAccount, ""); reason != "capability_domain_mismatch" {
+			t.Fatalf("rerank request on embedding account reason = %q", reason)
+		}
+	})
+
+	t.Run("ungated request shape keeps accounts unfiltered", func(t *testing.T) {
+		// 请求形态无法派生域（/models、空族）：域闸门不参与，保持放行。
+		modelsReq := newEndpointGateRequest(t, http.MethodGet, "/v1/models", "")
+		account := gatewaydispatch.AccountCandidate{
+			ID: "vid-2", ProtocolCode: "openai", VendorCode: "qwen", Type: "api_key",
+			CapabilityDomain: "video",
+		}
+		if reason := driver.gatewayRequestCapabilityMismatchReasonFor(modelsReq, account, ""); reason != "" {
+			t.Fatalf("ungated shape reason = %q, want empty", reason)
+		}
+	})
+
+	t.Run("chat account keeps endpoint_mode_unsupported semantics", func(t *testing.T) {
+		// chat 账户声明过滤保留：同域内未启用目标 mode 仍按既有 reason 拒绝，
+		// 域闸门不改变 chat 域语义。
+		account := gatewaydispatch.AccountCandidate{
+			ID: "chat-3", ProtocolCode: "openai", VendorCode: "glm", Type: "api_key",
+			CapabilityDomain:       "chat",
+			SupportedEndpointModes: []string{"chat_json", "chat_sse"},
+		}
+		if reason := driver.gatewayRequestCapabilityMismatchReasonFor(chatReq, account, ""); reason != "" {
+			t.Fatalf("chat request on chat account reason = %q, want empty", reason)
+		}
+		responsesReq := newEndpointGateRequest(t, http.MethodPost, "/v1/responses", `{"model":"gpt-5.3","input":"hi"}`)
+		if reason := driver.gatewayRequestCapabilityMismatchReasonFor(responsesReq, account, ""); reason != "endpoint_mode_unsupported" {
+			t.Fatalf("responses request on chat-only account reason = %q, want endpoint_mode_unsupported", reason)
+		}
 	})
 }
 

@@ -954,10 +954,10 @@ func reqRuntimeOf(req *gatewaypreauth.GatewayRequest) *gatewayruntimecache.Gatew
 
 // realtimeSessionCandidates 解析 realtime 候选账户：优先 runtime 快照（选择
 // 分组的派发集；动态路由策略为空集），为空时回退按分组模型感知加载；然后
-// 按 realtime_session endpoint mode（非空词表须包含；空=无约束，沿
-// images/video 同款 opt-in 语义）、支持模型（非空须包含）与可用 Bearer 凭据
-// （api_key 账户——oauth 账户的活期 access token 由引擎刷新面持有，WS 首版
-// 不经该面）过滤。顺序保持选择器产出（priority 升序）。
+// 按显式域前门、realtime_session endpoint mode（非空词表须包含；空=无约束，
+// 沿 images/video 同款 opt-in 语义）、支持模型（非空须包含）与可用 Bearer
+// 凭据（api_key 账户——oauth 账户的活期 access token 由引擎刷新面持有，WS
+// 首版不经该面）过滤。顺序保持选择器产出（priority 升序）。
 func (c *gatewayChain) realtimeSessionCandidates(ctx context.Context, runtime *gatewayruntimecache.GatewayRuntime, model string) []gatewaydispatch.AccountCandidate {
 	accounts := runtime.Accounts
 	if len(accounts) == 0 && runtime.APIKey != nil && runtime.APIKey.SelectedGroupID != "" {
@@ -972,8 +972,18 @@ func (c *gatewayChain) realtimeSessionCandidates(ctx context.Context, runtime *g
 			}, "realtime 候选账户回退加载失败")
 		}
 	}
+	// 显式域前门（AI账户上游接口能力设计 §4，与派发候选域闸门同语义）：
+	// realtime 请求域=audio（realtime_session ∈ audio lane），账户能力域
+	// ≠ audio 直接出候选（等价 capability_domain_mismatch 拒绝，本面无逐账
+	// 户审计清单）。chat 账户运行时归一恒非空仍被下方 mode 过滤拒绝——账户
+	// 声明 opt-in 语义保留，域门是显式前门：五域退役后 audio 账户不声明
+	// modes，仅靠 mode 过滤无法区分「audio 无声明」与「chat 有其他声明」。
+	requestDomain := gatewaypreauth.CapabilityDomainForEndpointMode(gatewaypreauth.EndpointModeRealtimeSession)
 	out := make([]gatewaydispatch.AccountCandidate, 0, len(accounts))
 	for _, account := range accounts {
+		if requestDomain != "" && gatewaydispatch.AccountCapabilityDomain(account) != requestDomain {
+			continue
+		}
 		if len(account.SupportedEndpointModes) > 0 &&
 			!containsTrimmedString(account.SupportedEndpointModes, gatewaypreauth.EndpointModeRealtimeSession) {
 			continue

@@ -109,6 +109,8 @@ import {
   SafetyCertificateOutlined,
   SafetyOutlined,
   SettingOutlined,
+  SortAscendingOutlined,
+  ClusterOutlined,
   TeamOutlined,
   ThunderboltOutlined,
   UserSwitchOutlined,
@@ -242,14 +244,20 @@ const menuIconMap = {
   '/my-models': AppstoreOutlined,
   // 模型广场（模型广场页与供应商目录退役设计 §4）：双路由同组件，沿用同款网格图标。
   '/models': AppstoreOutlined,
-  // AI 账户四域菜单（M2）：对话/视频/音频/图像图标区分，双面共用同一组图标。
+  // AI 账户六域菜单（M2 + 向量/重排拆分）：对话/向量/重排/视频/音频/图像图标
+  // 区分，双面共用同一组图标（向量 ClusterOutlined、重排 SortAscendingOutlined）。
   '/my-accounts/chat': MessageOutlined,
+  '/my-accounts/embedding': ClusterOutlined,
+  '/my-accounts/rerank': SortAscendingOutlined,
   '/my-accounts/video': VideoCameraOutlined,
   '/my-accounts/audio': CustomerServiceOutlined,
   '/my-accounts/image': PictureOutlined,
-  // 任务中心（用户面异步媒体任务）：随 AI 账户组呈现，图标取任务语义而非单一媒体域。
+  // 任务中心在用户面和管理面共用任务图标。
   '/my-media-jobs': CarryOutOutlined,
+  '/media-jobs': CarryOutOutlined,
   '/accounts/chat': MessageOutlined,
+  '/accounts/embedding': ClusterOutlined,
+  '/accounts/rerank': SortAscendingOutlined,
   '/accounts/video': VideoCameraOutlined,
   '/accounts/audio': CustomerServiceOutlined,
   '/accounts/image': PictureOutlined,
@@ -283,7 +291,6 @@ const menuIconMap = {
   '/usage-stats': FundOutlined,
   '/my-usage-records': HistoryOutlined,
   '/usage-records': HistoryOutlined,
-  '/media-jobs': VideoCameraOutlined,
   '/my-operation-logs': ProfileOutlined,
   '/operation-logs': ProfileOutlined,
   '/public-api-logs': ApiOutlined,
@@ -305,7 +312,6 @@ const menuGroupIconMap = {
   // 2026-10-17 菜单重组：供应商/代理作为全局配置归入系统运维，AI 账户组与用户侧同名同图标。
   'ai-assets': UserSwitchOutlined,
   'ai-dispatch': ApiOutlined,
-  'ai-observability': BarChartOutlined,
   authorization: SafetyCertificateOutlined,
   'log-management': ProfileOutlined,
   // 用户面「AI 账户」分组沿用原 /my-accounts 的 UserSwitchOutlined。

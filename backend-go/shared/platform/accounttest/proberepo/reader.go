@@ -23,8 +23,8 @@ import (
 //     jobs 进程不可读。这些分支只影响“是否跳过探针”，不影响状态写入正确性
 //     （写入路径全部带 dispatch_revision / status / updated_at CAS 围栏），
 //     表现为 jobs 可能对 Node 会跳过的账户多发起一次无害探针。
-//  2. 授权实例的 authorizationQuotaExceeded 分支依赖用量聚合读模型，jobs 侧
-//     未迁移；同上只影响探针跳过判断。
+//  2. 授权实例的授权额度跳过分支已随授权额度退役（revision 31）整体移除，
+//     不再是迁移缺口。
 //  3. 模型目录（provider model catalog）的 imageOnly 协议分支未迁移；
 //     health_check_endpoint_mode 显式配置为 images_json 时仍走 Images 探针。
 
@@ -56,6 +56,10 @@ type AccountForTestView struct {
 	// nil / 1 = 当前在计划窗口内或未配置，0 = 时段外。恢复探针必须尊重该闸门，
 	// 不得在时段外向上游发真实诊断（DR-30）。
 	AvailabilityScheduleGate *int
+	// CapabilityDomain 是账户能力域投影（accounts.capability_domain，授权实例
+	// 按来源账户 COALESCE）。五域退役修订（AI 账户上游接口能力设计 §5）：探针
+	// 读侧把它带进 accountprobe.View，五域账户连接测试按域默认形态集圈定输入。
+	CapabilityDomain string
 }
 
 // accountRowSQL 是账户主查询（owner + authorized instance 双路径合一）。
@@ -88,7 +92,8 @@ const accountRowSQL = `
         ORDER BY ga.updated_at DESC, ga.group_id ASC, ga.account_id ASC
         LIMIT 1) AS bound_group_id,
       a.background_probe_enabled,
-      a.availability_schedule_gate
+      a.availability_schedule_gate,
+      CASE WHEN a.authorization_instance_authorization_id IS NULL THEN a.capability_domain ELSE COALESCE(src.capability_domain, a.capability_domain) END
     FROM %s a
     LEFT JOIN %s src ON src.id = a.authorization_instance_source_account_id AND src.deleted_at IS NULL
     LEFT JOIN %s auth ON auth.id = a.authorization_instance_authorization_id
@@ -140,6 +145,7 @@ func (s *Store) LoadAccountForTest(ctx context.Context, accountID string) (*Acco
 		boundGroupID                         sql.NullString
 		backgroundProbeEnabled               any
 		availabilityScheduleGate             sql.NullInt64
+		capabilityDomain                     sql.NullString
 	)
 	row := s.db.QueryRowContext(ctx, s.bind(query), accountID)
 	if err := row.Scan(&id, &systemID, &name, &accountType, &status, &schedulable,
@@ -150,7 +156,7 @@ func (s *Store) LoadAccountForTest(ctx context.Context, accountID string) (*Acco
 		&sourceStatus, &sourceSchedulable,
 		&sourceExpiresAt, &sourceCooldownUntil, &sourceErrorCode, &sourceErrorMessage,
 		&authorizationStatus, &authzExpiresAt, &authzResourceOwner,
-		&boundGroupID, &backgroundProbeEnabled, &availabilityScheduleGate); err != nil {
+		&boundGroupID, &backgroundProbeEnabled, &availabilityScheduleGate, &capabilityDomain); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -242,6 +248,7 @@ func (s *Store) LoadAccountForTest(ctx context.Context, accountID string) (*Acco
 	view.HasEffectiveStatus = hasStatus
 	view.AvailabilityLimited = limited
 	view.BackgroundProbeEnabled = backgroundProbeEnabledPtr
+	view.CapabilityDomain = capabilityDomain.String
 	return &view, nil
 }
 
@@ -370,7 +377,7 @@ func (s *Store) deriveEffectiveAvailability(input deriveInput) (avail bool, stat
 				return false, "authorization_expired", true, limited, nil
 			}
 		}
-		// authorizationQuotaExceeded 分支未迁移（用量聚合读模型）。
+		// 授权额度跳过分支已随授权额度退役移除（revision 31）。
 		limited = true
 		// sourceAccountAvailability
 		if input.sourceID == "" || input.sourceStatus == "" {
@@ -1067,14 +1074,16 @@ func (s *Store) LoadProbeView(ctx context.Context, req accountquality.ProbeReque
 		HealthCheckModel:          account.HealthCheckModel,
 		HealthCheckEndpointMode:   account.HealthCheckEndpointMode,
 		ConnectionPresetCode:      candidate.ConnectionPresetCode,
-		SupportedModels:           account.SupportedModels,
-		ModelMappings:             candidate.ModelMappings,
-		BaseURL:                   candidate.BaseURL,
-		Credentials:               candidate.Credentials,
-		SelectedAPIKey:            candidate.SelectedAPIKey,
-		QuotaRecoveryPolicy:       candidate.QuotaRecoveryPolicy,
-		NormalizeEndpointModes:    NormalizedEndpointModes(candidate.ProtocolCode, candidate.Type, candidate.ConnectionModes),
-		ProxyURL:                  candidate.ProxyURL,
+		// CapabilityDomain 随账户行带出（五域退役：五域连接测试按域默认形态集）。
+		CapabilityDomain:       account.CapabilityDomain,
+		SupportedModels:        account.SupportedModels,
+		ModelMappings:          candidate.ModelMappings,
+		BaseURL:                candidate.BaseURL,
+		Credentials:            candidate.Credentials,
+		SelectedAPIKey:         candidate.SelectedAPIKey,
+		QuotaRecoveryPolicy:    candidate.QuotaRecoveryPolicy,
+		NormalizeEndpointModes: NormalizedEndpointModes(candidate.ProtocolCode, candidate.Type, candidate.ConnectionModes),
+		ProxyURL:               candidate.ProxyURL,
 	}
 	entries := make([]accountprobe.KeyEntry, 0, len(candidate.APIKeyEntries))
 	for _, entry := range candidate.APIKeyEntries {
@@ -1107,15 +1116,17 @@ func AssembleProbeView(account *AccountForTestView, candidate *CandidateAccount)
 		HealthCheckModel:          account.HealthCheckModel,
 		HealthCheckEndpointMode:   account.HealthCheckEndpointMode,
 		ConnectionPresetCode:      candidate.ConnectionPresetCode,
-		SupportedModels:           account.SupportedModels,
-		ModelMappings:             candidate.ModelMappings,
-		BaseURL:                   candidate.BaseURL,
-		Credentials:               candidate.Credentials,
-		SelectedAPIKey:            candidate.SelectedAPIKey,
-		QuotaRecoveryPolicy:       candidate.QuotaRecoveryPolicy,
-		NormalizeEndpointModes:    NormalizedEndpointModes(candidate.ProtocolCode, candidate.Type, candidate.ConnectionModes),
-		ProxyURL:                  candidate.ProxyURL,
-		APIKeyEntries:             candidateKeyEntries(candidate),
+		// CapabilityDomain 随账户行带出（五域退役：五域连接测试按域默认形态集）。
+		CapabilityDomain:       account.CapabilityDomain,
+		SupportedModels:        account.SupportedModels,
+		ModelMappings:          candidate.ModelMappings,
+		BaseURL:                candidate.BaseURL,
+		Credentials:            candidate.Credentials,
+		SelectedAPIKey:         candidate.SelectedAPIKey,
+		QuotaRecoveryPolicy:    candidate.QuotaRecoveryPolicy,
+		NormalizeEndpointModes: NormalizedEndpointModes(candidate.ProtocolCode, candidate.Type, candidate.ConnectionModes),
+		ProxyURL:               candidate.ProxyURL,
+		APIKeyEntries:          candidateKeyEntries(candidate),
 	}
 }
 

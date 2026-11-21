@@ -145,6 +145,9 @@ type scannedAccount struct {
 	reading       capdomain.ModesReading
 	domain        capdomain.Domain // 非实例行推导结果、实例行继承结果（reading 为 ModesOK 时有效）
 	decryptFailed bool
+	// currentDomain 是落库 capability_domain 原值（列未投影/为 NULL 时空串），
+	// 供五域退役终态判定（retiredDeclarationTerminal）。
+	currentDomain string
 	// credentials 是解密后的凭据记录（仅解密成功行携带）；trimTo 非 nil =
 	// 声明集越出落域 lane，写入阶段按 kept 集裁剪后重加密回写。
 	credentials map[string]any
@@ -152,9 +155,15 @@ type scannedAccount struct {
 }
 
 // accountRowQuery 返回扫描投影 SQL（含软删除账户，按 id keyset 分批）；
-// $1 复用两次（after 同时充当空游标哨兵与下界）。
-func accountRowQuery(batchSize int) string {
-	return `SELECT id, credentials_encrypted, authorization_instance_source_account_id FROM "juhe_business"."accounts"
+// $1 复用两次（after 同时充当空游标哨兵与下界）。includeDomain 控制
+// capability_domain 投影：Run 在加列后扫描恒携带；Verify 仅列存在时携带
+//（preflight 面对加列前旧库不投影，五域退役终态判定自然不生效）。
+func accountRowQuery(batchSize int, includeDomain bool) string {
+	columns := `id, credentials_encrypted, authorization_instance_source_account_id`
+	if includeDomain {
+		columns = `id, capability_domain, credentials_encrypted, authorization_instance_source_account_id`
+	}
+	return `SELECT ` + columns + ` FROM "juhe_business"."accounts"
 		WHERE ($1 = '' OR id > $1)
 		ORDER BY id
 		LIMIT $2`
@@ -176,16 +185,17 @@ func isEmptyCredentialsEnvelope(raw string) bool {
 }
 
 // scanAccounts 分批只读扫描全部账户（含软删除），解密凭据、解析声明并推导
-// 源账户域，实例行另解密自身凭据以支撑声明裁剪。每批先完整读取（rows.Err +
-// Close）再处理下一批，全程不开写事务。
-func scanAccounts(ctx context.Context, db *sql.DB, secret string, batchSize int) ([]scannedAccount, []capdomain.Failure, error) {
+// 源账户域，实例行另解密自身凭据以支撑声明裁剪。includeDomain 见
+// accountRowQuery。每批先完整读取（rows.Err + Close）再处理下一批，全程不开
+// 写事务。
+func scanAccounts(ctx context.Context, db *sql.DB, secret string, batchSize int, includeDomain bool) ([]scannedAccount, []capdomain.Failure, error) {
 	var (
 		all      []scannedAccount
 		failures []capdomain.Failure
 	)
 	after := ""
 	for {
-		rows, err := db.QueryContext(ctx, accountRowQuery(batchSize), scanArgs(after, batchSize)...)
+		rows, err := db.QueryContext(ctx, accountRowQuery(batchSize, includeDomain), scanArgs(after, batchSize)...)
 		if err != nil {
 			return nil, nil, fmt.Errorf("扫描 accounts 失败: %w", err)
 		}
@@ -196,11 +206,16 @@ func scanAccounts(ctx context.Context, db *sql.DB, secret string, batchSize int)
 				credentials string
 				source      sql.NullString
 			)
-			if err := rows.Scan(&id, &credentials, &source); err != nil {
+			currentDomain := sql.NullString{}
+			scanTargets := []any{&id, &credentials, &source}
+			if includeDomain {
+				scanTargets = []any{&id, &currentDomain, &credentials, &source}
+			}
+			if err := rows.Scan(scanTargets...); err != nil {
 				rows.Close()
 				return nil, nil, fmt.Errorf("读取 accounts 行失败: %w", err)
 			}
-			item := scannedAccount{id: id}
+			item := scannedAccount{id: id, currentDomain: strings.TrimSpace(currentDomain.String)}
 			if source.Valid && strings.TrimSpace(source.String) != "" {
 				item.isInstance = true
 				item.sourceID = strings.TrimSpace(source.String)
@@ -253,6 +268,12 @@ func scanAccounts(ctx context.Context, db *sql.DB, secret string, batchSize int)
 					Detail:    "credentials_encrypted 不是合法 v1 信封或解密失败",
 				})
 				all = append(all, item)
+			case retiredDeclarationTerminal(item.currentDomain, item.reading):
+				// 五域退役终态（上游接口能力设计 §3）：声明面已清洗，凭据无
+				// supported_endpoint_modes 键是合法形态，域以落库列为权威，
+				// 不再按 modes_missing 判失败。
+				item.domain = capdomain.Domain(item.currentDomain)
+				all = append(all, item)
 			default:
 				if failure, bad := capdomain.FailureFor(item.id, item.reading); bad {
 					failures = append(failures, failure)
@@ -273,6 +294,17 @@ func scanAccounts(ctx context.Context, db *sql.DB, secret string, batchSize int)
 		after = last
 	}
 	return all, failures, nil
+}
+
+// retiredDeclarationTerminal 报告「落库域属退役五域且凭据声明解析为
+// ModesMissing」的五域退役终态组合（revision 30 清洗后的合法形态，域以
+// capability_domain 列为权威；上游接口能力设计 §3）。m2 迁移器与 v2 升级
+// 执行器共用。解密失败行不适用（真损坏仍阻断）；键存在但格式错误（空数组/
+// null/非数组/未知值）也不适用（FailureFor 照常入清单，revision 30 自身
+// 核验同判键残留）。
+func retiredDeclarationTerminal(currentDomain string, reading capdomain.ModesReading) bool {
+	return reading.Status == capdomain.ModesMissing &&
+		capdomain.DeclarationRetired(capdomain.Domain(currentDomain))
 }
 
 // resolveInstances 在内存中把实例行落到源账户域。源行不存在、源行自身失败
@@ -309,6 +341,12 @@ func resolveInstances(accounts []scannedAccount) []capdomain.Failure {
 				Detail:    "源账户凭据解密失败，实例列依赖失败: " + item.sourceID,
 			})
 		default:
+			if retiredDeclarationTerminal(source.currentDomain, source.reading) {
+				// 源账户为五域退役终态：实例域取源落库域（列权威），不按
+				//「源声明不可推导」判失败（上游接口能力设计 §3）。
+				item.domain = capdomain.Domain(source.currentDomain)
+				continue
+			}
 			sourceFailure, bad := capdomain.FailureFor(item.sourceID, source.reading)
 			if bad || !source.domain.Valid() {
 				failures = append(failures, capdomain.Failure{
@@ -521,7 +559,7 @@ func verifyDomains(ctx context.Context, q querier, accounts []scannedAccount, fi
 			}
 			value := capdomain.Domain(row.domain)
 			if !value.Valid() {
-				failures = append(failures, capdomain.Failure{AccountID: row.id, Kind: "domain_value_invalid", Detail: "落库域值不在 chat/video/audio/image 内: " + row.domain})
+				failures = append(failures, capdomain.Failure{AccountID: row.id, Kind: "domain_value_invalid", Detail: "落库域值不在 chat/video/audio/image/embedding/rerank 内: " + row.domain})
 				continue
 			}
 			if finalized {
@@ -665,8 +703,8 @@ func Run(ctx context.Context, db *sql.DB, options Options) (Report, error) {
 		return report, err
 	}
 
-	// 只读扫描推导（含软删除、实例继承两遍法）。
-	accounts, failures, err := scanAccounts(ctx, db, options.Secret, batchSize)
+	// 只读扫描推导（含软删除、实例继承两遍法）；列已 Ensure，携带域投影。
+	accounts, failures, err := scanAccounts(ctx, db, options.Secret, batchSize, true)
 	if err != nil {
 		return report, err
 	}
@@ -761,7 +799,9 @@ func ValidCheck(check string) bool {
 // Verify 执行只读核验。preflight 允许域列不存在（预计赋域 N 个账户是正常
 // 结果）；postflight 要求列存在并核对全表域值合法、实例与源一致、阶段内
 // 推导一致与失败清单清零；m2_finalized 后推导对账不适用，仍可执行 schema、
-// 域值合法与实例同源一致检查。全程零写入。
+// 域值合法与实例同源一致检查。五域退役终态（落库五域 + 凭据无键，
+// revision 30 清洗后）不判 modes_missing，见 retiredDeclarationTerminal。
+// 全程零写入。
 func Verify(ctx context.Context, db *sql.DB, options Options) (VerifyReport, error) {
 	report := VerifyReport{
 		Driver:          "postgres",
@@ -798,7 +838,7 @@ func Verify(ctx context.Context, db *sql.DB, options Options) (VerifyReport, err
 		report.Record = &record
 	}
 
-	accounts, failures, err := scanAccounts(ctx, db, options.Secret, batchSize)
+	accounts, failures, err := scanAccounts(ctx, db, options.Secret, batchSize, columnPresent)
 	if err != nil {
 		return report, err
 	}

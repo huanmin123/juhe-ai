@@ -46,6 +46,24 @@ func TestBusinessDomainContent(t *testing.T) {
 	if n := count("SELECT COUNT(*) FROM " + b + " WHERE health_check_connection_id IS NOT NULL AND health_check_model IS NULL"); n != 0 {
 		t.Fatalf("health 三字段补齐不一致: %d", n)
 	}
+	// 五域退役（AI账户上游接口能力设计 §3.2，revision 30 清洗终态）：五域账户
+	// 连接行不写 account_endpoint_modes，chat 域账户维持声明行——造数后
+	// upgrade 清洗步骤无可清洗行。
+	if n := count(`SELECT COUNT(*) FROM ` + qualified(SchemaBusiness, "account_endpoint_modes") + ` em
+		JOIN ` + qualified(SchemaBusiness, "account_connections") + ` ac ON ac.id = em.connection_id
+		JOIN ` + b + ` a ON a.id = ac.account_id
+		WHERE a.capability_domain <> 'chat'`); n != 0 {
+		t.Fatalf("五域账户不应有 endpoint mode 连接行: %d", n)
+	}
+	if n := count(`SELECT COUNT(*) FROM ` + qualified(SchemaBusiness, "account_endpoint_modes") + ` em
+		JOIN ` + qualified(SchemaBusiness, "account_connections") + ` ac ON ac.id = em.connection_id
+		JOIN ` + b + ` a ON a.id = ac.account_id
+		WHERE a.capability_domain = 'chat'`); n < 1 {
+		t.Fatal("chat 域账户应维持 endpoint mode 声明行样本")
+	}
+	if n := count("SELECT COUNT(*) FROM " + b + " WHERE capability_domain <> 'chat' AND (health_check_endpoint_mode IS NULL OR health_check_endpoint_mode = '')"); n != 0 {
+		t.Fatalf("五域账户健康检查形态应落域常量记录值: %d", n)
+	}
 	// 路由模式三种 + 分组绑定。
 	if n := count("SELECT COUNT(DISTINCT mode) FROM " + qualified(SchemaBusiness, "route_strategies")); n < 3 {
 		t.Fatalf("路由模式分布 %d < 3", n)

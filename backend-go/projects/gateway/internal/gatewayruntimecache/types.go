@@ -333,14 +333,12 @@ type OpenAIAccountSecret struct {
 	GroupAccessType                  string  `json:"groupAccessType"`
 	AccountAuthorizationID           *string `json:"accountAuthorizationId,omitempty"`
 	AccountAuthorizationExpiresAt    *string `json:"accountAuthorizationExpiresAt,omitempty"`
-	AccountAuthorizationQuotaLimited *bool   `json:"accountAuthorizationQuotaLimited,omitempty"`
 	AccountAuthorizationSourceType   *string `json:"accountAuthorizationSourceType,omitempty"`
 	AccountAuthorizationSourceTeamID *string `json:"accountAuthorizationSourceTeamId,omitempty"`
 	BindingSystemAccountID           *string `json:"bindingSystemAccountId,omitempty"`
 	BoundGroupID                     *string `json:"boundGroupId,omitempty"`
 	GroupAuthorizationID             *string `json:"groupAuthorizationId,omitempty"`
 	GroupAuthorizationExpiresAt      *string `json:"groupAuthorizationExpiresAt,omitempty"`
-	GroupAuthorizationQuotaLimited   *bool   `json:"groupAuthorizationQuotaLimited,omitempty"`
 	GroupAuthorizationSourceType     *string `json:"groupAuthorizationSourceType,omitempty"`
 	GroupAuthorizationSourceTeamID   *string `json:"groupAuthorizationSourceTeamId,omitempty"`
 	Name                             string  `json:"name"`
@@ -350,12 +348,16 @@ type OpenAIAccountSecret struct {
 	// RPMLimit 是账户每分钟请求上限（AI 账户每分钟请求上限设计 §3，0 视为不
 	// 限制）；授权实例经来源账户 resource_rpm_limit 投影，与 ConcurrencyLimit
 	// 同规则。
-	RPMLimit                          int                                  `json:"rpmLimit"`
-	Priority                          int                                  `json:"priority"`
-	SuperPriorityEnabled              bool                                 `json:"superPriorityEnabled"`
-	FallbackEnabled                   bool                                 `json:"fallbackEnabled"`
-	ClientCompatibility               string                               `json:"clientCompatibility"`
-	SupportedEndpointModes            []string                             `json:"supportedEndpointModes,omitempty"`
+	RPMLimit               int      `json:"rpmLimit"`
+	Priority               int      `json:"priority"`
+	SuperPriorityEnabled   bool     `json:"superPriorityEnabled"`
+	FallbackEnabled        bool     `json:"fallbackEnabled"`
+	ClientCompatibility    string   `json:"clientCompatibility"`
+	SupportedEndpointModes []string `json:"supportedEndpointModes,omitempty"`
+	// CapabilityDomain 是账户能力域六值投影（accounts.capability_domain，
+	// 授权实例按来源账户 COALESCE 语义；五域退役修订：派发候选按「账户域 =
+	// 请求域」域闸门圈定，域为空（历史投影/测试零值）按 chat 语义处理）。
+	CapabilityDomain                  string                               `json:"capabilityDomain,omitempty"`
 	SupportedModels                   []string                             `json:"supportedModels,omitempty"`
 	ModelMappings                     []AccountModelMapping                `json:"modelMappings,omitempty"`
 	HealthCheckModel                  string                               `json:"healthCheckModel"`
@@ -457,7 +459,6 @@ type GroupUsageAccessMetadata struct {
 	SchedulingPolicy               *GroupSchedulingPolicy `json:"schedulingPolicy,omitempty"`
 	GroupAuthorizationID           *string                `json:"groupAuthorizationId,omitempty"`
 	GroupAuthorizationExpiresAt    *string                `json:"groupAuthorizationExpiresAt,omitempty"`
-	GroupAuthorizationQuotaLimited *bool                  `json:"groupAuthorizationQuotaLimited,omitempty"`
 	GroupAuthorizationSourceType   *string                `json:"groupAuthorizationSourceType,omitempty"`
 	GroupAuthorizationSourceTeamID *string                `json:"groupAuthorizationSourceTeamId,omitempty"`
 }

@@ -44,12 +44,15 @@ type GenerationDispatchResponse struct {
 
 // ChatTransportAccount 是传输选型消费的运行时账户快照子集。
 type ChatTransportAccount struct {
-	ID                     string                      `json:"id"`
-	Type                   string                      `json:"type"`
-	ProviderCode           string                      `json:"providerCode"`
-	SupportedEndpointModes []string                    `json:"supportedEndpointModes,omitempty"`
-	SupportedModels        []string                    `json:"supportedModels,omitempty"`
-	ModelMappings          []ChatTransportModelMapping `json:"modelMappings,omitempty"`
+	ID                     string   `json:"id"`
+	Type                   string   `json:"type"`
+	ProviderCode           string   `json:"providerCode"`
+	SupportedEndpointModes []string `json:"supportedEndpointModes,omitempty"`
+	// CapabilityDomain 是账户能力域投影（五域退役修订：演练场媒体/对话账户
+	// 选择按域，不再按端点模式）。
+	CapabilityDomain string                      `json:"capabilityDomain,omitempty"`
+	SupportedModels  []string                    `json:"supportedModels,omitempty"`
+	ModelMappings    []ChatTransportModelMapping `json:"modelMappings,omitempty"`
 }
 
 // ChatTransportModelMapping 是账户模型映射子集。

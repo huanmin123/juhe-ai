@@ -728,7 +728,7 @@ import { message } from '@/lib/antd'
 import { formatDateTime } from '@/shared/formatters'
 import { api } from '@/api/client'
 import { defaultAccountNameFromBaseUrl } from './accountNameSuggestion'
-import type { AccountAdvancedDetail, AccountApiKeyRuntimeDetail, AccountEditBasicDetail, AccountTagSummary, OAuthAuthURLResult, ProviderDefinition, ProviderModelApiProtocol, ProxyPoolOptionSummary, ProviderProtocolProfileDefinition } from '@/types/domain'
+import type { AccountAdvancedDetail, AccountApiKeyRuntimeDetail, AccountEditBasicDetail, AccountTagSummary, AccountType, OAuthAuthURLResult, ProviderDefinition, ProviderModelApiProtocol, ProxyPoolOptionSummary, ProviderProtocolProfileDefinition } from '@/types/domain'
 import AccountAvailabilityScheduleSection from './AccountAvailabilityScheduleSection.vue'
 import { peakWindowsToTimeSchedulePreset } from '@/views/shared/timeSchedule'
 import AccountApiKeySection from './AccountApiKeySection.vue'
@@ -755,7 +755,7 @@ import { DEFAULT_ACCOUNT_CONCURRENCY_LIMIT, FALLBACK_PROVIDERS } from './account
 import { accountModelMappingEndpointFamilyText } from './accountModelMappingProtocolMatrix'
 import { accountValidationErrorStep, validateAccountSaveForm } from './accountSavePayload'
 import { mergeAccountProviderDefinitions } from './useAccountEditForm'
-import { capabilityDomainAccountTypes, capabilityDomainIsMedia } from './accountCapabilityDomains'
+import { allowedEndpointModesFor, capabilityDomainAccountTypes, capabilityDomainIsMedia, capabilityDomainSupportsDeclaration } from './accountCapabilityDomains'
 import { applyMediaCreateDefaults } from './accountMediaCreateDefaults'
 import { isVolcengineProviderCode } from '@/shared/providerProtocol'
 import type { AccountCapabilityDomain } from './accountCapabilityDomains'
@@ -912,13 +912,28 @@ const mediaProviders = computed(() => mergeAccountProviderDefinitions(
   mediaProviderDefinitions.value ?? []
 ))
 
-// 2026-11-21 统一向导：媒体域按矩阵过滤供应商与账户类型，对话域保持传入清单
-// （chat 域允许集由供应商词表决定，不做额外隐藏）。
+// 2026-11-21 统一向导：创建墙只保留当前域允许集非空的供应商。媒体/向量/重排域
+// 按矩阵×词表判型；chat 域按对话锚集合×档案词表求交——纯媒体词表供应商
+// （minimax 只有视频/语音族）在对话域求交为空集，保留会得到零可选能力的死路表单
+// （接口能力播种为空、对话域不渲染手动勾选区、保存校验必拦）。
 const wizardProviders = computed(() => {
-  if (!isMediaDomain.value) return mediaProviders.value
+  const domain = props.capabilityDomain
+  if (domain === 'chat') {
+    return mediaProviders.value.filter((provider) => {
+      const types: AccountType[] = provider.accountTypes.length ? provider.accountTypes : ['api_key']
+      return provider.protocolProfiles.some((profile) => (
+        types.some((type) => allowedEndpointModesFor({
+          capabilityDomain: 'chat',
+          providerCode: provider.code,
+          profile,
+          accountType: type
+        }).length > 0)
+      ))
+    })
+  }
   return mediaProviders.value.filter((provider) => provider.protocolProfiles.some((profile) => (
     capabilityDomainAccountTypes({
-      capabilityDomain: props.capabilityDomain,
+      capabilityDomain: domain,
       providerCode: provider.code,
       profile
     }).length > 0
@@ -969,7 +984,8 @@ function mediaDomainFallbackChoice(domain: AccountCapabilityDomain): AccountType
   return undefined
 }
 
-// 新建态域默认值（统一向导）：媒体域切换供应商/类型或打开弹窗时重放域默认集；
+// 新建态域默认值（统一向导）：媒体域与向量/重排域切换供应商/类型或打开弹窗时
+// 重放域默认集（向量/重排域缺省=单值 lane 求交结果，与媒体域同一收敛点）；
 // 编辑态不重放，避免裁剪已存声明集。
 watch(
   () => [
@@ -981,7 +997,8 @@ watch(
     props.form.type
   ] as const,
   ([isOpen, domain, editing]) => {
-    if (!isOpen || editing || !capabilityDomainIsMedia(domain)) return
+    if (!isOpen || editing
+      || !(capabilityDomainIsMedia(domain) || domain === 'embedding' || domain === 'rerank')) return
     // 直接从供应商档案清单解析当前档案，避免 form 档案 id 与父级 selectedProtocolProfile
     // prop 在同一 flush 内的更新时序差把回退后的档案又当回旧档案。
     const provider = currentMediaProvider()
@@ -1022,7 +1039,8 @@ watch(
 // 能力域上下文同步（D3）：域由路由注入、不是可编辑字段。表单在新建/编辑/克隆
 // 装载路径会被整块 Object.assign 重置，这里在弹窗打开与结构字段变化后重放注入，
 // 保证保存时刻 payload 携带的域与当前路由域一致（保存按钮在装载完成前禁用，
-// 不存在中途取值窗口）。
+// 不存在中途取值窗口）。五域退役（设计 §3）：非对话域同步清空装载残留的声明集，
+// 表单不持有「上游接口能力」。
 watch(
   [
     open,
@@ -1036,6 +1054,9 @@ watch(
   () => {
     if (!open.value) return
     props.form.capabilityDomain = props.capabilityDomain
+    if (!capabilityDomainSupportsDeclaration(props.capabilityDomain) && props.form.supportedEndpointModes.length) {
+      props.form.supportedEndpointModes = []
+    }
   },
   { immediate: true }
 )
@@ -1052,7 +1073,10 @@ const publicCredentialItems = computed(() => {
     credentialItem('account_id', 'OpenAI 账户 ID', credentials.account_id),
     credentialItem('chatgpt_user_id', 'ChatGPT 用户 ID', credentials.chatgpt_user_id),
     credentialItem('plan_type', '套餐类型', credentials.plan_type),
-    credentialItem('supported_endpoint_modes', '上游接口能力', accountEndpointModeText(credentials.supported_endpoint_modes, props.accountDetail ?? props.form))
+    // 五域退役（AI账户上游接口能力设计 §3）：只读凭证行仅对话域展示该键。
+    ...(capabilityDomainSupportsDeclaration(props.capabilityDomain)
+      ? [credentialItem('supported_endpoint_modes', '上游接口能力', accountEndpointModeText(credentials.supported_endpoint_modes, props.accountDetail ?? props.form))]
+      : [])
   ]
   return items.filter((item): item is { key: string; label: string; value: string } => Boolean(item))
 })
@@ -1206,10 +1230,12 @@ const strategyCardSummary = computed(() => {
 })
 const strategyCardCount = computed(() => [
   props.form.modelMappings.length > 0,
-  !endpointModesEqual(props.form.supportedEndpointModes, defaultAccountEndpointModes(props.form.providerCode, props.form.type, undefined, {
-    provider: props.selectedProvider,
-    protocolProfile: props.selectedProtocolProfile
-  })),
+  // 五域退役：声明集不再是配置面，不参与摘要计数。
+  capabilityDomainSupportsDeclaration(props.capabilityDomain)
+    && !endpointModesEqual(props.form.supportedEndpointModes, defaultAccountEndpointModes(props.form.providerCode, props.form.type, undefined, {
+      provider: props.selectedProvider,
+      protocolProfile: props.selectedProtocolProfile
+    })),
   Boolean(props.form.serviceTierOverride),
   Boolean(props.form.reasoningEffortOverride)
 ].filter(Boolean).length)

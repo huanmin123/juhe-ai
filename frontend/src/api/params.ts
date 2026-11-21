@@ -7,8 +7,6 @@ import type {
   AiPerformanceAccountOptionsParams,
   AiPerformanceParams,
   AiPerformanceSeriesParams,
-  AuthorizationGranteeGroupOptionsParams,
-  AuthorizationPrincipalOptionsParams,
   GroupListParams,
   GroupOptionParams,
   ProxyOptionParams,
@@ -23,14 +21,6 @@ export function stripSystemAccountParam<T extends object>(params?: T): Record<st
   const output = { ...params } as Record<string, unknown>
   delete output.systemAccountId
   return Object.keys(output).length ? output : undefined
-}
-
-export function boundedAuthorizationListParams<T extends object>(params?: T): Record<string, unknown> {
-  return {
-    ...(params as Record<string, unknown> | undefined),
-    page: (params as { page?: unknown } | undefined)?.page ?? 1,
-    pageSize: (params as { pageSize?: unknown } | undefined)?.pageSize ?? 500
-  }
 }
 
 export function stripAdminOperationLogParams(params?: OperationLogListParams): Record<string, unknown> | undefined {
@@ -162,23 +152,6 @@ export function teamListParams(params?: TeamListParams | Omit<TeamListParams, 's
   if (params.pageSize) output.pageSize = params.pageSize
   if (params.keyword?.trim()) output.keyword = params.keyword.trim()
   return Object.keys(output).length ? output : undefined
-}
-
-export function authorizationPrincipalOptionsParams(params?: AuthorizationPrincipalOptionsParams): Record<string, unknown> | undefined {
-  if (!params) return undefined
-  const output: Record<string, unknown> = {}
-  if (params.ids?.length) output.ids = params.ids.join(',')
-  if (params.keyword?.trim()) output.keyword = params.keyword.trim()
-  if (params.limit) output.limit = params.limit
-  return Object.keys(output).length ? output : undefined
-}
-
-export function authorizationGranteeGroupOptionsParams(params: AuthorizationGranteeGroupOptionsParams): Record<string, unknown> {
-  const output = authorizationPrincipalOptionsParams(params) ?? {}
-  output.granteeSystemAccountId = params.granteeSystemAccountId
-  if (params.providerCode?.trim()) output.providerCode = params.providerCode.trim()
-  if (typeof params.preferDefault === 'boolean') output.preferDefault = params.preferDefault
-  return output
 }
 
 export function systemAccountOptionsParams(params?: SystemAccountOptionsParams): Record<string, unknown> | undefined {

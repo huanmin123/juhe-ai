@@ -266,7 +266,6 @@ describe('myAccountsApi 请求形状', () => {
     await myAccountsApi.completeTestSession('sess-1')
     await myAccountsApi.cancelTestSession('sess-1')
     await myAccountsApi.cancelTestTask('task-1')
-    await myAccountsApi.returnAuthorization('a-1')
     expect(requestShapes()).toEqual([
       ['GET', '/my-accounts/options'],
       ['GET', '/my-accounts/a-1/advanced'],
@@ -299,8 +298,7 @@ describe('myAccountsApi 请求形状', () => {
       ['POST', '/my-accounts/test-sessions/sess-1/heartbeat'],
       ['POST', '/my-accounts/test-sessions/sess-1/complete'],
       ['POST', '/my-accounts/test-sessions/sess-1/cancel'],
-      ['POST', '/my-accounts/test-tasks/task-1/cancel'],
-      ['POST', '/my-accounts/a-1/return-authorization']
+      ['POST', '/my-accounts/test-tasks/task-1/cancel']
     ])
   })
 

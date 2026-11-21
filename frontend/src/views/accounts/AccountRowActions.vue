@@ -26,7 +26,6 @@ const emit = defineEmits<{
   (event: 'delete'): void
   (event: 'edit'): void
   (event: 'menu-click', menuEvent: { key: string | number }): void
-  (event: 'return-authorization'): void
   (event: 'test'): void
 }>()
 
@@ -45,10 +44,6 @@ const moreItems = computed<RowActionItem[]>(() => buildAccountMoreActions(action
 function handleActionClick(key: string) {
   if (key === 'bind-group') {
     emit('bind-group')
-    return
-  }
-  if (key === 'return-authorization') {
-    emit('return-authorization')
     return
   }
   if (key === 'delete') {

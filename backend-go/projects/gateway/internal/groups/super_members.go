@@ -186,7 +186,7 @@ func (s *Store) hasActiveGroupAuthorization(ctx context.Context, q queryer, grou
 		WHERE ra.resource_type = 'group' AND ra.resource_id = ?
 		  AND ra.grantee_system_account_id = ? AND ra.status = 'active'
 		  AND (ra.expires_at IS NULL OR ra.expires_at > ?)
-		  AND COALESCE(gas.enabled, 0) = 1 AND COALESCE(gas.snapshot_revision, '') <> ''
+		  AND gas.authorization_id IS NOT NULL ''
 		LIMIT 1`), groupID, viewer, s.nowISO()).Scan(&found)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil

@@ -5,6 +5,7 @@ import {
   accountHealthCheckEndpointModeOptions,
   defaultAccountHealthCheckEndpointMode
 } from '../../views/accounts/accountHealthCheckEndpointMode'
+import { defaultHealthCheckEndpointModeForCapabilityDomain } from '../../views/accounts/accountCapabilityDomains'
 import { accountTestEndpointModesForAccount, accountTestEndpointModesForModel } from '../../views/accounts/accountEndpointModes'
 import { providerModelsForProtocolProfile } from '../../views/accounts/accountEditFormPayload'
 
@@ -63,6 +64,15 @@ assert.equal(
   defaultAccountHealthCheckEndpointMode('qwen', 'profile_qwen_openai_v1', ['realtime_session']),
   'realtime_session',
   '仅声明 realtime 的账户必须默认落到可保存的 realtime_session'
+)
+// 2026-11-21 五域退役（AI账户上游接口能力设计 §5）：五域不再声明上游接口能力，
+// 检查形态按能力域常量默认落值，与后端 DefaultHealthCheckEndpointModeForDomain 对齐。
+assert.deepEqual(
+  (['chat', 'image', 'audio', 'video', 'embedding', 'rerank'] as const).map(
+    (capabilityDomain) => defaultHealthCheckEndpointModeForCapabilityDomain({ capabilityDomain })
+  ),
+  ['chat_sse', 'images_json', 'audio_speech', 'video_create', 'embeddings_json', 'rerank_json'],
+  '检查形态域默认必须与后端 DefaultHealthCheckEndpointModeForDomain 六域映射同值'
 )
 const draftEndpointModes = accountTestEndpointModesForAccount({
   providerCode: 'gpt',

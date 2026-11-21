@@ -95,14 +95,18 @@ type TransportModelMapping struct {
 }
 
 // TransportAccount 是账户运行时快照的传输投影（chat.ChatTransportAccount
-// 同形子集）：生图/媒体白名单的「账户可路由」判定读端点模式与模型清单。
+// 同形子集）：生图/媒体白名单的「账户可路由」判定按能力域（五域退役修订）与
+// 模型清单。
 type TransportAccount struct {
 	ID                     string
 	Type                   string
 	ProviderCode           string
 	SupportedEndpointModes []string
-	SupportedModels        []string
-	ModelMappings          []TransportModelMapping
+	// CapabilityDomain 是账户能力域六值投影（空值按 chat 语义处理，与网关
+	// 域闸门同归一）；媒体/对话账户选择的域判定输入。
+	CapabilityDomain string
+	SupportedModels  []string
+	ModelMappings    []TransportModelMapping
 }
 
 // TransportAccountsPort 是 chat-pinned 直取端口（会话绑定作用域的运行时快照

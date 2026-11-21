@@ -33,9 +33,6 @@ function accountFilterStatuses(account: AccountListItem): Set<AccountStatusFilte
   if (derivedStatus) {
     return new Set([derivedStatus])
   }
-  if (account.authorizationQuotaExceeded) {
-    return new Set(['rate_limited'])
-  }
   // 时间计划闸门：status='active' 且 gate=0 的时段外是「可调度」的子集（蓝色徽章区分子状态），
   // 筛选归入 active（时间计划闸门设计 §5.4，2026-11-07 裁决）。
   if (isAccountScheduleOutOfWindow(account)) {

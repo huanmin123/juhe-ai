@@ -28,8 +28,8 @@ var testPresets = []string{
 	PresetMiniMaxMedia, PresetVolcengineArk, PresetVolcengineOpenSpeech, PresetQwenDashScope,
 }
 
-// testDomains 是 4 个 capability domain。
-var testDomains = []string{DomainChat, DomainVideo, DomainAudio, DomainImage}
+// testDomains 是 6 个 capability domain（2026-11-21 向量/重排拆分批四值→六值）。
+var testDomains = []string{DomainChat, DomainVideo, DomainAudio, DomainImage, DomainEmbedding, DomainRerank}
 
 // trailingFieldPattern 匹配 canonical JSON 中 defaultBaseUrl 之后仍有后续字段的
 // 反例（defaultBaseUrl 必须是每元素的末位字段，其后只允许元素收尾 `}`）。
@@ -64,16 +64,17 @@ func stringSliceContains(values []string, target string) bool {
 	return false
 }
 
-// TestConnectorRegistryComboCounts 断言设计 §1.1 :52 去掉 generic_http 后的 42 条
+// TestConnectorRegistryComboCounts 断言设计 §1.1 :52 去掉 generic_http 后的
+// 45 条（向量/重排拆分批：gpt API Key 行 +embedding、qwen 行 +embedding/rerank）
 // 与按 driver 计数。
 func TestConnectorRegistryComboCounts(t *testing.T) {
 	combos := AllowedConnectorCombos()
-	if len(combos) != 42 {
-		t.Fatalf("AllowedConnectorCombos() = %d 条, want 42", len(combos))
+	if len(combos) != 45 {
+		t.Fatalf("AllowedConnectorCombos() = %d 条, want 45", len(combos))
 	}
 	counts := ComboDriverCounts()
 	expected := map[string]int{
-		DriverGPT:        5,
+		DriverGPT:        6,
 		DriverXAI:        4,
 		DriverDeepSeek:   2,
 		DriverAnthropic:  2,
@@ -81,7 +82,7 @@ func TestConnectorRegistryComboCounts(t *testing.T) {
 		DriverGLM:        7,
 		DriverMiniMax:    2,
 		DriverVolcengine: 4,
-		DriverQwen:       3,
+		DriverQwen:       5,
 	}
 	if len(counts) != len(expected) {
 		t.Fatalf("ComboDriverCounts() 覆盖 %d 个 driver, want %d", len(counts), len(expected))
@@ -93,24 +94,31 @@ func TestConnectorRegistryComboCounts(t *testing.T) {
 	}
 }
 
-// TestConnectorRegistryModeComboCounts 断言设计 §1.1 :54 的 138 条与按 driver 计数，
-// 并复核每条 mode combo 都来自同一份 AllowedModes 推导。
+// TestConnectorRegistryModeComboCounts 断言 2026-11-21 五域退役批（《AI账户
+// 上游接口能力设计》§3）后的 60 条 chat 域单 mode 组合（向量/重排拆分批曾为
+// 136 条：chat 60 + 五域 76；五域退役后单 mode 清单只展开 chat 域连接组合，
+// 五域组合保留在连接组合清单）与按 driver 计数（minimax 无 chat 连接组合，
+// 不出现在计数中），并复核每条 chat mode combo 都来自同一份 AllowedModes 推导。
 func TestConnectorRegistryModeComboCounts(t *testing.T) {
 	modeCombos := AllowedEndpointModeCombos()
-	if len(modeCombos) != 138 {
-		t.Fatalf("AllowedEndpointModeCombos() = %d 条, want 138", len(modeCombos))
+	if len(modeCombos) != 60 {
+		t.Fatalf("AllowedEndpointModeCombos() = %d 条, want 60", len(modeCombos))
+	}
+	for _, modeCombo := range modeCombos {
+		if modeCombo.Domain != DomainChat {
+			t.Fatalf("单 mode 组合清单出现非 chat 域条目: %+v（五域退役后声明面仅 chat 域）", modeCombo)
+		}
 	}
 	counts := ModeComboDriverCounts()
 	expected := map[string]int{
-		DriverGPT:        19,
-		DriverXAI:        12,
-		DriverDeepSeek:   7,
+		DriverGPT:        6,
+		DriverXAI:        6,
+		DriverDeepSeek:   6,
 		DriverAnthropic:  6,
-		DriverGemini:     46,
-		DriverGLM:        18,
-		DriverMiniMax:    5,
-		DriverVolcengine: 13,
-		DriverQwen:       12,
+		DriverGemini:     26,
+		DriverGLM:        6,
+		DriverVolcengine: 2,
+		DriverQwen:       2,
 	}
 	if len(counts) != len(expected) {
 		t.Fatalf("ModeComboDriverCounts() 覆盖 %d 个 driver, want %d", len(counts), len(expected))
@@ -120,13 +128,28 @@ func TestConnectorRegistryModeComboCounts(t *testing.T) {
 			t.Errorf("driver %q 单 mode 组合数 = %d, want %d", driver, counts[driver], want)
 		}
 	}
-	// 单 mode 展开与 AllowedModes 同源：逐 combo 求和必须等于 138。
+	// 单 mode 展开与 AllowedModes 同源：chat 组合逐条求和必须等于 60；
+	// 五域组合不展开（连接组合清单仍 45 条，五域 lane 只作域探测形态集）。
+	chatModeKeys := make(map[string]struct{}, len(modeCombos))
+	for _, modeCombo := range modeCombos {
+		chatModeKeys[connectorComboKey(modeCombo.Driver, modeCombo.AccountType, modeCombo.OAuthType, modeCombo.Preset, modeCombo.Domain)+"\x00"+modeCombo.Mode] = struct{}{}
+	}
 	sum := 0
 	for _, combo := range AllowedConnectorCombos() {
-		sum += len(AllowedModes(combo.Domain, combo.Preset, combo.AccountType, combo.OAuthType))
+		modes := AllowedModes(combo.Domain, combo.Preset, combo.AccountType, combo.OAuthType)
+		if combo.Domain != DomainChat {
+			for _, mode := range modes {
+				key := connectorComboKey(combo.Driver, combo.AccountType, combo.OAuthType, combo.Preset, combo.Domain) + "\x00" + mode
+				if _, ok := chatModeKeys[key]; ok {
+					t.Fatalf("五域组合 %s 的 mode %q 不应出现在单 mode 清单（五域退役后声明面仅 chat 域）", key, mode)
+				}
+			}
+			continue
+		}
+		sum += len(modes)
 	}
-	if sum != 138 {
-		t.Fatalf("42 个组合的 AllowedModes 求和 = %d, want 138", sum)
+	if sum != 60 {
+		t.Fatalf("chat 组合的 AllowedModes 求和 = %d, want 60", sum)
 	}
 }
 
@@ -147,14 +170,14 @@ func TestConnectorRegistrySortedStable(t *testing.T) {
 }
 
 // TestConnectorRegistryCartesianProduct 遍历 9 driver × 3 account type × 4 oauth 值 ×
-// 14 preset × 4 domain = 6048 组合，断言恰 42 允许、6006 拒绝，且允许集合与
+// 14 preset × 6 domain = 9072 组合，断言恰 45 允许、9027 拒绝，且允许集合与
 // AllowedConnectorCombos() 精确一致。
 func TestConnectorRegistryCartesianProduct(t *testing.T) {
 	total := len(testDriverCodes) * len(testAccountTypes) * len(testOAuthTypes) * len(testPresets) * len(testDomains)
-	if total != 6048 {
-		t.Fatalf("笛卡尔积空间 = %d, want 6048", total)
+	if total != 9072 {
+		t.Fatalf("笛卡尔积空间 = %d, want 9072", total)
 	}
-	allowedKeys := make(map[string]struct{}, 42)
+	allowedKeys := make(map[string]struct{}, 45)
 	for _, combo := range AllowedConnectorCombos() {
 		allowedKeys[connectorComboKey(combo.Driver, combo.AccountType, combo.OAuthType, combo.Preset, combo.Domain)] = struct{}{}
 	}
@@ -185,18 +208,20 @@ func TestConnectorRegistryCartesianProduct(t *testing.T) {
 			}
 		}
 	}
-	if allowed != 42 {
-		t.Fatalf("允许组合数 = %d, want 42", allowed)
+	if allowed != 45 {
+		t.Fatalf("允许组合数 = %d, want 45", allowed)
 	}
-	if rejected != 6006 {
-		t.Fatalf("拒绝组合数 = %d, want 6006", rejected)
+	if rejected != 9027 {
+		t.Fatalf("拒绝组合数 = %d, want 9027", rejected)
 	}
 }
 
-// TestDomainLanes 断言设计 §2.2 域 lane 的 15/4/7/1 与 27 个唯一 mode。
+// TestDomainLanes 断言向量/重排拆分设计 §3 域 lane 的 13/1/1/4/7/1 与 27 个
+// 唯一 mode（2026-11-21 五域退役批：chat lane 仍是声明校验锚集；五域 lane
+// 降格为域探测形态集，词表值不变）。
 func TestDomainLanes(t *testing.T) {
-	if len(capabilityDomainLanes) != 4 {
-		t.Fatalf("域 lane 数 = %d, want 4", len(capabilityDomainLanes))
+	if len(capabilityDomainLanes) != 6 {
+		t.Fatalf("域 lane 数 = %d, want 6", len(capabilityDomainLanes))
 	}
 	expected := map[string][]string{
 		DomainChat: {
@@ -204,16 +229,24 @@ func TestDomainLanes(t *testing.T) {
 			ModeMessagesJSON, ModeMessagesSSE, ModeMessageTokenCounting,
 			ModeGenerateContentJSON, ModeGenerateContentSSE,
 			ModeInteractionsJSON, ModeInteractionsSSE, ModeCountTokens, ModeEmbedContent,
-			ModeEmbeddingsJSON, ModeRerankJSON,
 		},
-		DomainVideo: {ModeVideoCreate, ModeVideoGet, ModeVideoContent, ModeVideoCancel},
+		DomainEmbedding: {ModeEmbeddingsJSON},
+		DomainRerank:    {ModeRerankJSON},
+		DomainVideo:     {ModeVideoCreate, ModeVideoGet, ModeVideoContent, ModeVideoCancel},
 		DomainAudio: {
 			ModeAudioSpeech, ModeAudioTranscriptionJSON, ModeAudioJobCreate,
 			ModeAudioJobGet, ModeAudioJobContent, ModeAudioJobCancel, ModeRealtimeSession,
 		},
 		DomainImage: {ModeImagesJSON},
 	}
-	expectedSizes := map[string]int{DomainChat: 15, DomainVideo: 4, DomainAudio: 7, DomainImage: 1}
+	expectedSizes := map[string]int{
+		DomainChat:      13,
+		DomainEmbedding: 1,
+		DomainRerank:    1,
+		DomainVideo:     4,
+		DomainAudio:     7,
+		DomainImage:     1,
+	}
 	seen := make(map[string]int)
 	for domain, want := range expected {
 		got, ok := capabilityDomainLanes[domain]
@@ -442,13 +475,15 @@ func TestPresetDefaultBaseURLs(t *testing.T) {
 	}
 
 	// canonical JSON 逐元素断言：defaultBaseUrl 按 preset 精确匹配且一律非 null
-	//（九家真实厂商均有固定上游地址）。
+	//（九家真实厂商均有固定上游地址）。2026-11-21 五域退役批起单 mode 清单只
+	// 展开 chat 域组合：minimax_media 与 volcengine_openspeech 两个纯媒体
+	// preset 无 chat 连接组合，不再出现在 canonical JSON 中（12 个 preset）。
 	var elements []registryFingerprintElement
 	if err := json.Unmarshal([]byte(registryCanonicalJSON), &elements); err != nil {
 		t.Fatalf("canonical JSON 反序列化失败: %v", err)
 	}
-	if len(elements) != 138 {
-		t.Fatalf("canonical JSON 元素数 = %d, want 138", len(elements))
+	if len(elements) != 60 {
+		t.Fatalf("canonical JSON 元素数 = %d, want 60", len(elements))
 	}
 	checked := make(map[string]int, 14)
 	for _, element := range elements {
@@ -463,12 +498,25 @@ func TestPresetDefaultBaseURLs(t *testing.T) {
 		}
 		checked[element.Preset]++
 	}
-	if len(checked) != 14 {
-		t.Fatalf("canonical JSON 覆盖 %d 个 preset, want 14", len(checked))
+	if len(checked) != 12 {
+		t.Fatalf("canonical JSON 覆盖 %d 个 preset, want 12", len(checked))
 	}
+	// chat 域组合覆盖的 12 个 preset 必须全部出现在 canonical JSON；
+	// 纯媒体 preset（minimax_media / volcengine_openspeech）无 chat 组合，
+	// 不得再出现。
 	for _, preset := range testPresets {
-		if checked[preset] == 0 {
+		hasChatCombo := false
+		for _, combo := range AllowedConnectorCombos() {
+			if combo.Preset == preset && combo.Domain == DomainChat {
+				hasChatCombo = true
+				break
+			}
+		}
+		if hasChatCombo && checked[preset] == 0 {
 			t.Errorf("canonical JSON 缺少 preset %q 的元素", preset)
+		}
+		if !hasChatCombo && checked[preset] != 0 {
+			t.Errorf("纯媒体/无 chat 组合的 preset %q 不应出现在 canonical JSON（%d 个元素）", preset, checked[preset])
 		}
 	}
 }
@@ -490,7 +538,8 @@ func TestPresetDefaultBaseURLAccessor(t *testing.T) {
 }
 
 // TestRegistryFingerprint 断言 fingerprint 稳定、64 位小写 hex，
-// 且 canonical JSON 为 138 元素紧凑数组、nullable 字段输出 JSON null。
+// 且 canonical JSON 为 60 元素（chat 域单 mode 组合）紧凑数组、nullable 字段
+// 输出 JSON null。
 func TestRegistryFingerprint(t *testing.T) {
 	first := RegistryFingerprint()
 	second := RegistryFingerprint()
@@ -513,8 +562,8 @@ func TestRegistryFingerprint(t *testing.T) {
 	if strings.Contains(registryCanonicalJSON, ", ") || strings.Contains(registryCanonicalJSON, ": ") {
 		t.Fatalf("canonical JSON 的结构分隔符后含空格，违反紧凑分隔要求")
 	}
-	if got := strings.Count(registryCanonicalJSON, `{"driver":"`); got != 138 {
-		t.Fatalf("canonical JSON 元素数 = %d, want 138", got)
+	if got := strings.Count(registryCanonicalJSON, `{"driver":"`); got != 60 {
+		t.Fatalf("canonical JSON 元素数 = %d, want 60", got)
 	}
 	// 九家真实厂商均有 vendor，删除 generic_http 后 canonical JSON 不得再出现 vendor null。
 	if strings.Contains(registryCanonicalJSON, `"vendor":null`) {
@@ -523,14 +572,17 @@ func TestRegistryFingerprint(t *testing.T) {
 	if !strings.Contains(registryCanonicalJSON, `"oauthType":null`) {
 		t.Fatalf("canonical JSON 缺少非 google_oauth 行的 oauthType null")
 	}
-	if !strings.Contains(registryCanonicalJSON, `"surface":null`) {
-		t.Fatalf("canonical JSON 缺少纯媒体 preset 的 surface null")
+	// 2026-11-21 五域退役批：单 mode 清单只含 chat 组合，全部挂在有协议面的
+	// preset 上（两个纯媒体 preset 无 chat 连接组合，不再进入 canonical JSON），
+	// surface null 随之不再出现——出现即说明混入了非 chat 域展开。
+	if strings.Contains(registryCanonicalJSON, `"surface":null`) {
+		t.Fatalf("canonical JSON 出现 surface null，说明单 mode 清单混入了纯媒体 preset（五域退役后仅 chat 域展开）")
 	}
 	// defaultBaseUrl 是标量尾字段：每元素恰一次且其后不得再有任何字段（设计
 	// :56/:81；不能按 } 切分——模板值含 {id}/{model} 占位符，故用正则断言尾位；
 	// generic 三 preset 输出 null，逐值精确断言见 TestPresetDefaultBaseURLs）。
-	if got := strings.Count(registryCanonicalJSON, `"defaultBaseUrl":`); got != 138 {
-		t.Fatalf("canonical JSON defaultBaseUrl 出现次数 = %d, want 138", got)
+	if got := strings.Count(registryCanonicalJSON, `"defaultBaseUrl":`); got != 60 {
+		t.Fatalf("canonical JSON defaultBaseUrl 出现次数 = %d, want 60", got)
 	}
 	if trailingFieldPattern.MatchString(registryCanonicalJSON) {
 		t.Fatalf("canonical JSON 存在 defaultBaseUrl 之后仍有字段或元素未以 defaultBaseUrl 收尾")
@@ -802,10 +854,12 @@ func TestBasePathValidationTemplates(t *testing.T) {
 	}
 }
 
-// TestConnectivityProbeCoverage 锁定「每个可声明的连接测试形态都有探测规格」：
+// TestConnectivityProbeCoverage 锁定「每个可探测的连接测试形态都有探测规格」：
 // 遍历 registry 全部允许组合与 AllowedModes，凡不属于 10 个真实对话生成形态的
-// mode 都必须能查到 ConnectorConnectivityProbe。新增 preset/mode 时若漏登记，
-// 账户会出现“可保存但人工测试/后台探测永远无规格”的静默死路。
+// mode 都必须能查到 ConnectorConnectivityProbe（2026-11-21 五域退役批：五域
+// 不再声明 modes，探测规格按域 lane 形态集选型，覆盖断言不变）。新增
+// preset/mode 时若漏登记，账户会出现“可保存但人工测试/后台探测永远无规格”
+// 的静默死路。
 func TestConnectivityProbeCoverage(t *testing.T) {
 	modelTestModes := map[string]bool{
 		"chat_json": true, "chat_sse": true,

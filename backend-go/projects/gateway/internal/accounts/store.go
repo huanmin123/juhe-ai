@@ -96,8 +96,6 @@ type Store struct {
 	apiKeyRuntimeDetails   APIKeyRuntimeDetailsReader
 	balanceRefresher       ManualBalanceRefresher
 	modelCatalogRefresher  ModelCatalogRefresher
-	returner               AuthorizationGrantReturner
-	sourceReturner         AuthorizationSourceReturner
 	trafficRuntimeMigrator TrafficRuntimeMigrator
 	// balanceSnapshotCleaner is the post-commit balance snapshot cleanup port
 	// (balance_snapshot_cleanup.go). Nil until SetBalanceSnapshotCleaner
@@ -134,9 +132,6 @@ type Store struct {
 	runtimeAvailabilitySource  RuntimeAvailabilitySource
 	circuitSummarySource       CircuitSummarySource
 	apiKeyRuntimeSummarySource APIKeyRuntimeSummarySource
-	// sourceRevisionMarker is the authz material-change hook (design §5.9).
-	// Nil keeps the package self-contained; production composition wires it.
-	sourceRevisionMarker SourceRevisionMarker
 	// log 是降级日志落点（BUG-0248：authorized 读路径曾用裸 println 绕过
 	// JSONL 管道）。Nil until SetLogger wires it（Deps.Mount 注入
 	// Deps.Log）；nil 保持静默。

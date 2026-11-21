@@ -24,12 +24,13 @@
 //     两账户各收到创建请求），出站路径/鉴权/模型名与响应透传逐项核对。
 //     mock 上游 images 端点为本次补的依赖边界（mockupstream/images.go）。
 //
-// capability_domain 不参与派发的对照说明（D2 零改动裁决）：本文件与既有
-// 媒体矩阵按 M2 写侧契约显式声明能力域（audio/video/image/chat），而网关
-// 派发代码不读取 capability_domain 列——chat 域账户承接 images 请求
-// （本文件第 3 条 A 账户）、image 域账户与 chat 域账户共同候选同一图像请求
-// 即域不参与派发的行为级证据；媒体 lane（audio/video 域账户）的正常派发
-// 由本文件第 1/2 条与既有媒体矩阵共同覆盖。
+// capability_domain 与派发的关系（五域退役修订，AI 账户上游接口能力设计 §4
+// 取代原「D2 零改动裁决」对照说明）：候选域隔离自本批起由域闸门承载——派发
+// 候选按「账户能力域 = 请求域」圈定（reason capability_domain_mismatch），
+// chat 请求不再选中五域账户、媒体请求不再选中 chat 账户；五域账户的端点
+// mode 过滤退役（运行时声明投影恒空），上游不支持的接口按真实上游失败透传。
+// 本文件账户均按 M2 写侧契约显式声明能力域（audio/video/image），第 1/2/3 条
+// 的同域派发链在域闸门下行为不变；既有媒体矩阵的同域用例同语义覆盖。
 package acceptance
 
 import (

@@ -619,15 +619,6 @@ func (s *Service) BatchUpdate(ctx context.Context, input BatchUpdateInput, acces
 	if result.ChangedFields == nil {
 		result.ChangedFields = []string{}
 	}
-	if marker, ok := s.store.(interface {
-		MarkAccountSourcesNeedsReview(context.Context, *sql.Tx, string, string) error
-	}); ok {
-		for _, accountID := range changedAccountIDs {
-			if err := marker.MarkAccountSourcesNeedsReview(ctx, tx, accountID, nowISO); err != nil {
-				return nil, err
-			}
-		}
-	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
@@ -1018,6 +1009,10 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 	// Credential-config overrides (account-batch-edit.service.ts:139-183):
 	// merge the five fields into the decrypted credentials record, normalize
 	// through NormalizeAccountCredentialsForWrite and re-seal on change.
+	// 2026-11-21 五域退役（AI账户上游接口能力设计 §3）：supportedEndpointModes
+	// 覆盖字段对五域账户按忽略处理（merged 不吃该字段，归一化按域上下文剥键且
+	// 不播种）；历史残留键随归一化剥离并按凭据变更披露。chat 语义不变。
+	batchDeclarationRetired := accountscore.EndpointModesDeclarationRetired(account.capabilityDomain)
 	nextCredentials := account.credentials
 	credentialsChangedFields := map[string]bool{}
 	credentialsChanged := false
@@ -1047,7 +1042,7 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 			}
 			merged["response_inspection_rules"] = rules
 		}
-		if hasOwn("supportedEndpointModes") {
+		if hasOwn("supportedEndpointModes") && !batchDeclarationRetired {
 			merged["supported_endpoint_modes"] = fieldValue("supportedEndpointModes")
 		}
 		ApplyNullableCredentialOverride(merged, updates, "serviceTierOverride", "service_tier_override")
@@ -1059,6 +1054,7 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 			ProviderProtocolProfileID: account.providerProtocolProfileID,
 			ProtocolCode:              account.protocolCode,
 			ProtocolVersion:           account.protocolVersion,
+			CapabilityDomain:          account.capabilityDomain,
 		})
 		if err != nil {
 			return result, err
@@ -1080,15 +1076,16 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 			}
 			setColumn("credentials_encrypted", sealed)
 		}
-		// 严格声明校验（账户能力域不变式，与单账户 PATCH 同一规则，逐账户以
-		// 各自库中现值为基准）：supportedEndpointModes 参与覆盖时，归一化后的
-		// 最终声明集必须 ⊆ 该账户域允许集（按行内 capability_domain/provider/
-		// type/协议档案现算），任一账户越界即整批 400（批量原子语义）。唯一
-		// 触发路径是显式数组提交越界值；删键（present-null）不重置默认集——
-		// merged 记录携带显式 null 进入写侧归一化时即被「上游接口能力必须是
-		// 数组」拒绝（normalizeEndpointModeList 的数组断言），到不了本校验；
-		// 域内值增减照常。
-		if hasOwn("supportedEndpointModes") {
+		// 严格声明校验（账户能力域不变式；2026-11-21 五域退役后为 chat 域不变
+		// 式，与单账户 PATCH 同一规则，逐账户以各自库中现值为基准）：
+		// supportedEndpointModes 参与覆盖时，归一化后的最终声明集必须 ⊆ 该账户
+		// 域允许集（按行内 capability_domain/provider/type/协议档案现算），任一
+		// 账户越界即整批 400（批量原子语义）。唯一触发路径是显式数组提交越界值；
+		// 删键（present-null）不重置默认集——merged 记录携带显式 null 进入写侧
+		// 归一化时即被「上游接口能力必须是数组」拒绝（normalizeEndpointModeList
+		// 的数组断言），到不了本校验；域内值增减照常。五域声明面退役：不校验
+		// 声明（键已剥，凭据无键）。
+		if hasOwn("supportedEndpointModes") && !batchDeclarationRetired {
 			allowedModes := accountscore.AllowedEndpointModes(account.capabilityDomain, account.providerCode, account.accountType, accountscore.ProtocolPredicate{
 				ProviderCode:              account.providerCode,
 				ProtocolCode:              account.protocolCode,
@@ -1109,13 +1106,15 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 	// 报告（不做猜默认的隐式行为）；凭据域副本三档照旧写（读面回落兜底）。
 	// 仅凭据副本同值而连接行漂移（本缺陷遗留状态）的再运行同样命中差异臂：
 	// supportedEndpointModes 仍按变更披露，CAS + 运行时失效链照走，漂移自愈。
+	// 五域声明面退役（2026-11-21 五域退役设计 §3）：五域连接行不写
+	// account_endpoint_modes，连接行三档同步整体退役（不同步、不报告）。
 	var (
 		connectionModesSync    *batchConnectionModesSync
 		connectionModesNotice  string
 		healthModesOverride    []string
 		connectionModesChanged bool
 	)
-	if hasOwn("supportedEndpointModes") {
+	if hasOwn("supportedEndpointModes") && !batchDeclarationRetired {
 		requestedModes := StoredEndpointModes(nextCredentials["supported_endpoint_modes"])
 		type connectionFact struct {
 			id      string
@@ -1289,37 +1288,46 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 	// companion slice, so the pre-slice fallback
 	// (account.healthCheckEndpointMode === 'images_json') stands in.
 	nextHealthCheckEndpointMode := account.healthCheckEndpointMode
-	resolveHealthMode := hasOwn("healthCheckEndpointMode") || hasOwn("supportedEndpointModes")
+	// 五域声明面退役（2026-11-21 五域退役设计 §3/§5）：supportedEndpointModes
+	// 不再触发检查形态解析（无声明集可派生）；显式提交的 healthCheckEndpointMode
+	// 只是记录值，白名单校验保留、不做声明集成员解析。
+	resolveHealthMode := hasOwn("healthCheckEndpointMode") || (hasOwn("supportedEndpointModes") && !batchDeclarationRetired)
 	if hasOwn("healthCheckEndpointMode") {
 		nextHealthCheckEndpointMode = textString(fieldValue("healthCheckEndpointMode"))
 	}
 	if resolveHealthMode {
-		// T100 解析口径：默认仍以归一化凭据集为源（单连接更新后集合与凭据集
-		// 一致、无连接行运行时本就回落凭据）；多连接跳过臂以选定连接现行
-		// modes 覆写（见上方 T100 决策块）。
-		healthModesSource := StoredEndpointModes(nextCredentials["supported_endpoint_modes"])
-		if len(healthModesOverride) > 0 {
-			healthModesSource = healthModesOverride
+		if batchDeclarationRetired {
+			if !accountscore.AccountHealthCheckEndpointModes[nextHealthCheckEndpointMode] {
+				return result, &accountscore.ValidationError{Message: "账户健康检查请求形态无效"}
+			}
+		} else {
+			// T100 解析口径：默认仍以归一化凭据集为源（单连接更新后集合与凭据集
+			// 一致、无连接行运行时本就回落凭据）；多连接跳过臂以选定连接现行
+			// modes 覆写（见上方 T100 决策块）。
+			healthModesSource := StoredEndpointModes(nextCredentials["supported_endpoint_modes"])
+			if len(healthModesOverride) > 0 {
+				healthModesSource = healthModesOverride
+			}
+			modeInput := &nextHealthCheckEndpointMode
+			// 连接测试账户未显式提交检查形态时，按最终 modes 重新派生：批量修改
+			// supportedEndpointModes 后旧记录值可能已失效（qwen 音频取消
+			// audio_speech、仅转写账户等），隐藏字段不得整批 400。
+			if !hasOwn("healthCheckEndpointMode") &&
+				accountscore.UsesConnectionHealthCheck(account.capabilityDomain, healthModesSource) {
+				modeInput = nil
+			}
+			resolved, err := s.deps.ResolveHealthCheckEndpointMode(
+				modeInput,
+				account.providerCode,
+				account.providerProtocolProfileID,
+				healthModesSource,
+				BoolPtr(account.healthCheckEndpointMode == "images_json"),
+			)
+			if err != nil {
+				return result, err
+			}
+			nextHealthCheckEndpointMode = resolved
 		}
-		modeInput := &nextHealthCheckEndpointMode
-		// 连接测试账户未显式提交检查形态时，按最终 modes 重新派生：批量修改
-		// supportedEndpointModes 后旧记录值可能已失效（qwen 音频取消
-		// audio_speech、仅转写账户等），隐藏字段不得整批 400。
-		if !hasOwn("healthCheckEndpointMode") &&
-			accountscore.UsesConnectionHealthCheck(account.capabilityDomain, healthModesSource) {
-			modeInput = nil
-		}
-		resolved, err := s.deps.ResolveHealthCheckEndpointMode(
-			modeInput,
-			account.providerCode,
-			account.providerProtocolProfileID,
-			healthModesSource,
-			BoolPtr(account.healthCheckEndpointMode == "images_json"),
-		)
-		if err != nil {
-			return result, err
-		}
-		nextHealthCheckEndpointMode = resolved
 	}
 	if nextHealthCheckEndpointMode != account.healthCheckEndpointMode {
 		addChange("healthCheckEndpointMode")
@@ -1338,14 +1346,15 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 	}
 	// Model mapping catalog assertion（目录断言切 models 表）：协议矩阵门 +
 	// target 模型 models 身份解析。校验失败使整个批量事务回滚（all-or-nothing，
-	// 与 Node 仓库事务一致）。
+	// 与 Node 仓库事务一致）。五域声明面退役：capabilityDomain 随账户喂参，
+	// 五域跳过上游 endpoint-mode 声明能力格门（协议族门保留）。
 	if shouldValidateMappings {
 		if err := s.deps.AssertModelMappingsInProviderCatalog(ctx, q, account.providerCode, account.systemAccountID, accountscore.ProtocolPredicate{
 			ProviderCode:              account.providerCode,
 			ProtocolCode:              account.protocolCode,
 			ProtocolVersion:           account.protocolVersion,
 			ProviderProtocolProfileID: account.providerProtocolProfileID,
-		}, nextModelMappings, StoredEndpointModes(nextCredentials["supported_endpoint_modes"])); err != nil {
+		}, nextModelMappings, StoredEndpointModes(nextCredentials["supported_endpoint_modes"]), account.capabilityDomain); err != nil {
 			return result, err
 		}
 	}
@@ -1355,8 +1364,9 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 		}
 	}
 	// Node also runs assertEndpointModesCompatible here against the final
-	// credential endpoint modes.
-	if shouldValidateMappings || hasOwn("healthCheckEndpointMode") {
+	// credential endpoint modes. 五域声明面退役：声明兼容断言按域跳过
+	// （五域凭据无声明集，OAuth/Codex Responses 收窄不适用）。
+	if (shouldValidateMappings || hasOwn("healthCheckEndpointMode")) && !batchDeclarationRetired {
 		if err := s.deps.AssertEndpointModesCompatible(account.providerCode, account.accountType, account.clientCompatibility,
 			accountscore.ProtocolPredicate{
 				ProviderCode:              account.providerCode,
@@ -1635,9 +1645,10 @@ func (s *Service) prepareBatchAccount(ctx context.Context, q accountscore.Querye
 
 	// Health check reschedule marker (column exists in the maintenance schema).
 	// T100：连接行 modes 变化同样改变运行时能力面，与凭据域变更同臂清排期。
+	// 五域声明面退役：supportedEndpointModes 对五域按忽略处理，不触发清排期。
 	shouldScheduleHealthCheck := proxyChanged || supportedModelsChanged || healthCheckModelChanged ||
 		nextHealthCheckEndpointMode != account.healthCheckEndpointMode || modelMappingsChanged ||
-		((credentialsChanged || connectionModesChanged) && hasOwn("supportedEndpointModes"))
+		((credentialsChanged || connectionModesChanged) && hasOwn("supportedEndpointModes") && !batchDeclarationRetired)
 	if shouldScheduleHealthCheck && nextStatus != "disabled" {
 		setColumn("next_health_check_at", nil)
 	}

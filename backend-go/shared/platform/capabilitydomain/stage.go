@@ -72,6 +72,33 @@ func ParseRecord(valueJSON string) (Record, error) {
 	return record, nil
 }
 
+// UpgradeRecordRuleVersion 是 revision 29 的记录升级通道（《AI账户能力域向量
+// 重排拆分设计》§6 步骤面①）：接受库里 ruleVersion=1 的原始阶段记录 JSON，
+// 校验 stage 已封存 m2_finalized、ruleVersion 恰为 1 且 updatedAt 为
+// RFC3339，写回 ruleVersion=2（stage 保持 m2_finalized）的新 JSON 供调用方
+// 条件写回。严格 ReadRecord 期望当前包常量（2），存量 ruleVersion=1 记录只
+// 能经本通道升级，不得放宽读取校验。
+func UpgradeRecordRuleVersion(valueJSON string, now time.Time) (string, error) {
+	var record Record
+	if err := json.Unmarshal([]byte(valueJSON), &record); err != nil {
+		return "", fmt.Errorf("阶段记录 %s 不是合法 JSON: %w", MigrationSettingKey, err)
+	}
+	if record.Stage != StageM2Finalized {
+		return "", fmt.Errorf("阶段记录 %s 的 stage 为 %q，ruleVersion 升级要求已封存 m2_finalized", MigrationSettingKey, record.Stage)
+	}
+	if record.RuleVersion != 1 {
+		return "", fmt.Errorf("阶段记录 %s 的 ruleVersion 为 %d，ruleVersion 升级只接受 1", MigrationSettingKey, record.RuleVersion)
+	}
+	if _, err := time.Parse(time.RFC3339, record.UpdatedAt); err != nil {
+		return "", fmt.Errorf("阶段记录 %s 的 updatedAt %q 不是 RFC3339: %w", MigrationSettingKey, record.UpdatedAt, err)
+	}
+	upgraded, err := json.Marshal(Record{Stage: record.Stage, RuleVersion: RuleVersion, UpdatedAt: now.UTC().Format(time.RFC3339)})
+	if err != nil {
+		return "", fmt.Errorf("序列化升级后的阶段记录 %s 失败: %w", MigrationSettingKey, err)
+	}
+	return string(upgraded), nil
+}
+
 // ReadRecord 读取阶段记录（PostgreSQL 业务库，juhe_business schema 限定与 $1
 // 占位符）；无记录返回 ok=false。gateway/jobs 启动门禁与 maintenance 迁移
 // 执行器共用此读取语义，解析语义只此一份。

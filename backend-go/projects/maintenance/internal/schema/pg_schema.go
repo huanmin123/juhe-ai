@@ -133,7 +133,7 @@ func EnsurePostgres(ctx context.Context, db *sql.DB) (PGResult, error) {
 		}
 	}
 	// AI 账户能力域拆分（PLAN-20261011T141004000Z）：ADD COLUMN IF NOT EXISTS
-	// 只保证列存在，不以命中替代形状检查——全部语句执行完后对既存列做四值
+	// 只保证列存在，不以命中替代形状检查——全部语句执行完后对既存列做六值
 	// 形状校验（类型/NOT NULL/DEFAULT/CHECK），不符原样报错停止。
 	if err := VerifyPostgresBusinessCapabilityDomainShape(ctx, db); err != nil {
 		return PGResult{}, fmt.Errorf("verify accounts.capability_domain shape: %w", err)
@@ -142,13 +142,14 @@ func EnsurePostgres(ctx context.Context, db *sql.DB) (PGResult, error) {
 }
 
 // EnsurePostgresBusinessCapabilityDomainColumn 把 accounts.capability_domain
-// 补齐到既有 PostgreSQL 业务库并做四值形状校验，供能力域迁移命令使用：缺列
+// 补齐到既有 PostgreSQL 业务库并做六值形状校验，供能力域迁移命令使用：缺列
 // 则执行与 schema 语句清单同文的 ADD COLUMN IF NOT EXISTS（存量行落
-// DEFAULT 'chat' 满足列级 CHECK）；列已存在时仅做形状校验。只承载这一列，
-// 不执行其余 schema 语句（迁移窗口内不改函数/索引/触发器定义）。调用面是
-// maintenance 一次性命令，不在请求路径反复执行（BUG-0307）。
+// DEFAULT 'chat' 满足列级 CHECK；词表经 revision 29 扩为六值）；列已存在时
+// 仅做形状校验。只承载这一列，不执行其余 schema 语句（迁移窗口内不改函数/
+// 索引/触发器定义）。调用面是 maintenance 一次性命令，不在请求路径反复执行
+//（BUG-0307）。
 func EnsurePostgresBusinessCapabilityDomainColumn(ctx context.Context, db *sql.DB) error {
-	const alter = `ALTER TABLE "juhe_business"."accounts" ADD COLUMN IF NOT EXISTS capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image'))`
+	const alter = `ALTER TABLE "juhe_business"."accounts" ADD COLUMN IF NOT EXISTS capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image','embedding','rerank'))`
 	if _, err := db.ExecContext(ctx, alter); err != nil {
 		return fmt.Errorf("add accounts.capability_domain: %w", err)
 	}
@@ -156,7 +157,7 @@ func EnsurePostgresBusinessCapabilityDomainColumn(ctx context.Context, db *sql.D
 }
 
 // VerifyPostgresBusinessCapabilityDomainShape 校验既存
-// "juhe_business"."accounts".capability_domain 列的四值形状。列不存在返回
+// "juhe_business"."accounts".capability_domain 列的六值形状。列不存在返回
 // nil（调用方决定缺列是否可接受：EnsurePostgres 的 ALTER 已先行补列，只有
 // 显式 ALTER 失败才会走到这里缺列）。任何一项形状不符都原样报错停止，不做
 // 静默修补。
@@ -208,7 +209,7 @@ func VerifyPostgresBusinessCapabilityDomainShape(ctx context.Context, db *sql.DB
 		return err
 	}
 	// 归一化后的 CHECK 文本可能把 IN 重写为 = ANY (ARRAY[...])，不锚定具体
-	// 文法；判据是四值词表与列名同时出现在同一 CHECK 子句中，且四值齐全。
+	// 文法；判据是六值词表与列名同时出现在同一 CHECK 子句中，且六值齐全。
 	for _, clause := range clauses {
 		if pgCapabilityDomainCheckComplete(clause) {
 			return nil
@@ -217,13 +218,13 @@ func VerifyPostgresBusinessCapabilityDomainShape(ctx context.Context, db *sql.DB
 	if len(clauses) == 0 {
 		return fmt.Errorf("accounts.capability_domain 形状不符：未找到该列的 CHECK 约束")
 	}
-	return fmt.Errorf("accounts.capability_domain 形状不符：CHECK 约束缺少四值枚举（chat/video/audio/image），实际：%s", strings.Join(clauses, " | "))
+	return fmt.Errorf("accounts.capability_domain 形状不符：CHECK 约束缺少六值枚举（chat/video/audio/image/embedding/rerank），实际：%s", strings.Join(clauses, " | "))
 }
 
 // pgCapabilityDomainCheckComplete 判定一段归一化 CHECK 文本是否覆盖
-// capability_domain 的四值枚举。
+// capability_domain 的六值枚举。
 func pgCapabilityDomainCheckComplete(clause string) bool {
-	for _, value := range []string{"chat", "video", "audio", "image"} {
+	for _, value := range []string{"chat", "video", "audio", "image", "embedding", "rerank"} {
 		if !strings.Contains(clause, "'"+value+"'") {
 			return false
 		}
@@ -327,93 +328,12 @@ const pgSeedQuotaScopeBindingsFromAPIKeysCTE = `
       updated_at = EXCLUDED.updated_at
   `
 
-// pgSeedQuotaScopeBindingsFromAuthorizationsCTE backfills quota scope bindings from resource authorizations (parameter-free, idempotent).
-const pgSeedQuotaScopeBindingsFromAuthorizationsCTE = `
-    WITH inserted AS (
-      INSERT INTO "juhe_business"."request_quota_hourly_window_scope_bindings" (
-        system_account_id, scope_type, scope_id, source_type, source_id, window_hours, created_at, updated_at
-      )
-      SELECT CASE WHEN ra.resource_type = 'account' THEN ra.grantee_system_account_id ELSE ra.resource_owner_system_account_id END,
-        CASE WHEN ra.resource_type = 'account' THEN 'account_authorization' ELSE 'group_authorization' END,
-        ra.id, 'resource_authorization_grant', grants.id,
-        (ra.limits_json::jsonb #>> '{hourly,hours}')::integer, ra.created_at, ra.updated_at
-      FROM "juhe_business"."resource_authorizations" ra
-      INNER JOIN "juhe_business"."resource_authorization_grants" grants
-        ON grants.resource_type = ra.resource_type
-        AND grants.resource_id = ra.resource_id
-        AND grants.status = 'active'
-        AND (
-          (ra.effective_source_type = 'manual' AND grants.grantee_type = 'system_account' AND grants.grantee_system_account_id = ra.grantee_system_account_id)
-          OR
-          (ra.effective_source_type = 'team' AND grants.grantee_type = 'team' AND grants.grantee_team_id = ra.effective_source_team_id)
-        )
-      WHERE ra.status = 'active'
-        AND ra.limits_json IS NOT NULL
-        AND ra.limits_json::jsonb #>> '{hourly,enabled}' = 'true'
-        AND ra.limits_json::jsonb #>> '{hourly,hours}' ~ '^[0-9]+$'
-        AND (ra.limits_json::jsonb #>> '{hourly,hours}')::integer BETWEEN 1 AND 720
-      ON CONFLICT(system_account_id, scope_type, scope_id) DO NOTHING
-      RETURNING system_account_id, scope_type, scope_id, created_at, updated_at
-    )
-    INSERT INTO juhe_stats.usage_quota_hourly_window_dirty_scopes (
-      system_account_id, scope_type, scope_id, generation, first_dirty_at, updated_at
-    )
-    SELECT system_account_id, scope_type, scope_id, 1, created_at, updated_at FROM inserted
-    ON CONFLICT(system_account_id, scope_type, scope_id) DO UPDATE SET
-      generation = usage_quota_hourly_window_dirty_scopes.generation + 1,
-      updated_at = EXCLUDED.updated_at
-  `
-
-// pgSeedQuotaScopeBindingsFromTeamGrantsCTE backfills team quota scope bindings from authorization grants (parameter-free, idempotent).
-const pgSeedQuotaScopeBindingsFromTeamGrantsCTE = `
-    WITH candidates AS (
-      SELECT DISTINCT
-        CASE WHEN ra.resource_type = 'account' THEN ra.grantee_system_account_id ELSE ra.resource_owner_system_account_id END AS system_account_id,
-        CASE WHEN ra.resource_type = 'account' THEN 'account_authorization_team' ELSE 'group_authorization_team' END AS scope_type,
-        CASE WHEN ra.resource_type = 'account' THEN instance_accounts.id || ':' || ra.effective_source_team_id ELSE ra.resource_id || ':' || ra.effective_source_team_id END AS scope_id,
-        grants.id AS source_id,
-        (ra.limits_json::jsonb #>> '{hourly,hours}')::integer AS window_hours,
-        ra.created_at,
-        ra.updated_at
-      FROM "juhe_business"."resource_authorizations" ra
-      INNER JOIN "juhe_business"."resource_authorization_grants" grants
-        ON grants.resource_type = ra.resource_type
-        AND grants.resource_id = ra.resource_id
-        AND grants.grantee_type = 'team'
-        AND grants.grantee_team_id = ra.effective_source_team_id
-        AND grants.status = 'active'
-      LEFT JOIN "juhe_business"."accounts" instance_accounts
-        ON ra.resource_type = 'account'
-        AND instance_accounts.authorization_instance_authorization_id = ra.id
-        AND instance_accounts.system_account_id = ra.grantee_system_account_id
-        AND instance_accounts.authorization_instance_source_account_id = ra.resource_id
-        AND instance_accounts.deleted_at IS NULL
-      WHERE ra.status = 'active'
-        AND ra.effective_source_type = 'team'
-        AND (ra.resource_type = 'group' OR instance_accounts.id IS NOT NULL)
-        AND ra.limits_json IS NOT NULL
-        AND ra.limits_json::jsonb #>> '{hourly,enabled}' = 'true'
-        AND ra.limits_json::jsonb #>> '{hourly,hours}' ~ '^[0-9]+$'
-        AND (ra.limits_json::jsonb #>> '{hourly,hours}')::integer BETWEEN 1 AND 720
-    ), inserted AS (
-      INSERT INTO "juhe_business"."request_quota_hourly_window_scope_bindings" (
-        system_account_id, scope_type, scope_id, source_type, source_id, window_hours, created_at, updated_at
-      )
-      SELECT system_account_id, scope_type, scope_id, 'resource_authorization_grant', source_id,
-        window_hours, created_at, updated_at
-      FROM candidates
-      WHERE true
-      ON CONFLICT(system_account_id, scope_type, scope_id) DO NOTHING
-      RETURNING system_account_id, scope_type, scope_id, created_at, updated_at
-    )
-    INSERT INTO juhe_stats.usage_quota_hourly_window_dirty_scopes (
-      system_account_id, scope_type, scope_id, generation, first_dirty_at, updated_at
-    )
-    SELECT system_account_id, scope_type, scope_id, 1, created_at, updated_at FROM inserted
-    ON CONFLICT(system_account_id, scope_type, scope_id) DO UPDATE SET
-      generation = usage_quota_hourly_window_dirty_scopes.generation + 1,
-      updated_at = EXCLUDED.updated_at
-  `
+// pgSeedQuotaScopeBindingsFromAuthorizationsCTE / pgSeedQuotaScopeBindingsFromTeamGrantsCTE
+// 两个授权 scope binding 回填臂已随 revision 31 授权治理简化批退役
+//（2026-11-22 用户裁决：授权额度 limits_json 全链退役，绑定唯一输入
+// activeAuthorizationQuotaHourlyWindowHours(limits_json) 恒为空，授权 quota
+// scope binding 域整体退役）；api_keys 臂（quota_limits_json）保留。存量
+// dev 库的授权来源绑定行由 revision 31 authz-claim-simplification 步骤 DELETE。
 
 // pgSeedProviderInsert seeds one vendors row（设计 §9：providers 由 vendors
 // 取代，无 parent_code 列）。
@@ -869,7 +789,9 @@ func EnsurePostgresSeeds(ctx context.Context, db *sql.DB) (PGSeedResult, error) 
 			return PGSeedResult{}, err
 		}
 	}
-	for _, cte := range []string{pgSeedQuotaScopeBindingsFromAPIKeysCTE, pgSeedQuotaScopeBindingsFromAuthorizationsCTE, pgSeedQuotaScopeBindingsFromTeamGrantsCTE} {
+	// 授权 scope binding 回填臂（Authorizations/TeamGrants CTE）已随 revision 31
+	// 授权治理简化批退役（见上方退役说明）；仅保留 api_keys 臂。
+	for _, cte := range []string{pgSeedQuotaScopeBindingsFromAPIKeysCTE} {
 		if err := exec(cte); err != nil {
 			return PGSeedResult{}, err
 		}

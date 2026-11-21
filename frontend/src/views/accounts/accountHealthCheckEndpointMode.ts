@@ -26,8 +26,9 @@ const options: Array<{ label: string; value: AccountHealthCheckEndpointMode }> =
   { label: 'Interactions API（SSE）', value: 'interactions_sse' },
   { label: 'Count Tokens', value: 'count_tokens' },
   { label: 'Embed Content', value: 'embed_content' },
-  // 2026-11-20 向量/重排协议补齐批：仅作持久化诊断形态（无自动探针）。
-  // 纯向量/纯重排账户没有 chat/media 形态，缺这两项会无法通过保存校验。
+  // Embeddings/Rerank API（2026-11-20 协议补齐批纳入）：2026-11-21 起各自升级为
+  // 独立能力域（embedding/rerank）的 lane 单值与域默认检查形态，选项随账户声明
+  // 集按域过滤自动生效；chat 域账户声明集不再含两值。
   { label: 'Embeddings API', value: 'embeddings_json' },
   { label: 'Rerank API', value: 'rerank_json' }
 ]

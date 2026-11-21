@@ -17,6 +17,7 @@ import (
 	"unicode"
 
 	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
+	"github.com/huanminabc/juhe-ai/backend-go-maintenance/internal/schema"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accountcrypto"
 )
 
@@ -319,18 +320,23 @@ func (c businessCatalog) videoModelAt(index int) businessModel {
 
 // 造数标识与状态词表。
 const (
-	mockAccountStatusActive     = "active"
-	mockAccountStatusPending    = "pending_test"
-	mockAccountStatusDisabled   = "disabled"
-	mockAccountStatusError      = "error"
-	mockAccountStatusRateLimit  = "rate_limited"
-	mockAccountStatusTemporary  = "temporary_unavailable"
-	mockAccountStatusExpired    = "expired"
-	mockAuthorizationActive     = "active"
-	mockAuthorizationPaused     = "paused"
-	mockAuthorizationExpired    = "expired"
-	mockAuthorizationRevoked    = "revoked"
-	mockAuthorizationReturned   = "returned"
+	mockAccountStatusActive    = "active"
+	mockAccountStatusPending   = "pending_test"
+	mockAccountStatusDisabled  = "disabled"
+	mockAccountStatusError     = "error"
+	mockAccountStatusRateLimit = "rate_limited"
+	mockAccountStatusTemporary = "temporary_unavailable"
+	mockAccountStatusExpired   = "expired"
+	mockAuthorizationActive    = "active"
+	mockAuthorizationPaused    = "paused"
+	mockAuthorizationExpired   = "expired"
+	mockAuthorizationRevoked   = "revoked"
+	mockAuthorizationReturned  = "returned"
+	// 直发+领取语义（revision 31）：资源归属人直接发出授权，pending 是接收方
+	// 未领取（可领取/拒绝）的待决位，declined 是接收方拒绝领取的终态；两者让
+	// 授权中心的「收到的授权」页签有可操作样本。
+	mockAuthorizationPending    = "pending"
+	mockAuthorizationDeclined   = "declined"
 	mockCustomModelLongContext  = "mockdata-global-long-context"
 	mockCustomModelImage        = "mockdata-global-image"
 	mockCustomModelAudio        = "mockdata-global-audio"
@@ -1070,6 +1076,13 @@ func connectorPlansFor(seed *mockAccountSeed) ([]accountConnectorPlan, error) {
 		if len(modes) == 0 {
 			return nil, fmt.Errorf("mockdata business 账户 %s 的连接组合 mode 交集为空: preset=%s domain=%s", seed.id, item, planDomain)
 		}
+		// 五域退役（AI账户上游接口能力设计 §3.2，revision 30 清洗终态）：五域
+		// 连接 plan 不带 modes——五域账户不声明接口能力、连接行不写
+		// account_endpoint_modes，mock 造数后 upgrade 无可清洗行；空交集检查
+		// 保留在前，组合注册错误仍要暴露。
+		if planDomain != contracts.DomainChat {
+			modes = nil
+		}
 		record, ok := connectorPresetSurface(item)
 		if !ok {
 			return nil, fmt.Errorf("mockdata business 账户 %s 引用了未知 preset %s", seed.id, item)
@@ -1126,6 +1139,30 @@ func preferredHealthMode(domain string, modes []string) string {
 		}
 	}
 	return modes[0]
+}
+
+// preferredHealthModeForPlan 解析连接 plan 的健康检查形态：chat plan 从 mode
+// 交集选型（既有语义）；五域 plan 不带 modes（声明面退役），按域常量回落
+// ——与网关创建链 DefaultHealthCheckEndpointModeForDomain、前端
+// defaultHealthCheckEndpointModeForCapabilityDomain 同值（五域健康检查形态
+// 是连接测试记录值）。
+func preferredHealthModeForPlan(plan accountConnectorPlan) string {
+	if len(plan.modes) > 0 {
+		return preferredHealthMode(plan.domain, plan.modes)
+	}
+	switch plan.domain {
+	case contracts.DomainImage:
+		return contracts.ModeImagesJSON
+	case contracts.DomainVideo:
+		return contracts.ModeVideoCreate
+	case contracts.DomainAudio:
+		return contracts.ModeAudioSpeech
+	case contracts.DomainEmbedding:
+		return contracts.ModeEmbeddingsJSON
+	case contracts.DomainRerank:
+		return contracts.ModeRerankJSON
+	}
+	return ""
 }
 
 // seedAccounts 写入 AI 账户及其连接面（account_connections /
@@ -1219,10 +1256,10 @@ func (w *businessWriter) seedAccounts(tx *sql.Tx, guard businessGuard, users []m
 			priority: 95, concurrency: 8, modelSlots: []int{2},
 			tags: []string{"停用"}, notes: "Mockdata 手动停用账号，用于停用状态和恢复入口展示"},
 		{id: CleanupIDPrefix + "acc_unschedulable", name: CleanupNamePrefix + "停调账户", owner: guard.adminID,
-			group: groups["experiment"], slug: "unschedulable", typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive,
+			group: groups["experiment"], slug: "unschedulable", typ: contracts.AccountTypeAPIKey, status: mockAccountStatusDisabled,
 			priority: 98, concurrency: 8, unschedulable: true, modelSlots: []int{2},
 			tags:  []string{"停调"},
-			notes: "Mockdata 正常但手动关闭调度账号，用于参与调度筛选和有效可用性展示"},
+			notes: "Mockdata 停调（disabled + schedulable=0）账号：T91-3 起调度开关由账户状态派生（active 必 schedulable=1），停调样本以 disabled 状态表达，满足 rev13 归一核验"},
 		{id: CleanupIDPrefix + "acc_scheduled", name: CleanupNamePrefix + "时间计划停调账户", owner: guard.adminID,
 			group: groups["experiment"], slug: "scheduled-inactive", typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive,
 			priority: 100, concurrency: 8, schedule: "inactive",
@@ -1284,7 +1321,7 @@ func (w *businessWriter) seedAccounts(tx *sql.Tx, guard businessGuard, users []m
 		if err != nil {
 			return nil, err
 		}
-		credentials, fingerprint, mask, err := w.accountCredentials(seed, index)
+		credentials, fingerprint, mask, err := w.accountCredentials(seed, accountModesDeclaration(plans))
 		if err != nil {
 			return nil, err
 		}
@@ -1381,7 +1418,7 @@ func (w *businessWriter) seedAccounts(tx *sql.Tx, guard businessGuard, users []m
 			if planIndex == 0 {
 				seed.primaryConnectionID = plan.id
 				seed.healthConnectionID = plan.id
-				seed.healthMode = preferredHealthMode(plan.domain, plan.modes)
+				seed.healthMode = preferredHealthModeForPlan(plan)
 			}
 		}
 		if err := w.put(tx, "group_accounts", map[string]any{
@@ -1521,10 +1558,26 @@ func mockModelID(name string) string {
 	return ""
 }
 
-// accountCredentials 生成账户凭据信封、指纹与掩码。凭据 JSON 只含 driver
-// credential 键（api_key / OAuth token 形态与 key 池运维配置）；base_url 与
-// endpoint mode 已随连接面拆到 account_connections 行，不再进凭据。
-func (w *businessWriter) accountCredentials(seed *mockAccountSeed, index int) (string, any, string, error) {
+// accountModesDeclaration 返回 mock 账户凭据的「上游接口能力」声明键值
+// （AI账户上游接口能力设计 §3，2026-11-21 五域退役后 chat 域专用）：仅 chat
+// 域账户持有 supported_endpoint_modes，值取首个 chat 连接 plan 的形态集
+//（⊆ chat 域词表、v2 推导落 chat，不与向量/重排混合）；五域退役域恒 nil，
+// 凭据不落键——m2/v2 迁移核验对 chat 行凭据缺键判 modes_missing、对五域行
+// 缺键按退役终态放行，mock 造数必须与两侧契约一致。
+func accountModesDeclaration(plans []accountConnectorPlan) []string {
+	for _, plan := range plans {
+		if plan.domain == contracts.DomainChat && len(plan.modes) > 0 {
+			return plan.modes
+		}
+	}
+	return nil
+}
+
+// accountCredentials 生成账户凭据信封、指纹与掩码。凭据 JSON 含 driver
+// credential 键（api_key / OAuth token 形态与 key 池运维配置）与 chat 域
+// supported_endpoint_modes 声明键（declaration 非空时；五域退役域不落键）；
+// base_url 与 endpoint mode 已随连接面拆到 account_connections 行，不再进凭据。
+func (w *businessWriter) accountCredentials(seed *mockAccountSeed, declaration []string) (string, any, string, error) {
 	if seed.typ == contracts.AccountTypeOAuth {
 		accessToken := "mockdata-oauth-access-" + seed.slug + "-" + strings.Repeat("a", 32)
 		payload := map[string]any{
@@ -1533,6 +1586,9 @@ func (w *businessWriter) accountCredentials(seed *mockAccountSeed, index int) (s
 			"client_id":     "mockdata-openai-oauth-client",
 			"account_id":    "mockdata-openai-user-" + seed.slug,
 			"expires_at":    w.at(6 * time.Hour),
+		}
+		if len(declaration) > 0 {
+			payload["supported_endpoint_modes"] = declaration
 		}
 		sealed, err := w.seal(payload)
 		if err != nil {
@@ -1543,6 +1599,9 @@ func (w *businessWriter) accountCredentials(seed *mockAccountSeed, index int) (s
 	primary := "sk-mockdata-admin-" + seed.slug + "-" + strings.Repeat("x", 24)
 	payload := map[string]any{
 		"api_key": primary,
+	}
+	if len(declaration) > 0 {
+		payload["supported_endpoint_modes"] = declaration
 	}
 	if seed.keyPool > 1 {
 		keys := make([]string, 0, seed.keyPool)
@@ -2148,7 +2207,8 @@ func (w *businessWriter) seedTeams(tx *sql.Tx, guard businessGuard, users []mock
 	return ids, nil
 }
 
-// mockQuotaLimits 复刻 quotaLimits：hourly/daily/monthly 三段额度窗口。
+// mockQuotaLimits 复刻 quotaLimits：hourly/daily/monthly 三段额度窗口
+// （api_keys 等配额列仍在用；授权面已随 revision 31 去 limits）。
 func mockQuotaLimits(hourly, daily, monthly int) map[string]any {
 	return map[string]any{
 		"hourly":  map[string]any{"enabled": true, "hours": 1, "limit": hourly},
@@ -2168,7 +2228,9 @@ type mockAuthSeed struct {
 	status       string
 	remark       string
 	expiresIn    time.Duration
-	limits       map[string]any
+	// memberStatus 按完整用户 ID 覆盖团队样本的成员领取状态（键必须与
+	// teamMembers 成员对齐，否则覆盖不生效）；缺省成员一律取 status。
+	memberStatus map[string]string
 }
 
 // mockInstanceSeed 是一条待创建的授权账户实例。
@@ -2200,97 +2262,115 @@ func (w *businessWriter) seedAuthorizations(tx *sql.Tx, guard businessGuard, use
 	seeds := []mockAuthSeed{
 		{key: "dev_group_admin", resourceType: "group", resourceID: groups["dev_granted"], owner: dev,
 			grantee: admin, status: mockAuthorizationActive,
-			remark: CleanupNamePrefix + "研发分组授权给超级管理员", limits: mockQuotaLimits(12, 96, 360)},
+			remark: CleanupNamePrefix + "研发分组授权给超级管理员"},
 		{key: "ops_group_admin", resourceType: "group", resourceID: groups["ops_granted"], owner: ops,
 			grantee: admin, status: mockAuthorizationPaused,
-			remark: CleanupNamePrefix + "运维分组授权给超级管理员后暂停", limits: mockQuotaLimits(9, 72, 260)},
+			remark: CleanupNamePrefix + "运维分组授权给超级管理员后暂停"},
 		{key: "tester_group_admin", resourceType: "group", resourceID: groups["tester_granted"], owner: tester,
 			grantee: admin, status: mockAuthorizationExpired, expiresIn: -3 * 24 * time.Hour,
-			remark: CleanupNamePrefix + "测试分组授权给超级管理员后过期", limits: mockQuotaLimits(5, 30, 100)},
+			remark: CleanupNamePrefix + "测试分组授权给超级管理员后过期"},
 		{key: "dev_account_admin", resourceType: "account", resourceID: CleanupIDPrefix + "acc_dev_shared",
 			owner: dev, grantee: admin, status: mockAuthorizationActive,
-			remark: CleanupNamePrefix + "研发账户授权给超级管理员", limits: mockQuotaLimits(11, 88, 320)},
+			remark: CleanupNamePrefix + "研发账户授权给超级管理员"},
 		{key: "ops_account_admin", resourceType: "account", resourceID: CleanupIDPrefix + "acc_ops_shared",
 			owner: ops, grantee: admin, status: mockAuthorizationPaused,
-			remark: CleanupNamePrefix + "运维账户授权给超级管理员后暂停", limits: mockQuotaLimits(7, 56, 210)},
+			remark: CleanupNamePrefix + "运维账户授权给超级管理员后暂停"},
 		{key: "tester_account_admin", resourceType: "account", resourceID: CleanupIDPrefix + "acc_tester_shared",
 			owner: tester, grantee: admin, status: mockAuthorizationExpired, expiresIn: -4 * 24 * time.Hour,
-			remark: CleanupNamePrefix + "测试账户授权给超级管理员后过期", limits: mockQuotaLimits(4, 24, 96)},
+			remark: CleanupNamePrefix + "测试账户授权给超级管理员后过期"},
 		{key: "main_group_dev", resourceType: "group", resourceID: groups["main"], owner: admin,
 			grantee: dev, status: mockAuthorizationActive,
-			remark: CleanupNamePrefix + "研发用户可调用主力分组", limits: mockQuotaLimits(25, 200, 800)},
+			remark: CleanupNamePrefix + "研发用户可调用主力分组"},
 		// 运维用户的高并发分组样本指向管理员自有高并发分组：同一 (resource, grantee)
 		// 在运行时授权表上是唯一的（idx_resource_authorizations_user_unique），
 		// 与研发团队那条高并发分组授权错开资源才能各自落一行。
 		{key: "high_group_ops", resourceType: "group", resourceID: groups["manager_high"],
 			owner: CleanupIDPrefix + "user_admin", grantee: ops, status: mockAuthorizationActive,
-			remark: CleanupNamePrefix + "运维用户可调用管理员高并发分组", limits: mockQuotaLimits(20, 160, 620)},
+			remark: CleanupNamePrefix + "运维用户可调用管理员高并发分组"},
 		{key: "backup_group_viewer", resourceType: "group", resourceID: groups["backup"], owner: admin,
 			grantee: viewer, status: mockAuthorizationActive,
-			remark: CleanupNamePrefix + "观察用户可调用备用分组", limits: mockQuotaLimits(6, 36, 120)},
+			remark: CleanupNamePrefix + "观察用户可调用备用分组"},
 		{key: "experiment_group_tester", resourceType: "group", resourceID: groups["experiment"], owner: admin,
 			grantee: tester, status: mockAuthorizationActive, expiresIn: 14 * 24 * time.Hour,
-			remark: CleanupNamePrefix + "测试用户可调用实验分组", limits: mockQuotaLimits(8, 48, 160)},
+			remark: CleanupNamePrefix + "测试用户可调用实验分组"},
 		{key: "oauth_group_finance", resourceType: "group", resourceID: groups["oauth"], owner: admin,
 			grantee: finance, status: mockAuthorizationActive,
-			remark: CleanupNamePrefix + "财务用户可调用 OAuth 分组", limits: mockQuotaLimits(7, 42, 140)},
+			remark: CleanupNamePrefix + "财务用户可调用 OAuth 分组"},
+		// 混合领取样本：grant 处于 active，成员按 memberStatus 各自落在领取
+		// 状态上（dev/ops 已领取，tester 未领取），覆盖团队授权的成员扇出读语义。
 		{key: "backup_group_devteam", resourceType: "group", resourceID: groups["backup"], owner: admin,
 			team: devTeam, status: mockAuthorizationActive,
-			remark: CleanupNamePrefix + "研发团队可调用备用分组", limits: mockQuotaLimits(18, 120, 500)},
+			memberStatus: map[string]string{dev: mockAuthorizationActive, tester: mockAuthorizationPending, ops: mockAuthorizationActive},
+			remark:       CleanupNamePrefix + "研发团队可调用备用分组"},
 		{key: "oauth_group_opsteam", resourceType: "group", resourceID: groups["oauth"], owner: admin,
 			team: opsTeam, status: mockAuthorizationActive,
-			remark: CleanupNamePrefix + "运维团队可调用 OAuth 分组", limits: mockQuotaLimits(12, 80, 300)},
+			remark: CleanupNamePrefix + "运维团队可调用 OAuth 分组"},
+		// 全员未领取样本：grant 发出后团队无人领取（grant=pending），与
+		// backup_group_devteam 的混合领取互为对照。
 		{key: "high_group_devteam", resourceType: "group", resourceID: groups["high"], owner: admin,
-			team: devTeam, status: mockAuthorizationActive,
-			remark: CleanupNamePrefix + "研发团队可调用高并发分组", limits: mockQuotaLimits(22, 180, 720)},
+			team: devTeam, status: mockAuthorizationPending,
+			remark: CleanupNamePrefix + "研发团队可调用高并发分组"},
 		{key: "proxied_account_ops", resourceType: "account", resourceID: CleanupIDPrefix + "acc_proxied",
 			owner: admin, grantee: ops, status: mockAuthorizationActive,
-			remark: CleanupNamePrefix + "运维用户可调用带代理账户", limits: mockQuotaLimits(8, 60, 200)},
+			remark: CleanupNamePrefix + "运维用户可调用带代理账户"},
 		{key: "burstfast_account_dev", resourceType: "account", resourceID: CleanupIDPrefix + "acc_burst_fast",
 			owner: admin, grantee: dev, status: mockAuthorizationActive,
-			remark: CleanupNamePrefix + "研发用户可调用高并发快响账户", limits: mockQuotaLimits(14, 110, 420)},
+			remark: CleanupNamePrefix + "研发用户可调用高并发快响账户"},
 		{key: "oauth_account_finance", resourceType: "account", resourceID: CleanupIDPrefix + "acc_oauth",
 			owner: admin, grantee: finance, status: mockAuthorizationActive,
-			remark: CleanupNamePrefix + "财务用户可调用 OAuth 主力账户", limits: mockQuotaLimits(6, 40, 150)},
+			remark: CleanupNamePrefix + "财务用户可调用 OAuth 主力账户"},
 		{key: "burstimage_account_viewer", resourceType: "account", resourceID: CleanupIDPrefix + "acc_burst_image",
 			owner: admin, grantee: viewer, status: mockAuthorizationActive,
-			remark: CleanupNamePrefix + "观察用户可调用高并发图像账户", limits: mockQuotaLimits(5, 28, 90)},
+			remark: CleanupNamePrefix + "观察用户可调用高并发图像账户"},
 		{key: "primary_account_devteam", resourceType: "account", resourceID: CleanupIDPrefix + "acc_primary",
 			owner: admin, team: devTeam, status: mockAuthorizationActive,
-			remark: CleanupNamePrefix + "研发团队可调用主力账户", limits: mockQuotaLimits(10, 80, 240)},
+			remark: CleanupNamePrefix + "研发团队可调用主力账户"},
 		{key: "burstfallback_account_opsteam", resourceType: "account",
 			resourceID: CleanupIDPrefix + "acc_burst_fallback", owner: admin, team: opsTeam,
 			status: mockAuthorizationActive,
-			remark: CleanupNamePrefix + "运维团队可调用高并发备用账户", limits: mockQuotaLimits(9, 66, 220)},
+			remark: CleanupNamePrefix + "运维团队可调用高并发备用账户"},
 		{key: "experiment_group_opsteam_paused", resourceType: "group", resourceID: groups["experiment"],
 			owner: admin, team: opsTeam, status: mockAuthorizationPaused,
-			remark: CleanupNamePrefix + "运维团队暂停实验分组授权", limits: mockQuotaLimits(6, 36, 120)},
+			remark: CleanupNamePrefix + "运维团队暂停实验分组授权"},
 		{key: "normal_account_opsteam_revoked", resourceType: "account",
 			resourceID: CleanupIDPrefix + "acc_normal", owner: admin, team: opsTeam,
 			status: mockAuthorizationRevoked,
-			remark: CleanupNamePrefix + "运维团队已回收普通账户授权", limits: mockQuotaLimits(5, 30, 100)},
+			remark: CleanupNamePrefix + "运维团队已回收普通账户授权"},
 		{key: "oauthbackup_account_viewer_returned", resourceType: "account",
 			resourceID: CleanupIDPrefix + "acc_oauth_backup", owner: admin, grantee: viewer,
 			status: mockAuthorizationReturned,
-			remark: CleanupNamePrefix + "观察用户已归还 OAuth 账户授权", limits: mockQuotaLimits(2, 10, 40)},
+			remark: CleanupNamePrefix + "观察用户已归还 OAuth 账户授权"},
 		{key: "experiment_group_finance_paused", resourceType: "group", resourceID: groups["experiment"],
 			owner: admin, grantee: finance, status: mockAuthorizationPaused,
-			remark: CleanupNamePrefix + "财务用户暂停授权", limits: mockQuotaLimits(4, 20, 80)},
+			remark: CleanupNamePrefix + "财务用户暂停授权"},
 		{key: "main_group_finance_expired", resourceType: "group", resourceID: groups["main"], owner: admin,
 			grantee: finance, status: mockAuthorizationExpired, expiresIn: -2 * 24 * time.Hour,
-			remark: CleanupNamePrefix + "财务用户已过期主力分组授权", limits: mockQuotaLimits(3, 18, 60)},
+			remark: CleanupNamePrefix + "财务用户已过期主力分组授权"},
 		{key: "fallback_account_tester_expired", resourceType: "account",
 			resourceID: CleanupIDPrefix + "acc_fallback", owner: admin, grantee: tester,
 			status: mockAuthorizationExpired, expiresIn: -24 * time.Hour,
-			remark: CleanupNamePrefix + "测试用户已过期账户授权", limits: mockQuotaLimits(3, 16, 50)},
+			remark: CleanupNamePrefix + "测试用户已过期账户授权"},
 		{key: "normal_image_account_viewer_revoked", resourceType: "account",
 			resourceID: CleanupIDPrefix + "acc_image", owner: admin, grantee: viewer,
 			status: mockAuthorizationRevoked,
-			remark: CleanupNamePrefix + "观察用户已回收图像生成账户授权", limits: mockQuotaLimits(2, 12, 40)},
+			remark: CleanupNamePrefix + "观察用户已回收图像生成账户授权"},
 		{key: "temporary_account_viewer_revoked", resourceType: "account",
 			resourceID: CleanupIDPrefix + "acc_temporary", owner: admin, grantee: viewer,
 			status: mockAuthorizationRevoked,
-			remark: CleanupNamePrefix + "观察用户已回收临时账户授权", limits: mockQuotaLimits(1, 8, 24)},
+			remark: CleanupNamePrefix + "观察用户已回收临时账户授权"},
+		// 直发+领取样本：grantee=admin 的两条 pending 停在接收方领取位
+		// （「收到的授权」入口），declined 一条是拒绝领取终态。
+		// 组合 (resource_type, resource_id, grantee) 均避开 open 状态唯一索引。
+		{key: "invite_group_tester_pending", resourceType: "group", resourceID: groups["experiment"],
+			owner: tester, grantee: admin, status: mockAuthorizationPending,
+			remark: CleanupNamePrefix + "测试用户邀请管理员使用实验分组"},
+		{key: "invite_account_temp_pending", resourceType: "account",
+			resourceID: CleanupIDPrefix + "acc_temporary", owner: ops, grantee: admin,
+			status: mockAuthorizationPending,
+			remark: CleanupNamePrefix + "运维用户邀请管理员使用临时账户"},
+		{key: "declined_group_viewer", resourceType: "group", resourceID: groups["main"],
+			owner: viewer, grantee: admin, status: mockAuthorizationDeclined,
+			remark: CleanupNamePrefix + "管理员已拒绝观察用户的主力分组邀请"},
 	}
 	now := w.stamp()
 	var instances []mockInstanceSeed
@@ -2298,30 +2378,31 @@ func (w *businessWriter) seedAuthorizations(tx *sql.Tx, guard businessGuard, use
 		if seed.status == mockAuthorizationActive && seed.grantee != "" && seed.grantee == seed.owner {
 			return nil, fmt.Errorf("mockdata business 生成自授权样本：%s", seed.key)
 		}
-		limits, err := w.putJSON(seed.limits)
-		if err != nil {
-			return nil, err
-		}
 		expiresAt := nullTime(w, seed.expiresIn)
-		revokedBy, revokedAt, revokedReason := any(nil), any(nil), any(nil)
-		sourceStatus, endedAt, endedReason := "active", any(nil), any(nil)
+		revokedBy, revokedAt := any(nil), any(nil)
+		endedAt, endedReason := any(nil), any(nil)
+		// 终态授权必须持有 ended_at（ended_at CHECK）；时间口径：expired 取
+		// 过期时刻，revoked/returned/declined 分别取回收/归还/拒绝领取的相对
+		// 时刻，pending/active/paused 无结束时间。
 		switch seed.status {
-		case mockAuthorizationActive, mockAuthorizationPaused:
+		case mockAuthorizationActive, mockAuthorizationPaused, mockAuthorizationPending:
 		case mockAuthorizationExpired:
-			sourceStatus, endedReason = "superseded", "authorization_expired"
-			endedAt = w.at(seed.expiresIn)
-			revokedBy, revokedAt, revokedReason = guard.adminID, w.at(seed.expiresIn), "authorization_expired"
+			// 到期翻转（ExpireDueOffers）只写 ended_*，revoked_* 是人为回收专属。
+			endedAt, endedReason = w.at(seed.expiresIn), "authorization_expired"
 		case mockAuthorizationRevoked:
-			sourceStatus, revokedBy, revokedAt = "revoked", guard.adminID, w.at(-6*time.Hour)
+			revokedBy, revokedAt = guard.adminID, w.at(-6*time.Hour)
 			endedAt, endedReason = w.at(-6*time.Hour), "authorization_revoked"
 		case mockAuthorizationReturned:
-			sourceStatus, endedAt, endedReason = "superseded", w.at(-2*time.Hour), "authorization_returned"
+			endedAt, endedReason = w.at(-2*time.Hour), "authorization_returned"
+		case mockAuthorizationDeclined:
+			endedAt, endedReason = w.at(-time.Hour), "source_declined"
 		}
 		if seed.expiresIn > 0 {
 			expiresAt = w.at(seed.expiresIn)
 		}
 		activatedAt := any(nil)
-		if seed.status != mockAuthorizationReturned {
+		switch seed.status {
+		case mockAuthorizationActive, mockAuthorizationPaused, mockAuthorizationExpired, mockAuthorizationRevoked:
 			activatedAt = w.at(-20 * 24 * time.Hour)
 		}
 
@@ -2329,14 +2410,16 @@ func (w *businessWriter) seedAuthorizations(tx *sql.Tx, guard businessGuard, use
 		if seed.team != "" {
 			granteeType, granteeID, granteeTeam = "team", nil, seed.team
 		}
-		// 业务授予行：授权管理页的列表数据源。
+		// 业务授予行：授权管理页的列表数据源。直发+领取模型（revision 31）：
+		// grant 由资源归属人直接发出，无审批位与额度快照字段，pending 即接收
+		// 方未领取。
 		if err := w.put(tx, "resource_authorization_grants", map[string]any{
 			"id":            CleanupIDPrefix + "grant_" + seed.key,
 			"resource_type": seed.resourceType, "resource_id": seed.resourceID,
 			"resource_owner_system_account_id": seed.owner, "grantee_type": granteeType,
 			"grantee_system_account_id": granteeID, "grantee_team_id": granteeTeam,
 			"scope": "use", "status": seed.status, "remark": seed.remark,
-			"expires_at": expiresAt, "limits_json": limits, "created_by": guard.adminID,
+			"expires_at": expiresAt, "created_by": guard.adminID,
 			"ended_at": endedAt, "ended_reason": endedReason,
 			"created_at": w.at(-20 * 24 * time.Hour), "revoked_by": revokedBy,
 			"revoked_at": revokedAt, "updated_at": updatedAtFor(revokedAt, now),
@@ -2354,56 +2437,72 @@ func (w *businessWriter) seedAuthorizations(tx *sql.Tx, guard businessGuard, use
 			if seed.team != "" {
 				effectiveType, effectiveTeam = "team", seed.team
 			}
+			// runtime 行状态是该成员的领取状态：团队样本按 memberStatus 覆盖，
+			// 缺省成员与 grant 同状态。
+			runtimeStatus := seed.status
+			if overridden, ok := seed.memberStatus[granteeUser]; ok {
+				runtimeStatus = overridden
+			}
+			// runtime 的撤销字段只有 revoked 状态行携带：生产仅在资源删除、回收
+			// 与成员移除级联写入，到期/暂停/归还不写撤销字段。
+			runtimeRevokedBy, runtimeRevokedAt, runtimeRevokedReason := any(nil), any(nil), any(nil)
+			if runtimeStatus == mockAuthorizationRevoked {
+				runtimeRevokedBy, runtimeRevokedAt, runtimeRevokedReason = guard.adminID, w.at(-6*time.Hour), "authorization_revoked"
+			}
 			if err := w.put(tx, "resource_authorizations", map[string]any{
 				"id": authorizationID, "resource_type": seed.resourceType,
 				"resource_id":                      seed.resourceID,
 				"resource_owner_system_account_id": seed.owner,
 				"grantee_system_account_id":        granteeUser, "scope": "use",
-				"status": seed.status, "effective_source_type": effectiveType,
+				"status": runtimeStatus, "effective_source_type": effectiveType,
 				"effective_source_team_id": effectiveTeam, "activated_at": activatedAt,
 				"last_source_changed_at": w.at(-20 * 24 * time.Hour), "remark": seed.remark,
-				"expires_at": expiresAt, "limits_json": limits, "created_by": guard.adminID,
-				"created_at": w.at(-20 * 24 * time.Hour), "revoked_by": revokedBy,
-				"revoked_at": revokedAt, "revoked_reason": revokedReason,
-				"updated_at": updatedAtFor(revokedAt, now),
+				"expires_at": expiresAt, "created_by": guard.adminID,
+				"created_at": w.at(-20 * 24 * time.Hour), "revoked_by": runtimeRevokedBy,
+				"revoked_at": runtimeRevokedAt, "revoked_reason": runtimeRevokedReason,
+				"updated_at": updatedAtFor(runtimeRevokedAt, now),
 			}); err != nil {
 				return nil, err
+			}
+			// 分组授权设置行只有已领取（active/paused）的成员运行时行才有；
+			// revision 31 后只剩 7 列，开关与快照字段退役。
+			if seed.resourceType == "group" &&
+				(runtimeStatus == mockAuthorizationActive || runtimeStatus == mockAuthorizationPaused) {
+				if err := w.put(tx, "group_authorization_settings", map[string]any{
+					"authorization_id": authorizationID, "system_account_id": granteeUser,
+					"group_id": seed.resourceID, "group_type": "personal",
+					"scheduling_policy_json": nil,
+					"created_at":             w.at(-20 * 24 * time.Hour), "updated_at": now,
+				}); err != nil {
+					return nil, err
+				}
 			}
 			sourceType, sourceTeam := "manual", any(nil)
 			if seed.team != "" {
 				sourceType, sourceTeam = "team", seed.team
 			}
-			// Every seeded source has been accepted at least once, so it must
-			// carry the consent revision checked by revision 28.
-			sourceRevision := "mockdata:" + seed.key + ":" + userSlug(granteeUser)
-			if err := w.put(tx, "resource_authorization_sources", map[string]any{
+			// 来源行是该成员的领取视角：已领取（active/paused/expired/revoked）
+			// 补 accepted_at/accepted_by（成员本人），returned/declined 分别补
+			// 归还/拒绝领取动作；pending 未领取则动作列为空。
+			source := map[string]any{
 				"id":               CleanupIDPrefix + "source_" + seed.key + "_" + userSlug(granteeUser),
+				"grant_id":         CleanupIDPrefix + "grant_" + seed.key,
 				"authorization_id": authorizationID, "source_type": sourceType,
-				"source_team_id": sourceTeam, "status": sourceStatus,
-				"observed_source_revision": sourceRevision, "revision_version": 1,
-				"accepted_source_revision": sourceRevision, "accepted_source_revision_version": 1,
+				"source_team_id": sourceTeam, "status": runtimeStatus,
 				"activated_at": activatedAt, "ended_at": endedAt, "ended_reason": endedReason,
 				"created_by": guard.adminID, "created_at": w.at(-20 * 24 * time.Hour),
 				"revoked_by": revokedBy, "revoked_at": revokedAt, "updated_at": now,
-			}); err != nil {
-				return nil, err
 			}
-			// 归还来源会写入接收方冷却（设计 §5.6/§7.4），造数同步覆盖该表，
-			// 保持 business 域覆盖率断言不需要为事件表单独开白名单。
-			if seed.status == mockAuthorizationReturned && seed.team == "" {
-				if err := w.put(tx, "resource_authorization_offer_cooldowns", map[string]any{
-					"id":                        CleanupIDPrefix + "cooldown_" + seed.key + "_" + userSlug(granteeUser),
-					"grantor_system_account_id": seed.owner,
-					"grantee_type":              "system_account",
-					"grantee_system_account_id": granteeUser,
-					"resource_type":             seed.resourceType,
-					"resource_id":               seed.resourceID,
-					"until_at":                  w.at(22 * time.Hour),
-					"reason":                    "returned",
-					"created_at":                w.at(-2 * time.Hour),
-				}); err != nil {
-					return nil, err
-				}
+			switch runtimeStatus {
+			case mockAuthorizationActive, mockAuthorizationPaused, mockAuthorizationExpired, mockAuthorizationRevoked:
+				source["accepted_at"], source["accepted_by"] = w.at(-20*24*time.Hour), granteeUser
+			case mockAuthorizationReturned:
+				source["returned_at"], source["returned_by"] = w.at(-2*time.Hour), granteeUser
+			case mockAuthorizationDeclined:
+				source["declined_at"], source["declined_by"] = w.at(-time.Hour), granteeUser
+			}
+			if err := w.put(tx, "resource_authorization_sources", source); err != nil {
+				return nil, err
 			}
 			if seed.resourceType == "account" && seed.status == mockAuthorizationActive && seed.team == "" {
 				instances = append(instances, mockInstanceSeed{
@@ -2811,8 +2910,17 @@ func (w *businessWriter) seedApiKeys(tx *sql.Tx, guard businessGuard, users []mo
 		if purpose == "" {
 			purpose = "general"
 		}
+		// rev5 完成态契约（schedprefmigration）：purpose=general 的 Key 必须绑定
+		// scheduling_preference_id（内置「对话·成本优先」确定性 ID，ensure-schema
+		// 种子行）；非 general 恒 NULL。造数直接落终态，避免 mockdata 重建后
+		// upgrade postflight 的 rev5 NULL 残留核验失败。
+		schedPreferenceID := any(nil)
+		if purpose == "general" {
+			schedPreferenceID = schema.BuiltinSchedulingPreferenceID
+		}
 		columns := map[string]any{
 			"id": keyID, "system_account_id": seed.owner, "route_strategy_id": strategyID,
+			"scheduling_preference_id": schedPreferenceID,
 			"name": seed.name, "description": seed.desc, "key_hash": secretHash(plaintext),
 			"key_prefix": plaintext[:8], "key_suffix": plaintext[len(plaintext)-8:],
 			"key_secret_encrypted": sealed, "status": seed.status,
@@ -3647,13 +3755,12 @@ func (w *businessWriter) seedGroupAuthorizationSettings(tx *sql.Tx, guard busine
 		key     string
 		group   string
 		grantee string
-		enabled int
 	}{
-		{key: "main_group_dev", group: "main", grantee: CleanupIDPrefix + "user_dev", enabled: 1},
-		{key: "high_group_ops", group: "manager_high", grantee: CleanupIDPrefix + "user_ops", enabled: 1},
-		{key: "backup_group_viewer", group: "backup", grantee: CleanupIDPrefix + "user_viewer", enabled: 1},
-		{key: "experiment_group_tester", group: "experiment", grantee: CleanupIDPrefix + "user_tester", enabled: 1},
-		{key: "oauth_group_finance", group: "oauth", grantee: CleanupIDPrefix + "user_finance", enabled: 0},
+		{key: "main_group_dev", group: "main", grantee: CleanupIDPrefix + "user_dev"},
+		{key: "high_group_ops", group: "manager_high", grantee: CleanupIDPrefix + "user_ops"},
+		{key: "backup_group_viewer", group: "backup", grantee: CleanupIDPrefix + "user_viewer"},
+		{key: "experiment_group_tester", group: "experiment", grantee: CleanupIDPrefix + "user_tester"},
+		{key: "oauth_group_finance", group: "oauth", grantee: CleanupIDPrefix + "user_finance"},
 	}
 	now := w.stamp()
 	for _, seed := range seeds {
@@ -3664,7 +3771,7 @@ func (w *businessWriter) seedGroupAuthorizationSettings(tx *sql.Tx, guard busine
 		if err := w.put(tx, "group_authorization_settings", map[string]any{
 			"authorization_id":  CleanupIDPrefix + "auth_" + seed.key + "_" + userSlug(seed.grantee),
 			"system_account_id": seed.grantee, "group_id": group.id,
-			"enabled": seed.enabled, "group_type": group.groupType,
+			"group_type": group.groupType,
 			// 授权覆盖退役：策略列不再携带 per-grantee 策略。
 			"scheduling_policy_json": nil, "created_at": now, "updated_at": now,
 		}); err != nil {

@@ -134,7 +134,7 @@ export interface AccountUsageStatsParams extends ListParams {
 export interface AiPerformanceParams extends ListParams {
   startDate?: string
   endDate?: string
-  // 读通道：按能力域过滤 AI 性能 base/series（chat/video/audio/image；缺省=不过滤，前端 'all' 哨兵不下发）。
+  // 读通道：按能力域过滤 AI 性能 base/series（六域 chat/embedding/rerank/video/audio/image；缺省=不过滤，前端 'all' 哨兵不下发）。
   domain?: AccountCapabilityDomain
 }
 
@@ -185,7 +185,7 @@ export interface AccountListParams extends ListParams {
   status?: string | string[]
   /** 2026-11-07 裁决：enabled 包含时段外（gate=0），out_of_window 值已退役。 */
   schedulable?: 'all' | 'enabled' | 'disabled' | 'cooling'
-  // M1 读通道：按能力域过滤列表/导出（chat/video/audio/image；all=不过滤，前端四域菜单恒传具体域）。
+  // M1 读通道：按能力域过滤列表/导出（六域 chat/embedding/rerank/video/audio/image；all=不过滤，前端六域菜单恒传具体域）。
   domain?: AccountCapabilityDomain
 }
 
@@ -234,6 +234,8 @@ export interface AccountDraftTestAccountPayload {
   // （prepareAccountDraftTestSnapshot）改由 vendor 语义推导协议上下文，
   // 该键仅为滚动期旧部署的接受但忽略入参保留可选形状。
   providerProtocolProfileId?: string
+  /** 草稿能力域（五域退役修订，AI账户上游接口能力设计 §3/§5）：后端草稿链按入参域走退役臂并判定测试方式；chat 域行为不变。 */
+  capabilityDomain?: AccountCapabilityDomain
   /** 连接测试规格查找所用连接 preset；连接测试草稿必填，模型测试草稿可省略。 */
   connectionPresetCode?: string
   name: string
@@ -452,44 +454,7 @@ export interface ModelCheckStreamOptions extends RequestControlOptions {
   onError?: (error: { message?: string; statusCode?: number }) => void
 }
 
-export interface AuthorizationListParams extends ListParams {
-  keyword?: string
-  resourceType?: AuthorizationResourceType
-  resourceId?: string
-  resourceOwnerSystemAccountId?: string
-  granteeSystemAccountId?: string
-  teamId?: string
-  status?: 'active' | 'paused' | 'expired' | 'revoked' | 'returned' | 'all'
-  direction?: 'all' | 'outbound' | 'inbound'
-  sourceType?: 'all' | 'manual' | 'team'
-  startDate?: string
-  endDate?: string
-  page?: number
-  pageSize?: number
-}
-
-export type AuthorizationScopeParams = ListParams
-
-export interface AuthorizationPrincipalOptionsParams {
-  ids?: string[]
-  keyword?: string
-  limit?: number
-}
-
-export interface AuthorizationGranteeGroupOptionsParams extends AuthorizationPrincipalOptionsParams {
-  granteeSystemAccountId: string
-  providerCode?: string
-  preferDefault?: boolean
-}
-
-export interface AuthorizationUsageParams extends AuthorizationScopeParams {
-  startDate?: string
-  endDate?: string
-  page?: number
-  pageSize?: number
-}
-
-export interface AuthorizationUsageRowsParams extends AuthorizationScopeParams {
+export interface AuthorizationUsageRowsParams extends ListParams {
   resourceType?: AuthorizationResourceType
   resourceId?: string
   granteeSystemAccountId?: string

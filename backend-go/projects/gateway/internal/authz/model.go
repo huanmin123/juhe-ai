@@ -1,75 +1,57 @@
-// Recipient-consent authorization model (2026-11-20 design). This file keeps
-// the new offer/source rows separate from the legacy grantRow projection so the
-// old usage/statistics reads can continue to compile while every write entry
-// point is migrated to the new state machine.
+// Send-and-claim authorization model. Offer (grant), source and runtime rows
+// share the seven-value status set; confirmation checkpoints and material
+// review no longer exist.
 package authz
 
 import (
 	"context"
+	crand "crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/authzrevision"
 )
 
-// offerColumns is the business-offer projection used by the new routes.
+// offerColumns is the grant projection used by the routes.
 const offerColumns = `g.id, g.resource_type, g.resource_id, g.resource_owner_system_account_id,
 	g.grantee_type, COALESCE(g.grantee_system_account_id, ''), COALESCE(g.grantee_team_id, ''),
-	g.status, COALESCE(g.remark, ''), COALESCE(g.expires_at, ''), COALESCE(g.limits_json, ''),
-	g.created_by, COALESCE(g.accepted_at, ''), COALESCE(g.accepted_by, ''),
-	COALESCE(g.team_approved_at, ''), COALESCE(g.team_approved_by, ''),
-	COALESCE(g.owner_approved_at, ''), COALESCE(g.owner_approved_by, ''),
-	COALESCE(g.source_revision, ''), g.expiry_cycle, COALESCE(g.pending_expires_at, ''),
-	COALESCE(g.expired_from_status, ''), COALESCE(g.ended_at, ''), COALESCE(g.ended_reason, ''),
-	COALESCE(g.acceptance_mode, 'legacy'), COALESCE(g.legacy_basis, ''),
-	COALESCE(g.legacy_review_deadline, ''), g.created_at, g.updated_at`
+	g.status, COALESCE(g.remark, ''), COALESCE(g.expires_at, ''),
+	g.created_by,
+	COALESCE(g.source_revision, ''), g.expiry_cycle,
+	COALESCE(g.ended_at, ''), COALESCE(g.ended_reason, ''),
+	g.created_at, g.updated_at`
 
 type offerRecord struct {
-	ID                string
-	ResourceType      string
-	ResourceID        string
-	OwnerID           string
-	GranteeType       string
-	GranteeUserID     string
-	GranteeTeamID     string
-	Status            string
-	Remark            string
-	ExpiresAt         string
-	LimitsJSON        string
-	CreatedBy         string
-	AcceptedAt        string
-	AcceptedBy        string
-	TeamApprovedAt    string
-	TeamApprovedBy    string
-	OwnerApprovedAt   string
-	OwnerApprovedBy   string
-	SourceRevision    string
-	ExpiryCycle       int
-	PendingExpiresAt  string
-	ExpiredFromStatus string
-	EndedAt           string
-	EndedReason       string
-	AcceptanceMode    string
-	LegacyBasis       string
-	LegacyDeadline    string
-	CreatedAt         string
-	UpdatedAt         string
+	ID             string
+	ResourceType   string
+	ResourceID     string
+	OwnerID        string
+	GranteeType    string
+	GranteeUserID  string
+	GranteeTeamID  string
+	Status         string
+	Remark         string
+	ExpiresAt      string
+	CreatedBy      string
+	SourceRevision string
+	ExpiryCycle    int
+	EndedAt        string
+	EndedReason    string
+	CreatedAt      string
+	UpdatedAt      string
 }
 
 func scanOffer(scanner interface{ Scan(...any) error }) (offerRecord, error) {
 	var row offerRecord
 	err := scanner.Scan(&row.ID, &row.ResourceType, &row.ResourceID, &row.OwnerID,
 		&row.GranteeType, &row.GranteeUserID, &row.GranteeTeamID,
-		&row.Status, &row.Remark, &row.ExpiresAt, &row.LimitsJSON,
-		&row.CreatedBy, &row.AcceptedAt, &row.AcceptedBy,
-		&row.TeamApprovedAt, &row.TeamApprovedBy,
-		&row.OwnerApprovedAt, &row.OwnerApprovedBy,
-		&row.SourceRevision, &row.ExpiryCycle, &row.PendingExpiresAt,
-		&row.ExpiredFromStatus, &row.EndedAt, &row.EndedReason,
-		&row.AcceptanceMode, &row.LegacyBasis, &row.LegacyDeadline,
+		&row.Status, &row.Remark, &row.ExpiresAt,
+		&row.CreatedBy,
+		&row.SourceRevision, &row.ExpiryCycle,
+		&row.EndedAt, &row.EndedReason,
 		&row.CreatedAt, &row.UpdatedAt)
 	return row, err
 }
@@ -104,42 +86,29 @@ const sourceColumns = `s.id, COALESCE(s.grant_id, ''), s.authorization_id, s.sou
 	COALESCE(s.declined_at, ''), COALESCE(s.declined_by, ''),
 	COALESCE(s.returned_at, ''), COALESCE(s.returned_by, ''),
 	COALESCE(s.ended_at, ''), COALESCE(s.ended_reason, ''),
-	COALESCE(s.needs_review_at, ''), COALESCE(s.needs_review_reason, ''), COALESCE(s.needs_review_detail_json, ''),
-	COALESCE(s.accepted_source_revision, ''), COALESCE(s.observed_source_revision, ''),
-	COALESCE(s.accepted_source_revision_version, 0), s.revision_version,
-	s.expiry_cycle, COALESCE(s.expired_from_status, ''), COALESCE(s.pending_expires_at, ''),
-	s.created_by, s.created_at, s.updated_at, COALESCE(s.acceptance_mode, 'legacy')`
+	s.expiry_cycle,
+	s.created_by, s.created_at, s.updated_at`
 
 type sourceRecord struct {
-	ID                      string
-	GrantID                 string
-	AuthorizationID         string
-	SourceType              string
-	SourceTeamID            string
-	Status                  string
-	ActivatedAt             string
-	AcceptedAt              string
-	AcceptedBy              string
-	DeclinedAt              string
-	DeclinedBy              string
-	ReturnedAt              string
-	ReturnedBy              string
-	EndedAt                 string
-	EndedReason             string
-	NeedsReviewAt           string
-	NeedsReviewReason       string
-	NeedsReviewDetailJSON   string
-	AcceptedSourceRevision  string
-	ObservedSourceRevision  string
-	AcceptedRevisionVersion int
-	RevisionVersion         int
-	ExpiryCycle             int
-	ExpiredFromStatus       string
-	PendingExpiresAt        string
-	CreatedBy               string
-	CreatedAt               string
-	UpdatedAt               string
-	AcceptanceMode          string
+	ID             string
+	GrantID        string
+	AuthorizationID string
+	SourceType     string
+	SourceTeamID   string
+	Status         string
+	ActivatedAt    string
+	AcceptedAt     string
+	AcceptedBy     string
+	DeclinedAt     string
+	DeclinedBy     string
+	ReturnedAt     string
+	ReturnedBy     string
+	EndedAt        string
+	EndedReason    string
+	ExpiryCycle    int
+	CreatedBy      string
+	CreatedAt      string
+	UpdatedAt      string
 }
 
 func scanSource(scanner interface{ Scan(...any) error }) (sourceRecord, error) {
@@ -148,11 +117,8 @@ func scanSource(scanner interface{ Scan(...any) error }) (sourceRecord, error) {
 		&row.SourceTeamID, &row.Status, &row.ActivatedAt,
 		&row.AcceptedAt, &row.AcceptedBy, &row.DeclinedAt, &row.DeclinedBy,
 		&row.ReturnedAt, &row.ReturnedBy, &row.EndedAt, &row.EndedReason,
-		&row.NeedsReviewAt, &row.NeedsReviewReason, &row.NeedsReviewDetailJSON,
-		&row.AcceptedSourceRevision, &row.ObservedSourceRevision,
-		&row.AcceptedRevisionVersion, &row.RevisionVersion,
-		&row.ExpiryCycle, &row.ExpiredFromStatus, &row.PendingExpiresAt,
-		&row.CreatedBy, &row.CreatedAt, &row.UpdatedAt, &row.AcceptanceMode)
+		&row.ExpiryCycle,
+		&row.CreatedBy, &row.CreatedAt, &row.UpdatedAt)
 	return row, err
 }
 
@@ -197,8 +163,6 @@ type runtimeRecord struct {
 	EffectiveType   string
 	EffectiveTeamID string
 	ExpiresAt       string
-	LimitsJSON      string
-	AcceptanceMode  string
 	CreatedAt       string
 	UpdatedAt       string
 }
@@ -208,12 +172,12 @@ func (s *Store) getRuntimeForUpdate(ctx context.Context, tx *sql.Tx, id string) 
 	err := tx.QueryRowContext(ctx, s.bind(`SELECT id, resource_type, resource_id,
 			resource_owner_system_account_id, grantee_system_account_id, status,
 			COALESCE(effective_source_type, ''), COALESCE(effective_source_team_id, ''),
-			COALESCE(expires_at, ''), COALESCE(limits_json, ''),
-			COALESCE(acceptance_mode, 'legacy'), created_at, updated_at
+			COALESCE(expires_at, ''),
+			created_at, updated_at
 		FROM `+s.table("resource_authorizations")+` WHERE id = ? FOR UPDATE`), id).
 		Scan(&row.ID, &row.ResourceType, &row.ResourceID, &row.OwnerID, &row.GranteeID, &row.Status,
-			&row.EffectiveType, &row.EffectiveTeamID, &row.ExpiresAt, &row.LimitsJSON,
-			&row.AcceptanceMode, &row.CreatedAt, &row.UpdatedAt)
+			&row.EffectiveType, &row.EffectiveTeamID, &row.ExpiresAt,
+			&row.CreatedAt, &row.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -248,17 +212,17 @@ func (s *Store) ensureRuntime(ctx context.Context, tx *sql.Tx, resourceType, res
 	id := newRuntimeID(s.now)
 	if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("resource_authorizations")+`
 		(id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id,
-		 scope, status, status_reason, status_changed_at, acceptance_mode, activated_at, last_source_changed_at,
-		 remark, expires_at, limits_json, created_by, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, 'use', 'pending', 'offer_created', ?, 'recipient', NULL, ?, NULL, NULL, NULL, ?, ?, ?)`),
-		id, resourceType, resourceID, ownerID, granteeID, now, now, actor, now, now); err != nil {
+		 scope, status, activated_at, last_source_changed_at,
+		 remark, expires_at, created_by, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, 'use', 'pending', NULL, ?, NULL, NULL, ?, ?, ?)`),
+		id, resourceType, resourceID, ownerID, granteeID, now, actor, now, now); err != nil {
 		return nil, err
 	}
 	return s.getRuntimeForUpdate(ctx, tx, id)
 }
 
 func isLiveStatus(status string) bool {
-	return status == StatusPending || status == StatusActive || status == StatusDormant || status == StatusNeedsReview
+	return status == StatusPending || status == StatusActive
 }
 
 func isTerminalStatus(status string) bool {
@@ -267,7 +231,7 @@ func isTerminalStatus(status string) bool {
 
 func isOpenOfferStatus(status string) bool {
 	switch status {
-	case StatusPendingOwnerApproval, StatusPending, StatusPendingTeamApproval, StatusPendingMemberAcceptance, StatusActive, StatusPaused:
+	case StatusPending, StatusActive, StatusPaused:
 		return true
 	default:
 		return false
@@ -330,31 +294,7 @@ func nullIfEmpty(value string) any {
 
 func nowPlus(now time.Time, d time.Duration) string { return formatTime(now.Add(d)) }
 
-// TTL constants mirror design §8.4.
-const (
-	MaxPendingSourcesPerGrantee       = 50
-	MaxActiveSourcesPerGrantee        = 200
-	MaxAuthorizedInstancesPerGrantee  = 200
-	MaxOffersPerGrantorPerGrantee24h  = 10
-	MaxOffersPerGrantor24h            = 50
-	MaxDistinctGranteesPerGrantor24h  = 20
-	MaxPendingOffersPerGrantor        = 100
-	MaxTeamOffersPerGrantorPerTeam24h = 10
-	MaxTeamOffersPerGrantor24h        = 20
-	MaxPendingTeamApprovalsPerTeam    = 20
-	MaxGroupSnapshotAccounts          = 500
-	OfferCooldown                     = 24 * time.Hour
-	PendingOfferTTL                   = 7 * 24 * time.Hour
-	OwnerApprovalTTL                  = 7 * 24 * time.Hour
-	TeamApprovalTTL                   = 14 * 24 * time.Hour
-	MemberOfferTTL                    = 7 * 24 * time.Hour
-	TeamMemberlessTTL                 = 14 * 24 * time.Hour
-)
-
-var (
-	errOfferSuppressed = &Fail{Message: "offer_suppressed", Code: "offer_suppressed"}
-	errNoRestorable    = &Fail{Message: "没有可恢复的本次周期来源，请重新发起授权", Code: "no_restorable_source"}
-)
+var errNoRestorable = &Fail{Message: "没有可恢复的本次周期来源，请重新发起授权", Code: "no_restorable_source"}
 
 func failCode(code, message string) *Fail { return &Fail{Code: code, Message: message} }
 
@@ -380,4 +320,23 @@ func (s *Store) invalidateGovernance(ctx context.Context, reason string) {
 	s.invalidateAfterBusinessWrite(ctx, reason)
 }
 
-var _ = fmt.Sprintf
+func newGrantID(now func() time.Time) string {
+	return "rauthgrant_" + randomSuffix()
+}
+
+// randomSuffix mirrors Node newId: 16 random bytes hex.
+func randomSuffix() string {
+	var buf [16]byte
+	if _, err := crand.Read(buf[:]); err != nil {
+		panic(err)
+	}
+	return hex.EncodeToString(buf[:])
+}
+
+func newRuntimeID(now func() time.Time) string {
+	return "rauth_" + randomSuffix()
+}
+
+func newSourceID(now func() time.Time) string {
+	return "rauthsrc_" + randomSuffix()
+}

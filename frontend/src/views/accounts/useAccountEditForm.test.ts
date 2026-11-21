@@ -85,8 +85,6 @@ const minimaxDefinition = mediaProviderDefinition({
   ]
 })
 
-const VIDEO_GROUP = ['video_create', 'video_get', 'video_content', 'video_cancel']
-
 // ---- 受控 detail 加载器：模拟 ensureProviderDefinition 的「全局代次顶掉在途
 // 请求 → 被顶掉的请求以 undefined 结束」语义（B3 第二入口）。 ----
 
@@ -164,13 +162,17 @@ function mountMediaEditForm(
       })
       // 模拟统一向导新建态域默认 watch（编辑态不重放；用例不触发
       // 域外类型回退分支，故省略 select-type-choice 回退）。
+      // 五域退役后检查形态按域默认派生依赖 form.capabilityDomain 同步
+      //（真实同步在 AccountEditModal 的域 watch），此处与域默认落位同一
+      // 触发源补齐，避免 resetForm 重置后被内部 watch 按 chat 分支归位。
       watch(
         [context.modalOpen, context.editingId, () => context!.form.providerCode, () => context!.form.providerProtocolProfileId, () => context!.form.type],
         () => {
           if (!context!.modalOpen.value || context!.editingId.value) return
           if (context!.form.type && context!.form.type !== 'api_key') return
+          context!.form.capabilityDomain = capabilityDomain.value
           applyMediaCreateDefaults(context!.form, {
-            capabilityDomain: 'video',
+            capabilityDomain: capabilityDomain.value,
             providerCode: context!.form.providerCode,
             profile: context!.selectedProtocolProfile.value,
             type: context!.form.type
@@ -212,7 +214,7 @@ describe('useAccountEditForm.selectProvider（B3：媒体供应商默认值落�
     const { ctx, unmount } = mountMediaEditForm((providerDefinitions) => {
       loader.bind(providerDefinitions)
       return loader.ensure
-    })
+    }, ref('video'))
     try {
       await ctx.openCreate()
       ctx.selectProvider('volcengine')
@@ -223,7 +225,8 @@ describe('useAccountEditForm.selectProvider（B3：媒体供应商默认值落�
       expect(ctx.form.type).toBe('api_key')
       expect(ctx.form.providerProtocolProfileId).toBe(VOLCENGINE_OPENAI_V1_PROFILE_ID)
       expect(ctx.form.baseUrl).toBe('https://ark.cn-beijing.volces.com/api/v3')
-      expect(ctx.form.supportedEndpointModes).toEqual(VIDEO_GROUP)
+      // 五域退役：媒体表单不持有声明集，检查形态按域默认落值。
+      expect(ctx.form.supportedEndpointModes).toEqual([])
       expect(ctx.form.healthCheckEndpointMode).toBe('video_create')
       expect(ctx.form.status).toBe('pending_test')
       // 凭据段可见性条件（AccountApiKeySection v-if form.type === 'api_key'）。
@@ -238,7 +241,7 @@ describe('useAccountEditForm.selectProvider（B3：媒体供应商默认值落�
     const { ctx, unmount } = mountMediaEditForm((providerDefinitions) => {
       loader.bind(providerDefinitions)
       return loader.ensure
-    })
+    }, ref('video'))
     try {
       await ctx.openCreate()
       ctx.selectProvider('volcengine')
@@ -261,7 +264,7 @@ describe('useAccountEditForm.selectProvider（B3：媒体供应商默认值落�
     const { ctx, unmount } = mountMediaEditForm((providerDefinitions) => {
       loader.bind(providerDefinitions)
       return loader.ensure
-    })
+    }, ref('video'))
     try {
       await ctx.openCreate()
       ctx.selectProvider('volcengine')
@@ -277,7 +280,7 @@ describe('useAccountEditForm.selectProvider（B3：媒体供应商默认值落�
       expect(ctx.form.type).toBe('api_key')
       expect(ctx.form.providerProtocolProfileId).toBe(MINIMAX_OPENAI_V1_PROFILE_ID)
       expect(ctx.form.baseUrl).toBe('https://api.minimaxi.chat/v1')
-      expect(ctx.form.supportedEndpointModes).toEqual(VIDEO_GROUP)
+      expect(ctx.form.supportedEndpointModes).toEqual([])
       expect(ctx.form.healthCheckEndpointMode).toBe('video_create')
       expect(ctx.form.status).toBe('pending_test')
       expect(ctx.isApiKeyForm.value).toBe(true)

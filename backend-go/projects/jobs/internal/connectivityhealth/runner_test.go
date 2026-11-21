@@ -7,12 +7,12 @@ import (
 	"time"
 )
 
-// TestCandidateSQLOnlyConnectionTestAccounts 锁定候选口径：媒体域全部 +
-// chat 域只声明非对话形态的账户；J1 的对话生成形态不得出现在本通道，
-// 本通道也不得再出现图像真实生图形态。
+// TestCandidateSQLOnlyConnectionTestAccounts 锁定候选口径：媒体域与向量/
+// 重排域全部 + chat 域只声明非对话形态的账户；J1 的对话生成形态不得出现
+// 在本通道，本通道也不得再出现图像真实生图形态。
 func TestCandidateSQLOnlyConnectionTestAccounts(t *testing.T) {
-	if !strings.Contains(connectivityCandidateSQL, "a.capability_domain IN ('video', 'audio', 'image')") {
-		t.Fatal("候选 SQL 必须覆盖全部媒体能力域")
+	if !strings.Contains(connectivityCandidateSQL, "a.capability_domain IN ('video', 'audio', 'image', 'embedding', 'rerank')") {
+		t.Fatal("候选 SQL 必须覆盖全部媒体能力域与向量/重排域")
 	}
 	if !strings.Contains(connectivityCandidateSQL, "AND NOT EXISTS") {
 		t.Fatal("chat 域必须排除含对话生成形态的账户")
@@ -46,10 +46,11 @@ func TestClampConnectivityBudget(t *testing.T) {
 	cases := []struct {
 		batch, concurrency, wantBatch, wantConcurrency int
 	}{
-		{50, 512, 8, 8},
+		{50, 512, 50, 512},
 		{50, 4, 4, 4},
 		{4, 4, 4, 4},
-		{8, 8, 8, 8},
+		{512, 512, 512, 512},
+		{600, 512, 512, 512},
 	}
 	for _, test := range cases {
 		batch, concurrency := clampConnectivityBudget(test.batch, test.concurrency)
@@ -58,11 +59,74 @@ func TestClampConnectivityBudget(t *testing.T) {
 				test.batch, test.concurrency, batch, concurrency, test.wantBatch, test.wantConcurrency)
 		}
 	}
-	// 默认预算经收敛后必须是一波 2 分钟，小于 job 调度 3 分钟 timeout。
-	effectiveBatch, effectiveConcurrency := clampConnectivityBudget(defaultBatchSize, maxConcurrency)
-	waves := (effectiveBatch + effectiveConcurrency - 1) / effectiveConcurrency
-	if probeTimeout*time.Duration(waves) >= 3*time.Minute {
-		t.Fatalf("默认预算最坏耗时 %s 必须小于 job 调度 timeout", probeTimeout*time.Duration(waves))
+	// 默认预算经收敛后的最坏一轮是「全部候选同上游」：同上游并发只有
+	// perUpstreamConcurrency，墙钟 = ceil(batch/perUpstream)*probeTimeout，
+	// 必须小于 job 调度 15 分钟 timeout（LeaseTTL 同步 15 分钟）；预算余量还
+	// 要覆盖每波收尾的 DB 写与状态版本 bump（≤3s/波）。
+	effectiveBatch, effectiveConcurrency := clampConnectivityBudget(maxBatchSize, maxConcurrency)
+	waves := (effectiveBatch + perUpstreamConcurrency - 1) / perUpstreamConcurrency
+	if waves != 9 || effectiveConcurrency != 512 {
+		t.Fatalf("上限档应为 512 并发 / 9 波，got (%d, %d 波)", effectiveConcurrency, waves)
+	}
+	if worst := probeTimeout * time.Duration(waves); worst >= 15*time.Minute {
+		t.Fatalf("默认预算最坏耗时 %s 必须小于 job 调度 timeout", worst)
+	}
+	if worstWithWrite := probeTimeout*time.Duration(waves) + 3*time.Second*time.Duration(waves); worstWithWrite >= 15*time.Minute {
+		t.Fatalf("含写库开销的最坏耗时 %s 必须小于 job 调度 15 分钟 timeout", worstWithWrite)
+	}
+}
+
+// TestUpstreamOrigin 锁定同上游限流的分组键：scheme://host:port 归一，解析
+// 失败回落原始字符串，空值共享空键（保守限流，不放大瞬时压力）。
+func TestUpstreamOrigin(t *testing.T) {
+	cases := []struct {
+		baseURL, want string
+	}{
+		{"https://api.openai.com/v1", "https://api.openai.com"},
+		{"https://api.openai.com:8443/v1", "https://api.openai.com:8443"},
+		{"  https://dashscope.aliyuncs.com  ", "https://dashscope.aliyuncs.com"},
+		{"http://api.qwen.com", "http://api.qwen.com"},
+		{"https://api.openai.com/v1#fragment", "https://api.openai.com"},
+		// 非法 URL 回落原串：同一非法值恒映射同一键。
+		{"://bad url", "://bad url"},
+		{"not-a-url", "not-a-url"},
+		{"", ""},
+	}
+	for _, test := range cases {
+		if got := upstreamOrigin(test.baseURL); got != test.want {
+			t.Fatalf("upstreamOrigin(%q) = %q, want %q", test.baseURL, got, test.want)
+		}
+	}
+}
+
+// TestUpstreamLimiterBucketIsolation 锁定同上游限流桶语义：同 origin 共享
+// 容量 perUpstreamConcurrency 的桶，不同 origin 各自独立（互不占额）。
+func TestUpstreamLimiterBucketIsolation(t *testing.T) {
+	limiter := newUpstreamLimiter()
+	a := limiter.bucket("https://api.example.com")
+	a2 := limiter.bucket("https://api.example.com")
+	b := limiter.bucket("https://other.example.com")
+	if a != a2 {
+		t.Fatal("同 origin 必须共享同一个限流桶")
+	}
+	if a == b {
+		t.Fatal("不同 origin 必须使用独立限流桶")
+	}
+	// 桶容量 = perUpstreamConcurrency：塞满后再次获取阻塞，释放后可复用。
+	for i := 0; i < perUpstreamConcurrency; i++ {
+		a <- struct{}{}
+	}
+	full := limiter.bucket("https://api.example.com")
+	select {
+	case full <- struct{}{}:
+		t.Fatal("同源桶塞满后不得继续放行")
+	default:
+	}
+	<-a
+	select {
+	case full <- struct{}{}:
+	default:
+		t.Fatal("释放一个名额后应可再次获取")
 	}
 }
 
@@ -75,6 +139,15 @@ func TestUsesConnectionTest(t *testing.T) {
 		{"image", []string{"images_json"}, true},
 		{"audio", []string{"audio_speech"}, true},
 		{"video", []string{"video_create", "video_get"}, true},
+		// 五域退役修订（AI 账户上游接口能力设计 §5）：五域恒连接测试，不看
+		// modes——revision 30 清洗后声明集为空仍按域入选。
+		{"image", nil, true},
+		{"audio", nil, true},
+		{"video", nil, true},
+		{"embedding", nil, true},
+		{"rerank", nil, true},
+		// 五域即使残留旧声明词面也按域判定（不猜 modes）。
+		{"video", []string{"chat_json"}, true},
 		{"chat", []string{"embeddings_json", "rerank_json"}, true},
 		{"chat", []string{"embed_content"}, true},
 		{"chat", []string{"count_tokens"}, true},

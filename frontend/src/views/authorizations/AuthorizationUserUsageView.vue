@@ -505,7 +505,7 @@ async function fetchUserUsagePage(loadPageOptions: ResponsivePagedListLoadOption
     resetResourceOwnerUserOptionsSearch()
     resetResourceOptionsSearch()
   }
-  const usageOverview = isManagementView.value ? await api.authorizations.userUsage(params) : await api.myAuthorizations.userUsage(params)
+  const usageOverview = isManagementView.value ? await api.authorizationCenter.userUsage(params) : await api.myAuthorizationCenter.userUsage(params)
   if (!requestGate.isCurrent(requestToken, currentUsageSignature())) return { ...usageOverview, items: [], superseded: true }
   if (!requestGate.acceptRange(requestToken, currentUsageSignature(), usageOverview.range)) throw new Error('用户明细与汇总统计范围不一致')
   overview.value = usageOverview
@@ -535,7 +535,7 @@ async function loadUsageSummary() {
       granteeSystemAccountId: filters.granteeSystemAccountId,
       ...selectedRangeParams()
     }
-    const result = isManagementView.value ? await api.authorizations.userUsageSummary(params) : await api.myAuthorizations.userUsageSummary(params)
+    const result = isManagementView.value ? await api.authorizationCenter.userUsageSummary(params) : await api.myAuthorizationCenter.userUsageSummary(params)
     if (!requestGate.isCurrent(requestToken, currentUsageSignature())) return
     if (!requestGate.acceptRange(requestToken, currentUsageSignature(), result.range)) throw new Error('用户明细与汇总统计范围不一致')
     usageSummary.value = result

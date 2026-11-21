@@ -571,16 +571,6 @@ const authzPGFixtureSchema = `
       updated_at text DEFAULT '',
       PRIMARY KEY (authorization_id, account_id)
     );
-	CREATE TABLE IF NOT EXISTS juhe_business.resource_authorization_blocks (
-      id text PRIMARY KEY,
-      blocker_system_account_id text DEFAULT '',
-      blocked_system_account_id text,
-      blocked_resource_type text,
-      blocked_resource_id text,
-      reason text,
-      created_at text DEFAULT '',
-      updated_at text DEFAULT ''
-    );
 	CREATE TABLE IF NOT EXISTS juhe_business.authorization_notifications (
       id text PRIMARY KEY,
       system_account_id text DEFAULT '',

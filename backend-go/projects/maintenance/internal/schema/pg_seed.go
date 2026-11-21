@@ -88,7 +88,10 @@ func seedPostgresDefaults(ctx context.Context, client postgresSeedClient, option
 			return PGSeedResult{}, err
 		}
 	}
-	for _, cte := range []string{pgSeedQuotaScopeBindingsFromAPIKeysCTE, pgSeedQuotaScopeBindingsFromAuthorizationsCTE, pgSeedQuotaScopeBindingsFromTeamGrantsCTE} {
+	// 授权 scope binding 回填臂（Authorizations/TeamGrants CTE）已随 revision 31
+	// 授权治理简化批退役（额度 limits_json 全链退役，绑定恒为空）；仅保留
+	// api_keys 臂。存量授权绑定行由 revision 31 升级步骤 DELETE。
+	for _, cte := range []string{pgSeedQuotaScopeBindingsFromAPIKeysCTE} {
 		if err := exec(cte); err != nil {
 			return PGSeedResult{}, err
 		}

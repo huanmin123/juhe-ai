@@ -2,7 +2,7 @@
 // PLAN-20261011T141004000Z §数据变化）。
 //
 // 边界：加列与域赋值归 maintenance（migrate/verify 命令），jobs 启动只做一次
-// 性只读校验，不 ALTER、不重推账户域。列缺失或四值
+// 性只读校验，不 ALTER、不重推账户域。列缺失或六值
 // 形状（TEXT / NOT NULL / DEFAULT 'chat' / CHECK 四枚举）不符时 fail-fast
 // 停止，错误信息携带期望形状；不静默修补（部署顺序契约：先迁移后启动新版
 // 本）。M2 起在形状校验之后追加阶段记录门禁（要求
@@ -19,7 +19,7 @@
 // 判据说明：information_schema.columns 取类型/可空/默认值；CHECK 读
 //
 //	pg_constraint 的 pg_get_constraintdef——PG 会把 IN 归一化为
-//	= ANY(ARRAY[...])，因此按「约束含 capability_domain 且四值字面量齐备」
+//	= ANY(ARRAY[...])，因此按「约束含 capability_domain 且六值字面量齐备」
 //	判定值集形状，不匹配 IN 语法字面。
 package main
 
@@ -40,8 +40,9 @@ const (
 	capabilityDomainDefaultLiteral = "'chat'"
 
 	// capabilityDomainExpectedShape 是错误信息中的期望形状（与
-	// maintenance/internal/schema accounts DDL 的列声明一致）。
-	capabilityDomainExpectedShape = "capability_domain TEXT NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image'))"
+	// maintenance/internal/schema accounts DDL 的列声明一致；向量/重排拆分
+	// 设计 §6 revision 29 起为六值）。
+	capabilityDomainExpectedShape = "capability_domain TEXT NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image','embedding','rerank'))"
 
 	// capabilityDomainBusinessPGSchema 是 PG 模式业务 schema（worker/任务族
 	// juhe_business 前缀约定同源）。
@@ -53,8 +54,9 @@ const (
 )
 
 // capabilityDomainExpectedValues 是 CHECK 允许值集（PG pg_get_constraintdef
-// 按值集判定）。数组字面量不可为 const，按 var 承载。
-var capabilityDomainExpectedValues = [4]string{"'chat'", "'video'", "'audio'", "'image'"}
+// 按值集判定；向量/重排拆分设计 §6 revision 29 起为六值）。数组字面量不可为
+// const，按 var 承载。
+var capabilityDomainExpectedValues = [6]string{"'chat'", "'video'", "'audio'", "'image'", "'embedding'", "'rerank'"}
 
 // checkAccountsCapabilityDomainSchemaAtStartup 打开一次性只读 PG 连接执行
 // 形状校验与 M2 阶段记录门禁；worker 配置层面的 fail-fast 已在此前完成。
@@ -134,7 +136,7 @@ func checkAccountsCapabilityDomainSchemaPostgres(ctx context.Context, db *sql.DB
 		return fmt.Errorf("accounts.capability_domain 启动校验失败：遍历 CHECK 约束失败: %w", err)
 	}
 	checkRows.Close()
-	// PG 把 IN (...) 归一化为 = ANY(ARRAY[...])，按「同一约束含列名与四值
+	// PG 把 IN (...) 归一化为 = ANY(ARRAY[...])，按「同一约束含列名与六值
 	// 字面量」判定值集形状；不做 IN 语法字面匹配。
 	for _, definition := range definitions {
 		normalized := capabilityDomainNormalized(definition)
@@ -152,7 +154,7 @@ func checkAccountsCapabilityDomainSchemaPostgres(ctx context.Context, db *sql.DB
 			return nil
 		}
 	}
-	return fmt.Errorf("accounts.capability_domain 启动校验失败：%s.accounts 的 CHECK 约束未覆盖四值域集 %v，期望形状 %s", schema, capabilityDomainExpectedValues, capabilityDomainExpectedShape)
+	return fmt.Errorf("accounts.capability_domain 启动校验失败：%s.accounts 的 CHECK 约束未覆盖六值域集 %v，期望形状 %s", schema, capabilityDomainExpectedValues, capabilityDomainExpectedShape)
 }
 
 // capabilityDomainNormalized 小写化并移除全部空白（空格/换行/制表），供判据

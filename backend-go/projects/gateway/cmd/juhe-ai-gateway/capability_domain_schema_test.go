@@ -21,7 +21,7 @@ import (
 )
 
 // capabilityDomainCorrectColumn 是与 maintenance DDL 同构的正确列声明。
-const capabilityDomainCorrectColumn = `capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image'))`
+const capabilityDomainCorrectColumn = `capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image','embedding','rerank'))`
 
 // openCapabilityDomainPGDatabase 创建 pgtestkit 隔离测试库并应用
 // maintenance bootstrap.EnsurePostgres 生产全量建表（与 accounts
@@ -65,7 +65,7 @@ func TestCapabilityDomainSchemaPostgresArms(t *testing.T) {
 		{"nullable", `capability_domain text`, "期望 NOT NULL"},
 		{"wrong-default", `capability_domain text NOT NULL DEFAULT 'video'`, "期望前缀 'chat'"},
 		{"missing-check", `capability_domain text NOT NULL DEFAULT 'chat'`, "CHECK"},
-		{"narrowed-check", `capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video'))`, "四值域集"},
+		{"narrowed-check", `capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video'))`, "六值域集"},
 	}
 	for _, scenario := range scenarios {
 		t.Run(scenario.name, func(t *testing.T) {
@@ -119,7 +119,7 @@ func TestCapabilityDomainStageRecordGateArms(t *testing.T) {
 	}{
 		{"record-missing", "", "不存在"},
 		{"m1-complete", `{"stage":"m1_complete","ruleVersion":1,"updatedAt":"2026-10-12T08:00:00Z"}`, "m1_complete"},
-		{"rule-version-mismatch", `{"stage":"m2_finalized","ruleVersion":2,"updatedAt":"2026-10-12T08:00:00Z"}`, "ruleVersion"},
+		{"rule-version-mismatch", `{"stage":"m2_finalized","ruleVersion":3,"updatedAt":"2026-10-12T08:00:00Z"}`, "ruleVersion"},
 	}
 	for _, scenario := range scenarios {
 		t.Run(scenario.name, func(t *testing.T) {
@@ -146,7 +146,7 @@ func TestCapabilityDomainStageRecordGateArms(t *testing.T) {
 	})
 	t.Run("m2-finalized-passes", func(t *testing.T) {
 		db := openCapabilityDomainPGDatabase(t)
-		seedStageRecord(t, db, `{"stage":"m2_finalized","ruleVersion":1,"updatedAt":"2026-10-12T08:00:00Z"}`)
+		seedStageRecord(t, db, `{"stage":"m2_finalized","ruleVersion":2,"updatedAt":"2026-10-12T08:00:00Z"}`)
 		if err := checkAccountCapabilityDomainStageRecord(context.Background(), db); err != nil {
 			t.Fatalf("已封存记录必须放行: %v", err)
 		}

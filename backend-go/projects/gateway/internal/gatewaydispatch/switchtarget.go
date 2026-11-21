@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 )
 
@@ -85,9 +86,14 @@ type SwitchTargetFilterInput struct {
 
 // FilterAccountsForSwitchTarget 按冻结目标过滤候选账户（纯函数，设计文档 §4
 // 硬约束）。候选保留需同时满足：
+//  0. 域门（五域退役修订，AI 账户上游接口能力设计 §4）：冻结目标的精确 mode
+//     能派生请求域时，候选能力域必须一致——媒体 / 向量 / 重排切号不再按
+//     mode 圈定（五域候选声明投影恒空），只按域；目标 mode 无法派生域时不做
+//     域过滤（与 /v1 候选域闸门同语义）；
 //  1. mode 门：候选声明了 SupportedEndpointModes 时必须包含冻结的精确 mode
 //     （候选空 modes = 不受限；目标 mode 为空 = 本次请求形状无闸门 mode，
-//     两者都保持既有 D-155 语义不改变）；
+//     两者都保持既有 D-155 语义不改变；五域候选投影恒空后该门对媒体目标
+//     自然旁路，chat 目标语义不变）；
 //  2. 供应商门：非 Chat 目标禁止跨供应商（Responses / messages / gemini 等
 //     上游状态不外流）；Chat 目标允许跨供应商；
 //  3. 承接门：候选既有别名解析命中时，别名 RHS 必须 EqualFold 命中冻结模型
@@ -107,6 +113,14 @@ func FilterAccountsForSwitchTarget(accounts []AccountCandidate, in SwitchTargetF
 // accountServesSwitchTarget 判定单个候选能否承接冻结目标。
 func accountServesSwitchTarget(account AccountCandidate, in SwitchTargetFilterInput) bool {
 	target := in.Target
+	// 门 0：域闸门（五域退役修订）。目标精确 mode 派生域（chat /
+	// image / audio / video / embedding / rerank），候选域归一（空值落 chat）
+	// 后必须一致；空 mode（无闸门形态）不过滤。
+	if requestDomain := gatewaypreauth.CapabilityDomainForEndpointMode(strings.TrimSpace(target.UpstreamEndpointMode)); requestDomain != "" {
+		if AccountCapabilityDomain(account) != requestDomain {
+			return false
+		}
+	}
 	// 门 1：精确 mode。
 	if len(account.SupportedEndpointModes) > 0 && strings.TrimSpace(target.UpstreamEndpointMode) != "" {
 		modeMatched := false

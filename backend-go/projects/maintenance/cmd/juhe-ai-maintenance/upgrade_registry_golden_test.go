@@ -25,7 +25,11 @@ func TestUpgradeStepsRegistryGolden(t *testing.T) {
 		implVersion int
 	}{
 		// upgradeSteps 的注册表切片顺序不参与执行排序（Run 内
-		// sortStepsByRevision 按 revision 升序），golden 只钉注册内容。
+		// sortStepsByRevision 按 revision 升序），golden 只钉注册内容
+		//（与切片字面序一致：revision 31 注册在 30 之后）。
+		{30, "capability-domain-declaration-retirement", 1},
+		{31, "authz-claim-simplification", 1},
+		{29, "capability-domain-vector-rerank", 1},
 		{28, "authz-recipient-consent-governance", 1},
 		{1, "j3a-proxy-latency-pg", 1},
 		{2, "j3b-model-check-pg", 1},
@@ -70,7 +74,7 @@ func TestUpgradeStepsRegistryGolden(t *testing.T) {
 	for _, step := range steps {
 		destructive[step.ID] = step.Destructive
 	}
-	for _, id := range []string{"studio-retirement", "drop-retired-monitoring-tables", "retire-cross-protocol-entry-mappings", "retire-high-concurrency-groups", "retire-usage-shard-catalog", "migrate-key-client-ip-limit", "authz-recipient-consent-governance"} {
+	for _, id := range []string{"studio-retirement", "drop-retired-monitoring-tables", "retire-cross-protocol-entry-mappings", "retire-high-concurrency-groups", "retire-usage-shard-catalog", "migrate-key-client-ip-limit", "authz-recipient-consent-governance", "authz-claim-simplification"} {
 		if !destructive[id] {
 			t.Fatalf("步骤 %s 应标记 destructive", id)
 		}
@@ -79,13 +83,30 @@ func TestUpgradeStepsRegistryGolden(t *testing.T) {
 		t.Fatal("capability-domain/scheduling-preferences 不应标记 destructive")
 	}
 	// 启动前必需标记：revision 25 的数据迁移结果被新二进制直接消费，expand
-	// 跳过会让 Key 落默认 -1（旧分组限制静默失效），必须显式 blocked。
+	// 跳过会让 Key 落默认 -1（旧分组限制静默失效），必须显式 blocked；
+	// revision 28/29/30 同理（启动门禁/写侧分别消费授权治理、ruleVersion=2
+	// 记录与五域无声明面终态——旧二进制读空声明不受限，跳过清洗会让五域
+	// 残留声明与 §3 契约相悖）。revision 31 同理：新二进制按 7 值词表与
+	// 简化后形状运行，跳过退役步骤会让旧表/旧列/旧状态残留并与当前 schema
+	// 契约相悖。
 	for _, step := range steps {
 		if step.ID == "migrate-key-client-ip-limit" && !step.RequiredBeforeStartup {
 			t.Fatal("migrate-key-client-ip-limit 应标记 RequiredBeforeStartup")
 		}
 		if step.ID == "authz-recipient-consent-governance" && !step.RequiredBeforeStartup {
 			t.Fatal("authz-recipient-consent-governance 应标记 RequiredBeforeStartup")
+		}
+		if step.ID == "capability-domain-vector-rerank" && !step.RequiredBeforeStartup {
+			t.Fatal("capability-domain-vector-rerank 应标记 RequiredBeforeStartup")
+		}
+		if step.ID == "capability-domain-declaration-retirement" && !step.RequiredBeforeStartup {
+			t.Fatal("capability-domain-declaration-retirement 应标记 RequiredBeforeStartup")
+		}
+		if step.ID == "authz-claim-simplification" && !step.RequiredBeforeStartup {
+			t.Fatal("authz-claim-simplification 应标记 RequiredBeforeStartup")
+		}
+		if step.ID == "capability-domain-declaration-retirement" && step.Destructive {
+			t.Fatal("capability-domain-declaration-retirement 不应标记 destructive（清洗后状态向前兼容，旧二进制读空声明不受限）")
 		}
 	}
 }

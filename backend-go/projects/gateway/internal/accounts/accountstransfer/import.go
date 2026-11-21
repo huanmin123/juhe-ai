@@ -1402,6 +1402,9 @@ func (s *Service) normalizeImportAccountCredentials(source *NormalizedImportAcco
 		ProviderProtocolProfileID: source.providerProtocolProfileID,
 		ProtocolCode:              source.protocolCode,
 		ProtocolVersion:           source.protocolVersion,
+		// 推导域（applyImportCapabilityDomain 已按五域退役口径剥离凭据键）：
+		// 五域不播种默认集、不落 supported_endpoint_modes；chat 缺省语义不变。
+		CapabilityDomain: source.capabilityDomain,
 	})
 	if err != nil {
 		source.Push(err.Error())
@@ -1415,7 +1418,11 @@ func (s *Service) normalizeImportAccountCredentials(source *NormalizedImportAcco
 // DeriveDomain 推导域、缺失视为 chat；modes 缺省（键不存在）时按推导域默认
 // 集补齐（DefaultEndpointModesForDomain，空集 = 该供应商不支持该域，直接报
 // 失败）。声明存在但无法证明与运行时口径一致（空数组/null/非数组/未知值）
-// 时不推导、不回显，交给既有凭据归一化错误路径。
+// 时不推导、不回显，交给既有凭据归一化错误路径（六态分类不动，既有失败清单
+// 语义沿用）。
+// 2026-11-21 五域退役（AI账户上游接口能力设计 §3.3）：包内 modes 仅用于推域
+// （历史导入文件兼容）——推导域为五域时落库剥离凭据键、不补缺省、不做 ⊆
+// allowed 校验（见 assertImportCapabilityDomainBounds 分路）；chat 导入校验保留。
 func applyImportCapabilityDomain(source *NormalizedImportAccount, providers map[string]*ImportProvider) {
 	if !importCapabilityContextResolvable(source, providers) {
 		return
@@ -1431,6 +1438,19 @@ func applyImportCapabilityDomain(source *NormalizedImportAccount, providers map[
 		return
 	}
 	source.capabilityDomain = string(derived)
+	if accountscore.EndpointModesDeclarationRetired(string(derived)) {
+		// 五域声明面退役：modes 仅用于推域，落库剥离凭据键（历史/混合输入一并
+		// 清理；后续 normalizeImportAccountCredentials 按域上下文剥键且不播种）。
+		stripped := accountscore.Credentials{}
+		for key, value := range source.credentials {
+			if key == "supported_endpoint_modes" {
+				continue
+			}
+			stripped[key] = value
+		}
+		source.credentials = stripped
+		return
+	}
 	if reading.Status == capabilitydomain.ModesMissing {
 		defaults := accountscore.DefaultEndpointModesForDomain(string(derived), source.providerCode, source.accountType, importCapabilityPredicate(source))
 		if len(defaults) == 0 {
@@ -1448,9 +1468,12 @@ func applyImportCapabilityDomain(source *NormalizedImportAccount, providers map[
 
 // assertImportCapabilityDomainBounds 是 M2 导入严格校验的第二段：归一化后的
 // 最终声明集 ⊆ 推导域允许集，越界（含混合能力包）以 per-account message 报
-// 冲突（item failed → CanImport=false），不静默裁剪。
+// 冲突（item failed → CanImport=false），不静默裁剪。五域声明面退役：五域
+// 不做 ⊆ allowed 校验（含「该供应商不支持该域」空集臂——域开通由执行链
+// Store.Create 的矩阵门承担）。
 func assertImportCapabilityDomainBounds(source *NormalizedImportAccount, providers map[string]*ImportProvider) {
-	if source.capabilityDomain == "" || !importCapabilityContextResolvable(source, providers) {
+	if source.capabilityDomain == "" || !importCapabilityContextResolvable(source, providers) ||
+		accountscore.EndpointModesDeclarationRetired(source.capabilityDomain) {
 		return
 	}
 	allowed := accountscore.AllowedEndpointModes(source.capabilityDomain, source.providerCode, source.accountType, importCapabilityPredicate(source))
@@ -1588,7 +1611,10 @@ func (s *Service) validateImportModelCatalogFields(ctx context.Context, source *
 		ProviderCode:    source.providerCode,
 		ProtocolCode:    source.protocolCode,
 		ProtocolVersion: source.protocolVersion,
-	}, source.modelMappings, StoredEndpointModes(source.credentials["supported_endpoint_modes"])); err != nil {
+		// 推导域喂参（五域退役设计 §3）：五域跳过上游 endpoint-mode 声明能力
+		// 格门；空串（上下文不可解析）按 chat 缺省走全量门，与创建链同口径。
+		ProviderProtocolProfileID: source.providerProtocolProfileID,
+	}, source.modelMappings, StoredEndpointModes(source.credentials["supported_endpoint_modes"]), source.capabilityDomain); err != nil {
 		source.Push(importCatalogGuidance(err))
 	}
 	return nil

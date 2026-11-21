@@ -93,8 +93,37 @@ const ArchitectureVersion = "go-projects-v1"
 // 状态与接受修订字段，新增分组快照、屏蔽、通知、暂停发起、cooldown 表，
 // system_accounts/system_teams 逻辑删除；注册
 // authz-recipient-consent-governance 数据/回填步骤（legacy 回填、grant_id 匹配、
-// 快照建立、约束 VALIDATE、外键收紧、复核通知）。当前值 28。
-const SchemaRevision int64 = 28
+// 快照建立、约束 VALIDATE、外键收紧、复核通知）。2026-11-21 revision 29 向量/
+// 重排独立能力域（《AI账户能力域向量重排拆分设计》§6）：accounts.capability_
+// domain CHECK 四值→六值（建表内联、存量守卫 ALTER 与新具名重建 DO 块
+// account-capability-domain-vector-rerank-pg-check）；注册
+// capability-domain-vector-rerank 数据步骤（阶段记录 ruleVersion 1→2 升级 +
+// 存量账户按推导 v2 重推导，混合声明进失败清单人工处理，RequiredBeforeStartup）。
+// 2026-11-21 revision 30 五域上游接口能力退役（《AI账户上游接口能力设计》§3）：
+// 注册 capability-domain-declaration-retirement 数据步骤（RequiredBeforeStartup，
+// 无 DDL 纯数据步骤，写入 schema_migrations）：删除 image/audio/video/embedding/
+// rerank 五域账户加密凭据中的 supported_endpoint_modes 键与 account_endpoint_modes
+// 中五域账户行，输出清洗报告；chat 域声明校验与 endpoint mode 词表（健康检查 /
+// 连通性探测执行面）保留。旧二进制读空声明 = 不受限，清洗后状态向前兼容。
+// 2026-11-22 revision 31 授权治理简化（授权治理模型大简化裁决）：revision
+// 28/29/30 未上生产仅 dev、无兼容包袱，审批/冷却/快照/复核机制根治退役——
+// 照 resource_authorization_blocks 撤销先例，未发布 revision 的 DDL 语句直接
+// 删除不留退役语句：resource_authorization_group_accounts、
+// authorization_notifications、resource_authorization_offer_cooldowns、
+// system_account_authorization_suspensions 四表与 grants/sources/runtime/
+// group_authorization_settings 的 29 条退役列（含 settings.enabled，分组授权
+// 开关机制取消；含补删批的 runtime/grants limits_json 建表基列——授权额度
+// 全链退役，两条 quota_snapshot 部分索引与两个授权 scope binding seed 回填
+// 臂同批退役）退出当前 schema；grants/sources/runtime 三个 status CHECK
+// 收敛为 7 值词表（pending/active/paused/expired/revoked/returned/declined），
+// acceptance_mode/pending_expiry/dormant/accepted_revision/snapshot_mode 等
+// 退役 CHECK 与 pending_expiry 索引一并删除。注册 authz-claim-simplification
+// 数据/破坏步骤（RequiredBeforeStartup，写入 schema_migrations）：存量 dev 库
+// 由该步骤在单事务内 DROP 退役对象、收敛非 7 值状态（pending_* / dormant /
+// needs_review → pending，superseded → returned）、DELETE 授权来源 quota
+// scope binding 行后重建收敛 CHECK。
+// 当前值 31。
+const SchemaRevision int64 = 31
 
 // MinRequiredRevision 是本二进制正常运行所需的最低库结构版本（多节点发布
 // 设计 §5.1）：有结构变更的发布批次等于本批 SchemaRevision；库低于该值时

@@ -28,9 +28,11 @@ func playgroundFixtureDeps(t *testing.T, functionCalling bool) *Deps {
 		tools["chat_completions"] = []string{"function_calling"}
 	}
 	transportView := TransportAccount{
-		ID:                     "acc_1",
-		Type:                   "api_key",
-		ProviderCode:           "gpt",
+		ID:           "acc_1",
+		Type:         "api_key",
+		ProviderCode: "gpt",
+		// 五域退役修订：基础夹具显式声明 chat 域（对话候选按域路由）。
+		CapabilityDomain:       "chat",
 		SupportedEndpointModes: []string{"chat_sse", "video_create", "audio_speech"},
 	}
 	return &Deps{

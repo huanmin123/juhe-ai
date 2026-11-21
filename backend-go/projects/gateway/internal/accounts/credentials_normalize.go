@@ -110,6 +110,13 @@ func NormalizeAccountCredentialsForWrite(accountType string, value Credentials, 
 		return nil, err
 	}
 	input = stripDeprecatedAccountCredentialKeys(input)
+	// 五域声明面退役（AI账户上游接口能力设计 §3）：image/audio/video/
+	// embedding/rerank 账户的凭据不落 supported_endpoint_modes 键——入口即剥，
+	// 历史/混合输入（含显式 null、非数组、未知值）随归一化静默剥离，不再触发
+	// 「上游接口能力必须是数组」等值域错误；chat（含空串缺省）保持既有语义。
+	if accountscore.EndpointModesDeclarationRetired(defaults.CapabilityDomain) {
+		delete(input, "supported_endpoint_modes")
+	}
 	allowedKeys, err := accountCredentialAllowedKeys(accountType)
 	if err != nil {
 		return nil, err
@@ -196,11 +203,15 @@ func normalizeAPIKeyAccountCredentials(input map[string]any, defaults EndpointMo
 		"api_key":  apiKeys[0],
 		"base_url": baseURL,
 	}
-	modes, err := normalizeEndpointModesForWrite(credentialField(input, "supported_endpoint_modes"), endpointModeContextWithOf(defaults, "api_key"))
-	if err != nil {
-		return nil, err
+	// 五域声明面退役（设计 §3）：五域账户不落 supported_endpoint_modes 键，
+	// 也不按 driver 缺省集播种；chat（含空串缺省）保持既有归一化。
+	if !accountscore.EndpointModesDeclarationRetired(defaults.CapabilityDomain) {
+		modes, err := normalizeEndpointModesForWrite(credentialField(input, "supported_endpoint_modes"), endpointModeContextWithOf(defaults, "api_key"))
+		if err != nil {
+			return nil, err
+		}
+		credentials["supported_endpoint_modes"] = modes
 	}
-	credentials["supported_endpoint_modes"] = modes
 	if len(apiKeys) > 1 {
 		credentials["api_keys"] = anyStrings(apiKeys)
 		strategy := normalizeAPIKeyStrategy(credentialField(input, "api_key_strategy").value)
@@ -360,11 +371,16 @@ func normalizeOAuthAccountCredentials(input map[string]any, defaults EndpointMod
 	if err != nil {
 		return nil, err
 	}
-	modes, err := normalizeEndpointModesForWrite(credentialField(input, "supported_endpoint_modes"), endpointModeContextWithOf(defaults, "oauth"))
-	if err != nil {
-		return nil, err
+	// 五域声明面退役（设计 §3）：与 api_key 臂同口径——五域账户不落
+	// supported_endpoint_modes 键，chat（含空串缺省）保持既有归一化。
+	credentials := Credentials{"base_url": baseURL}
+	if !accountscore.EndpointModesDeclarationRetired(defaults.CapabilityDomain) {
+		modes, err := normalizeEndpointModesForWrite(credentialField(input, "supported_endpoint_modes"), endpointModeContextWithOf(defaults, "oauth"))
+		if err != nil {
+			return nil, err
+		}
+		credentials["supported_endpoint_modes"] = modes
 	}
-	credentials := Credentials{"base_url": baseURL, "supported_endpoint_modes": modes}
 	if err := assertSafeUpstreamBaseURL(baseURL); err != nil {
 		return nil, err
 	}
@@ -468,11 +484,16 @@ func normalizeGoogleOAuthAccountCredentials(input map[string]any, defaults Endpo
 	if err != nil {
 		return nil, err
 	}
-	modes, err := normalizeEndpointModesForWrite(credentialField(input, "supported_endpoint_modes"), endpointModeContextWithOf(defaults, "google_oauth"))
-	if err != nil {
-		return nil, err
+	// 五域声明面退役（设计 §3）：与 api_key/oauth 臂同口径——五域账户不落
+	// supported_endpoint_modes 键，chat（含空串缺省）保持既有归一化。
+	credentials := Credentials{"base_url": baseURL}
+	if !accountscore.EndpointModesDeclarationRetired(defaults.CapabilityDomain) {
+		modes, err := normalizeEndpointModesForWrite(credentialField(input, "supported_endpoint_modes"), endpointModeContextWithOf(defaults, "google_oauth"))
+		if err != nil {
+			return nil, err
+		}
+		credentials["supported_endpoint_modes"] = modes
 	}
-	credentials := Credentials{"base_url": baseURL, "supported_endpoint_modes": modes}
 	if err := assertSafeUpstreamBaseURL(baseURL); err != nil {
 		return nil, err
 	}

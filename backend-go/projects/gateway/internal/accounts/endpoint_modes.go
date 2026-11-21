@@ -25,29 +25,29 @@ import (
 // 仍留本包。
 
 const (
-	gptOpenAIV1ProfileIDConstant         = accountscore.GptOpenAIV1ProfileID
-	xaiOpenAIV1ProfileID                 = accountscore.XaiOpenAIV1ProfileID
-	deepSeekOpenAIV1ProfileID            = accountscore.DeepSeekOpenAIV1ProfileID
-	deepSeekAnthropicV1ProfileID         = accountscore.DeepSeekAnthropicV1ProfileID
-	glmGeneralOpenAIV1ProfileID          = accountscore.GlmGeneralOpenAIV1ProfileID
-	glmCodingOpenAIV1ProfileID           = accountscore.GlmCodingOpenAIV1ProfileID
-	glmCodingAnthropicV1ProfileID        = accountscore.GlmCodingAnthropicV1ProfileID
-	geminiOpenAIChatV1BetaProfileID      = accountscore.GeminiOpenAIChatV1BetaProfileID
-	minimaxOpenAIV1ProfileID             = accountscore.MinimaxOpenAIV1ProfileID
-	volcengineOpenAIV1ProfileID          = accountscore.VolcengineOpenAIV1ProfileID
-	qwenOpenAIV1ProfileID                = accountscore.QwenOpenAIV1ProfileID
-	anthropicProviderCode                = accountscore.AnthropicProviderCode
-	geminiProviderCode                   = accountscore.GeminiProviderCode
-	anthropicProtocolCodeConstant        = accountscore.AnthropicProtocolCode
-	anthropicProtocolVersionConstant     = accountscore.AnthropicProtocolVersion
-	geminiProtocolCodeConstant           = accountscore.GeminiProtocolCode
-	geminiProtocolVersionConstant        = accountscore.GeminiProtocolVersion
-	deepSeekProviderCode                 = accountscore.DeepSeekProviderCode
-	glmProviderCode                      = accountscore.GlmProviderCode
-	minimaxProviderCode                  = accountscore.MinimaxProviderCode
-	volcengineProviderCode               = accountscore.VolcengineProviderCode
-	qwenProviderCode                     = accountscore.QwenProviderCode
-	xaiProviderCode                      = accountscore.XaiProviderCode
+	gptOpenAIV1ProfileIDConstant     = accountscore.GptOpenAIV1ProfileID
+	xaiOpenAIV1ProfileID             = accountscore.XaiOpenAIV1ProfileID
+	deepSeekOpenAIV1ProfileID        = accountscore.DeepSeekOpenAIV1ProfileID
+	deepSeekAnthropicV1ProfileID     = accountscore.DeepSeekAnthropicV1ProfileID
+	glmGeneralOpenAIV1ProfileID      = accountscore.GlmGeneralOpenAIV1ProfileID
+	glmCodingOpenAIV1ProfileID       = accountscore.GlmCodingOpenAIV1ProfileID
+	glmCodingAnthropicV1ProfileID    = accountscore.GlmCodingAnthropicV1ProfileID
+	geminiOpenAIChatV1BetaProfileID  = accountscore.GeminiOpenAIChatV1BetaProfileID
+	minimaxOpenAIV1ProfileID         = accountscore.MinimaxOpenAIV1ProfileID
+	volcengineOpenAIV1ProfileID      = accountscore.VolcengineOpenAIV1ProfileID
+	qwenOpenAIV1ProfileID            = accountscore.QwenOpenAIV1ProfileID
+	anthropicProviderCode            = accountscore.AnthropicProviderCode
+	geminiProviderCode               = accountscore.GeminiProviderCode
+	anthropicProtocolCodeConstant    = accountscore.AnthropicProtocolCode
+	anthropicProtocolVersionConstant = accountscore.AnthropicProtocolVersion
+	geminiProtocolCodeConstant       = accountscore.GeminiProtocolCode
+	geminiProtocolVersionConstant    = accountscore.GeminiProtocolVersion
+	deepSeekProviderCode             = accountscore.DeepSeekProviderCode
+	glmProviderCode                  = accountscore.GlmProviderCode
+	minimaxProviderCode              = accountscore.MinimaxProviderCode
+	volcengineProviderCode           = accountscore.VolcengineProviderCode
+	qwenProviderCode                 = accountscore.QwenProviderCode
+	xaiProviderCode                  = accountscore.XaiProviderCode
 )
 
 var openAIChatEndpointModes = accountscore.OpenAIChatEndpointModes

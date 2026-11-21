@@ -216,7 +216,6 @@ function accountStatusFilterFactsChanged(previous: AccountListItem, updated: Acc
     // 时间计划闸门变化触发列表重过滤；时段外并入可调度子集（时间计划闸门设计 §5.4，2026-11-07 裁决）。
     previous.availabilityScheduleGate,
     previous.effectiveAvailability,
-    previous.authorizationQuotaExceeded,
     previous.authorizationInstanceSourceAccountStatus,
     previous.authorizationInstanceSourceAccountSchedulable,
     previous.authorizationInstanceSourceAccountExpiresAt,
@@ -226,7 +225,6 @@ function accountStatusFilterFactsChanged(previous: AccountListItem, updated: Acc
     updated.schedulable,
     updated.availabilityScheduleGate,
     updated.effectiveAvailability,
-    updated.authorizationQuotaExceeded,
     updated.authorizationInstanceSourceAccountStatus,
     updated.authorizationInstanceSourceAccountSchedulable,
     updated.authorizationInstanceSourceAccountExpiresAt,

@@ -28,6 +28,8 @@ func TestImagesGenerationsRequestConstruction(t *testing.T) {
 	catalog := deps.ProviderCatalog.(*staticCatalog)
 	catalog.byProvider["gpt"] = append(catalog.byProvider["gpt"], CatalogItem{Model: "gpt-image-2", SupportedAPIProtocols: []string{"image_generation"}})
 	transportView := deps.TransportAccounts.(*staticTransport)
+	// 五域退役修订：图像候选按域路由（image 域账户才列生图模型）。
+	transportView.views["acc_1"][0].CapabilityDomain = "image"
 	transportView.views["acc_1"][0].SupportedEndpointModes = append(transportView.views["acc_1"][0].SupportedEndpointModes, "images_json")
 	dispatch := deps.Dispatch.(*mockDispatch)
 	dispatch.script = []scriptedResponse{{
@@ -98,6 +100,8 @@ func TestImagesEditsRequestConstruction(t *testing.T) {
 	catalog := deps.ProviderCatalog.(*staticCatalog)
 	catalog.byProvider["gpt"] = append(catalog.byProvider["gpt"], CatalogItem{Model: "gpt-image-2", SupportedAPIProtocols: []string{"image_generation"}})
 	transportView := deps.TransportAccounts.(*staticTransport)
+	// 五域退役修订：图像候选按域路由（image 域账户才列生图模型）。
+	transportView.views["acc_1"][0].CapabilityDomain = "image"
 	transportView.views["acc_1"][0].SupportedEndpointModes = append(transportView.views["acc_1"][0].SupportedEndpointModes, "images_json")
 	dispatch := deps.Dispatch.(*mockDispatch)
 	dispatch.script = []scriptedResponse{{
@@ -153,6 +157,8 @@ func TestImagesURLFallbackDownloads(t *testing.T) {
 	catalog := deps.ProviderCatalog.(*staticCatalog)
 	catalog.byProvider["gpt"] = append(catalog.byProvider["gpt"], CatalogItem{Model: "gpt-image-2", SupportedAPIProtocols: []string{"image_generation"}})
 	transportView := deps.TransportAccounts.(*staticTransport)
+	// 五域退役修订：图像候选按域路由（image 域账户才列生图模型）。
+	transportView.views["acc_1"][0].CapabilityDomain = "image"
 	transportView.views["acc_1"][0].SupportedEndpointModes = append(transportView.views["acc_1"][0].SupportedEndpointModes, "images_json")
 	dispatch := deps.Dispatch.(*mockDispatch)
 	dispatch.script = []scriptedResponse{{
@@ -201,6 +207,8 @@ func TestImagesSSRFRejectsPrivateURL(t *testing.T) {
 	catalog := deps.ProviderCatalog.(*staticCatalog)
 	catalog.byProvider["gpt"] = append(catalog.byProvider["gpt"], CatalogItem{Model: "gpt-image-2", SupportedAPIProtocols: []string{"image_generation"}})
 	transportView := deps.TransportAccounts.(*staticTransport)
+	// 五域退役修订：图像候选按域路由（image 域账户才列生图模型）。
+	transportView.views["acc_1"][0].CapabilityDomain = "image"
 	transportView.views["acc_1"][0].SupportedEndpointModes = append(transportView.views["acc_1"][0].SupportedEndpointModes, "images_json")
 	dispatch := deps.Dispatch.(*mockDispatch)
 	dispatch.script = []scriptedResponse{{
@@ -225,6 +233,8 @@ func TestImagesValidation(t *testing.T) {
 	catalog := deps.ProviderCatalog.(*staticCatalog)
 	catalog.byProvider["gpt"] = append(catalog.byProvider["gpt"], CatalogItem{Model: "gpt-image-2", SupportedAPIProtocols: []string{"image_generation"}})
 	transportView := deps.TransportAccounts.(*staticTransport)
+	// 五域退役修订：图像候选按域路由（image 域账户才列生图模型）。
+	transportView.views["acc_1"][0].CapabilityDomain = "image"
 	transportView.views["acc_1"][0].SupportedEndpointModes = append(transportView.views["acc_1"][0].SupportedEndpointModes, "images_json")
 	mux, _ := newTestRoutes(deps)
 	noModel, _ := json.Marshal(map[string]any{"accountId": "acc_1", "modelId": "nope-image", "prompt": "x"})
@@ -242,6 +252,8 @@ func TestVideosCreateAndPoll(t *testing.T) {
 	catalog := deps.ProviderCatalog.(*staticCatalog)
 	catalog.byProvider["gpt"] = append(catalog.byProvider["gpt"], CatalogItem{Model: "grok-imagine-video-1.5", SupportedAPIProtocols: []string{"video"}})
 	transportView := deps.TransportAccounts.(*staticTransport)
+	// 五域退役修订：视频候选按域路由。
+	transportView.views["acc_1"][0].CapabilityDomain = "video"
 	transportView.views["acc_1"][0].SupportedEndpointModes = []string{"chat_sse", "video_create", "audio_speech"}
 	dispatch := deps.Dispatch.(*mockDispatch)
 	dispatch.script = []scriptedResponse{
@@ -369,6 +381,8 @@ func TestSpeechSynthesis(t *testing.T) {
 	catalog := deps.ProviderCatalog.(*staticCatalog)
 	catalog.byProvider["gpt"] = append(catalog.byProvider["gpt"], CatalogItem{Model: "speech-2.8-hd", SupportedAPIProtocols: []string{"audio_speech"}})
 	transportView := deps.TransportAccounts.(*staticTransport)
+	// 五域退役修订：语音候选按域路由。
+	transportView.views["acc_1"][0].CapabilityDomain = "audio"
 	transportView.views["acc_1"][0].SupportedEndpointModes = []string{"chat_sse", "video_create", "audio_speech"}
 	dispatch := deps.Dispatch.(*mockDispatch)
 	dispatch.script = []scriptedResponse{{
@@ -430,6 +444,8 @@ func TestSpeechValidation(t *testing.T) {
 	catalog := deps.ProviderCatalog.(*staticCatalog)
 	catalog.byProvider["gpt"] = append(catalog.byProvider["gpt"], CatalogItem{Model: "speech-2.8-hd", SupportedAPIProtocols: []string{"audio_speech"}})
 	transportView := deps.TransportAccounts.(*staticTransport)
+	// 五域退役修订：语音候选按域路由。
+	transportView.views["acc_1"][0].CapabilityDomain = "audio"
 	transportView.views["acc_1"][0].SupportedEndpointModes = []string{"chat_sse", "audio_speech"}
 	transportView.views["acc_1"][0].SupportedModels = []string{"speech-2.8-hd"}
 	mux, _ := newTestRoutes(deps)

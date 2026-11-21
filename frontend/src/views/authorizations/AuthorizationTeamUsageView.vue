@@ -446,7 +446,7 @@ async function fetchTeamUsagePage(loadPageOptions: ResponsivePagedListLoadOption
     resetResourceOwnerOptionsSearch()
     resetResourceOptionsSearch()
   }
-  const usageOverview = isManagementView.value ? await api.authorizations.teamUsage(params) : await api.myAuthorizations.teamUsage(params)
+  const usageOverview = isManagementView.value ? await api.authorizationCenter.teamUsage(params) : await api.myAuthorizationCenter.teamUsage(params)
   if (!requestGate.isCurrent(requestToken, currentUsageSignature())) return { ...usageOverview, items: [], superseded: true }
   if (!requestGate.acceptRange(requestToken, currentUsageSignature(), usageOverview.range)) throw new Error('团队明细与汇总统计范围不一致')
   overview.value = usageOverview
@@ -475,7 +475,7 @@ async function loadUsageSummary() {
       teamId: filters.teamId,
       ...selectedRangeParams()
     }
-    const result = isManagementView.value ? await api.authorizations.teamUsageSummary(params) : await api.myAuthorizations.teamUsageSummary(params)
+    const result = isManagementView.value ? await api.authorizationCenter.teamUsageSummary(params) : await api.myAuthorizationCenter.teamUsageSummary(params)
     if (!requestGate.isCurrent(requestToken, currentUsageSignature())) return
     if (!requestGate.acceptRange(requestToken, currentUsageSignature(), result.range)) throw new Error('团队明细与汇总统计范围不一致')
     usageSummary.value = result

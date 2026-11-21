@@ -333,6 +333,9 @@ const geminiTierOptions = computed(() => geminiTierOptionsByOAuthType[props.form
 
 function applyGeminiEndpointModes() {
   if (props.editing) return
+  // 五域退役（AI账户上游接口能力设计 §3）：gemini native google_oauth 在媒体域
+  // 建户时不声明接口能力，声明集播种仅服务对话域。
+  if (props.capabilityDomain !== 'chat') return
   const capabilityModes = selectedGeminiCapability.value?.supportedEndpointModes ?? []
   const endpointModes = capabilityModes.length
     ? capabilityModes

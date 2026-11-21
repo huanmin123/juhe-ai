@@ -1,84 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import {
-  OPENAI_AUDIO_TRANSCRIPTION_FAMILY,
-  OPENAI_CHAT_COMPLETIONS_FAMILY,
-  OPENAI_TTS_FAMILY,
-  OPENAI_VIDEO_GENERATION_FAMILY,
-  MINIMAX_OPENAI_V1_PROFILE_ID,
-  QWEN_OPENAI_V1_PROFILE_ID,
-  VOLCENGINE_OPENAI_V1_PROFILE_ID,
-  VOLCENGINE_OPENSPEECH_OPENAI_V1_PROFILE_ID
-} from '@/shared/providerProtocol'
-import type { ProviderProtocolProfileDefinition } from '@/types/domain'
 import { applyMediaCreateDefaults, type MediaCreateDefaultsForm } from './accountMediaCreateDefaults'
 
-function mediaProfile(input: {
-  id: string
-  providerCode: string
-  baseUrl: string
-  families: Array<{ code: string; name: string }>
-}): ProviderProtocolProfileDefinition {
-  return {
-    id: input.id,
-    providerCode: input.providerCode,
-    name: `${input.providerCode} OpenAI v1`,
-    enabled: true,
-    protocolCode: 'openai',
-    protocolVersion: 'v1',
-    baseUrl: input.baseUrl,
-    defaultHealthCheckModel: '',
-    accountTypes: ['api_key'],
-    capabilities: [],
-    endpointFamilies: input.families
-  }
-}
+// 2026-11-21 五域退役（AI账户上游接口能力设计 §3/§5）修订后的新建态域默认值契约：
+// 五域不播种「上游接口能力」声明集，检查请求形态按域默认常量落值，
+// status 预选统一 pending_test。创建墙类型判定（capabilityDomainAccountTypes）
+// 与本函数无关，不再在此钉媒体供应商矩阵。
 
-const volcengineProfile = mediaProfile({
-  id: VOLCENGINE_OPENAI_V1_PROFILE_ID,
-  providerCode: 'volcengine',
-  baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
-  families: [
-    { code: OPENAI_CHAT_COMPLETIONS_FAMILY, name: 'Chat Completions' },
-    { code: OPENAI_VIDEO_GENERATION_FAMILY, name: 'Video Generation' }
-  ]
-})
-
-const volcengineOpenSpeechProfile = mediaProfile({
-  id: VOLCENGINE_OPENSPEECH_OPENAI_V1_PROFILE_ID,
-  providerCode: 'volcengine',
-  baseUrl: 'https://openspeech.bytedance.com',
-  families: [
-    { code: OPENAI_TTS_FAMILY, name: 'TTS' },
-    { code: OPENAI_AUDIO_TRANSCRIPTION_FAMILY, name: 'Audio Transcription' }
-  ]
-})
-
-const minimaxProfile = mediaProfile({
-  id: MINIMAX_OPENAI_V1_PROFILE_ID,
-  providerCode: 'minimax',
-  baseUrl: 'https://api.minimaxi.chat/v1',
-  families: [
-    { code: OPENAI_VIDEO_GENERATION_FAMILY, name: 'Video Generation' },
-    { code: OPENAI_TTS_FAMILY, name: 'TTS' }
-  ]
-})
-
-const qwenProfile = mediaProfile({
-  id: QWEN_OPENAI_V1_PROFILE_ID,
-  providerCode: 'qwen',
-  baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-  families: [
-    { code: OPENAI_CHAT_COMPLETIONS_FAMILY, name: 'Chat Completions' },
-    { code: OPENAI_VIDEO_GENERATION_FAMILY, name: 'Video Generation' },
-    { code: OPENAI_AUDIO_TRANSCRIPTION_FAMILY, name: 'Audio Transcription' }
-  ]
-})
-
-// 第二次选择同供应商时定义已入缓存：resetForm 直接解析出完整默认
-// （accountFormDefaults 硬编码 status:'pending_test'），声明集非空且全部落在
-// 域允许集内——B1 修复前此处提前 return，跳过 status 预选。2026-11-21 起
-// 媒体域接入连通性健康检查，预选值与其他域统一为 pending_test。
 function cachedResetFormState(overrides: Partial<MediaCreateDefaultsForm> = {}): MediaCreateDefaultsForm {
   return {
     supportedEndpointModes: [],
@@ -89,151 +17,69 @@ function cachedResetFormState(overrides: Partial<MediaCreateDefaultsForm> = {}):
   }
 }
 
-describe('applyMediaCreateDefaults（B1：status 预选不受声明集早退分支影响）', () => {
-  it('volcengine×video：声明集已落域内（legacy video_get）时仍预选 pending_test，检查形态收敛为声明集内合法值', () => {
+describe('applyMediaCreateDefaults（五域退役：声明集清空 + 域默认检查形态 + pending_test 预选）', () => {
+  it('video 域：清空装载残留的声明集，检查形态落域默认 video_create', () => {
     const form = cachedResetFormState({
-      supportedEndpointModes: ['video_get'],
+      supportedEndpointModes: ['video_create', 'video_get'],
       healthCheckEndpointMode: 'chat_json'
     })
     applyMediaCreateDefaults(form, {
       capabilityDomain: 'video',
       providerCode: 'volcengine',
-      profile: volcengineProfile,
-      type: 'api_key'
-    })
-    expect(form.status).toBe('pending_test')
-    expect(form.statusSelectionExplicit).toBe(false)
-    expect(form.healthCheckEndpointMode).toBe('video_get')
-    expect(form.supportedEndpointModes).toEqual(['video_get'])
-  })
-
-  it('minimax×audio：声明集 audio_speech 已落域内时仍预选 pending_test，检查形态保持域默认 audio_speech', () => {
-    const form = cachedResetFormState({
-      supportedEndpointModes: ['audio_speech'],
-      healthCheckEndpointMode: 'chat_json'
-    })
-    applyMediaCreateDefaults(form, {
-      capabilityDomain: 'audio',
-      providerCode: 'minimax',
-      profile: minimaxProfile,
-      type: 'api_key'
-    })
-    expect(form.status).toBe('pending_test')
-    expect(form.statusSelectionExplicit).toBe(false)
-    expect(form.healthCheckEndpointMode).toBe('audio_speech')
-    expect(form.supportedEndpointModes).toEqual(['audio_speech'])
-  })
-
-  it('volcengine×audio：Ark 档案不承接音频，默认声明集保持空且不落越界 mode', () => {
-    const form = cachedResetFormState()
-    applyMediaCreateDefaults(form, {
-      capabilityDomain: 'audio',
-      providerCode: 'volcengine',
-      profile: volcengineProfile,
       type: 'api_key'
     })
     expect(form.supportedEndpointModes).toEqual([])
+    expect(form.healthCheckEndpointMode).toBe('video_create')
     expect(form.status).toBe('pending_test')
+    expect(form.statusSelectionExplicit).toBe(false)
   })
 
-  it('volcengine×audio：OpenSpeech 档案可创建 api_key，落 audio_speech 默认声明与检查形态', () => {
-    const form = cachedResetFormState()
+  it('audio 域：检查形态落域默认 audio_speech（域常量，不再按声明/preset 收敛）', () => {
+    const form = cachedResetFormState({
+      supportedEndpointModes: ['audio_job_create', 'audio_job_get'],
+      healthCheckEndpointMode: 'audio_job_create'
+    })
     applyMediaCreateDefaults(form, {
       capabilityDomain: 'audio',
-      providerCode: 'volcengine',
-      profile: volcengineOpenSpeechProfile,
+      providerCode: 'qwen',
       type: 'api_key'
     })
-    expect(form.supportedEndpointModes).toEqual(['audio_speech'])
+    expect(form.supportedEndpointModes).toEqual([])
     expect(form.healthCheckEndpointMode).toBe('audio_speech')
     expect(form.status).toBe('pending_test')
     expect(form.statusSelectionExplicit).toBe(false)
   })
 
-  it('qwen×video：声明集已落域内时仍预选 pending_test，检查形态收敛为声明集内合法值', () => {
+  it('image/embedding/rerank 域：声明集清空，检查形态落各自域 lane 单值', () => {
+    for (const [domain, expectedMode] of [
+      ['image', 'images_json'],
+      ['embedding', 'embeddings_json'],
+      ['rerank', 'rerank_json']
+    ] as const) {
+      const form = cachedResetFormState({ healthCheckEndpointMode: 'chat_json' })
+      applyMediaCreateDefaults(form, {
+        capabilityDomain: domain,
+        providerCode: 'gpt',
+        type: 'api_key'
+      })
+      expect(form.supportedEndpointModes).toEqual([])
+      expect(form.healthCheckEndpointMode).toBe(expectedMode)
+      expect(form.status).toBe('pending_test')
+    }
+  })
+
+  it('chat 域不适用本函数（统一向导只对五域触发）：任何字段都不改写', () => {
     const form = cachedResetFormState({
-      supportedEndpointModes: ['video_get', 'video_content'],
-      healthCheckEndpointMode: 'chat_json'
+      supportedEndpointModes: ['chat_json', 'chat_sse'],
+      healthCheckEndpointMode: 'responses_sse'
     })
-    applyMediaCreateDefaults(form, {
-      capabilityDomain: 'video',
-      providerCode: 'qwen',
-      profile: qwenProfile,
-      type: 'api_key'
-    })
-    expect(form.status).toBe('pending_test')
-    expect(form.statusSelectionExplicit).toBe(false)
-    expect(form.healthCheckEndpointMode).toBe('video_get')
-    expect(form.supportedEndpointModes).toEqual(['video_get', 'video_content'])
-  })
-
-  it('qwen×audio：默认声明集只有 audio_job_*，检查形态必须落 audio_job_create 而非 audio_speech', () => {
-    const form = cachedResetFormState()
-    applyMediaCreateDefaults(form, {
-      capabilityDomain: 'audio',
-      providerCode: 'qwen',
-      profile: qwenProfile,
-      type: 'api_key'
-    })
-    expect(form.supportedEndpointModes).toEqual(['audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel'])
-    expect(form.healthCheckEndpointMode).toBe('audio_job_create')
-    expect(form.status).toBe('pending_test')
-  })
-
-
-  it('qwen×audio：声明集已是 audio_job_* 时，隐藏的 audio_speech 记录值收敛为 audio_job_create', () => {
-    const form = cachedResetFormState({
-      supportedEndpointModes: ['audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel'],
-      healthCheckEndpointMode: 'audio_speech'
-    })
-    applyMediaCreateDefaults(form, {
-      capabilityDomain: 'audio',
-      providerCode: 'qwen',
-      profile: qwenProfile,
-      type: 'api_key'
-    })
-    expect(form.healthCheckEndpointMode).toBe('audio_job_create')
-    expect(form.supportedEndpointModes).toEqual(['audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel'])
-  })
-
-  it('首次选择（声明集为空）：落域默认集 + pending_test 预选（既有 else 分支行为不变）', () => {
-    const form = cachedResetFormState()
-    applyMediaCreateDefaults(form, {
-      capabilityDomain: 'video',
-      providerCode: 'volcengine',
-      profile: volcengineProfile,
-      type: 'api_key'
-    })
-    expect(form.supportedEndpointModes).toEqual(['video_create', 'video_get', 'video_content', 'video_cancel'])
-    expect(form.healthCheckEndpointMode).toBe('video_create')
-    expect(form.status).toBe('pending_test')
-    expect(form.statusSelectionExplicit).toBe(false)
-  })
-
-  it('声明集含域外值：整体重置为域默认集 + pending_test 预选（既有 else 分支行为不变）', () => {
-    const form = cachedResetFormState({
-      supportedEndpointModes: ['chat_json'],
-      healthCheckEndpointMode: 'chat_json'
-    })
-    applyMediaCreateDefaults(form, {
-      capabilityDomain: 'video',
-      providerCode: 'volcengine',
-      profile: volcengineProfile,
-      type: 'api_key'
-    })
-    expect(form.supportedEndpointModes).toEqual(['video_create', 'video_get', 'video_content', 'video_cancel'])
-    expect(form.healthCheckEndpointMode).toBe('video_create')
-    expect(form.status).toBe('pending_test')
-  })
-
-  it('对话域（chat）status 预选保持 pending_test（对话域行为零变化）', () => {
-    const form = cachedResetFormState()
     applyMediaCreateDefaults(form, {
       capabilityDomain: 'chat',
       providerCode: 'gpt',
-      profile: undefined,
       type: 'api_key'
     })
+    expect(form.supportedEndpointModes).toEqual(['chat_json', 'chat_sse'])
+    expect(form.healthCheckEndpointMode).toBe('responses_sse')
     expect(form.status).toBe('pending_test')
     expect(form.statusSelectionExplicit).toBe(false)
   })

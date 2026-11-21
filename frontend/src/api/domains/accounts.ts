@@ -50,7 +50,7 @@ export interface AccountCreatePayload extends Record<string, unknown> {
   cloneSourceId?: string
 }
 
-// 列表查询序列化后追加能力域过滤参数（M1 读通道 domain 参数；前端四域菜单恒传具体域）。
+// 列表查询序列化后追加能力域过滤参数（M1 读通道 domain 参数；前端六域菜单恒传具体域）。
 function accountListRequestParams(params?: AccountListParams, includeSystemAccount = true): Record<string, unknown> | undefined {
   const serialized = accountListParams(params, includeSystemAccount)
   if (!params?.domain) return serialized
@@ -143,6 +143,8 @@ export interface AuthorizedAccountDispatchPayload {
   priority?: number
   superPriorityEnabled?: boolean
   fallbackEnabled?: boolean
+  concurrencyLimit?: number
+  rpmLimit?: number
   clearFailureState?: boolean
 }
 
@@ -268,6 +270,5 @@ export const myAccountsApi = {
   cancelTestSession: (sessionId: string) => unwrap<AccountTestSession>(http.post(`/my-accounts/test-sessions/${sessionId}/cancel`, {}, noTimeout)),
   testTask: (taskId: string, options?: RequestControlOptions) => unwrap<AccountTestTask>(http.get(`/my-accounts/test-tasks/${taskId}`, { ...noTimeout, signal: options?.signal })),
   cancelTestTask: (taskId: string) => unwrap<AccountTestTask>(http.post(`/my-accounts/test-tasks/${taskId}/cancel`, {}, noTimeout)),
-  returnAuthorization: (id: string) => http.post(`/my-accounts/${id}/return-authorization`, {}),
   delete: (id: string) => http.delete(`/my-accounts/${id}`)
 }

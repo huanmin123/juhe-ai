@@ -8,6 +8,7 @@ import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
 import type { AccountFormModel } from './accountFormTypes'
 import { loadAccountQuotaRecoveryPolicy } from './accountQuotaRecoveryPolicyTypes'
+import { capabilityDomainSupportsDeclaration } from './accountCapabilityDomains'
 import { compactAccountCredentials } from './accountFormDefaults'
 import { writeAccountGptRequestOverrides } from './accountGptRequestOverrides'
 import { isVolcengineProviderCode } from '@/shared/providerProtocol'
@@ -42,6 +43,12 @@ export function buildAccountCredentials(input: {
     : input.form.type === 'google_oauth'
       ? buildGoogleOAuthCredentials(input.form)
       : buildOAuthCredentials(input.form, input.currentCredentials ?? {})
+  // 五域退役（AI账户上游接口能力设计 §3）：非对话域凭据归一化不落
+  // `supported_endpoint_modes` 键——包括 OAuth 元数据回填路径从存量凭据带入的
+  // 该键（存量值已随 schema revision 30 清洗，此处兜底剥离）。
+  if (!capabilityDomainSupportsDeclaration(input.form.capabilityDomain)) {
+    delete credentials.supported_endpoint_modes
+  }
   writeAccountGptRequestOverrides(credentials, input.form)
   writeAccountErrorPolicyToCredentials(credentials, input.errorPolicyRules)
   if (input.form.errorHandlingRuleOverrides?.length) {

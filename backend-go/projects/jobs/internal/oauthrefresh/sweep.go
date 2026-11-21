@@ -114,11 +114,9 @@ func (s *Store) RunAuthorizationExpirySweep(ctx context.Context, finalizer Grant
 		nextCycle := grant.ExpiryCycle + 1
 		updated, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorization_grants")+`
 			SET status = 'expired',
-				expired_from_status = COALESCE(NULLIF(expired_from_status, ''), status),
 				expiry_cycle = ?,
 				ended_at = COALESCE(ended_at, ?),
-				ended_reason = COALESCE(NULLIF(ended_reason, ''), 'offer_expired'),
-				pending_expires_at = NULL,
+				ended_reason = COALESCE(NULLIF(ended_reason, ''), 'authorization_expired'),
 				revoked_at = COALESCE(revoked_at, ?),
 				updated_at = ?
 			WHERE id = ?
@@ -133,10 +131,10 @@ func (s *Store) RunAuthorizationExpirySweep(ctx context.Context, finalizer Grant
 		// transaction. Otherwise extend cannot find the current expired cycle
 		// and a pending member source can stay pending forever.
 		if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorization_sources")+`
-			SET status = 'expired', expired_from_status = status, expiry_cycle = ?,
-				ended_at = COALESCE(ended_at, ?), ended_reason = 'offer_expired',
-				pending_expires_at = NULL, updated_at = ?
-			WHERE grant_id = ? AND status IN ('pending','active','dormant','needs_review')`),
+			SET status = 'expired', expiry_cycle = ?,
+				ended_at = COALESCE(ended_at, ?), ended_reason = 'authorization_expired',
+				updated_at = ?
+			WHERE grant_id = ? AND status IN ('pending','active')`),
 			nextCycle, now, now, grant.ID); err != nil {
 			return SweepResult{}, err
 		}

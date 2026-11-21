@@ -1089,6 +1089,13 @@ func (d *chainProviderDriver) gatewayRequestCapabilityMismatchReasonFor(req *gat
 	}
 	// D-155（BUG-0175）：SupportedEndpointModes 消费。此前派发链对账户端点
 	// 模式零消费，映射许可表成为唯一放行闸门。
+	// 域闸门（五域退役修订，AI 账户上游接口能力设计 §4）：mode 过滤前先按
+	// 「账户能力域 = 请求域」匹配——五域账户运行时声明投影恒空后，mode 过滤
+	// 对五域不再生效，域闸门是候选域隔离的唯一防线；请求域无法派生（空族等
+	// 未闸门形态）时不做域过滤保持放行。reason 对齐 BUG-0325 逐账户机制。
+	if reason := chainCapabilityDomainMismatchReason(req, account); reason != "" {
+		return reason
+	}
 	if reason := d.endpointModeMismatchReason(req, account, requestClientCompatibility); reason != "" {
 		return reason
 	}
@@ -2261,6 +2268,24 @@ func (d *chainProviderDriver) audioJobCreateRequest(req *gatewaypreauth.GatewayR
 // ---------------------------------------------------------------------------
 // D-155（BUG-0175）：SupportedEndpointModes 派发消费。
 // ---------------------------------------------------------------------------
+
+// chainCapabilityDomainMismatchReason 是候选域闸门（五域退役修订，AI 账户上游
+// 接口能力设计 §4）：请求域由请求形态派生（gatewaypreauth.RequestCapabilityDomain，
+// 与 /v1 入口识别同一归一），账户域 ≠ 请求域时拒绝（reason
+// capability_domain_mismatch，对齐 BUG-0325 逐账户 reason 机制）。请求域无法
+// 派生（未闸门形态，如 /models、空族）时不做域过滤保持放行；chat 账户的既有
+// 声明 mode 过滤（endpoint_mode_unsupported）保留不变，chat-pinned 直取路径
+// 目标账户明确、不经本闸门。
+func chainCapabilityDomainMismatchReason(req *gatewaypreauth.GatewayRequest, account gatewaydispatch.AccountCandidate) string {
+	requestDomain := gatewaypreauth.RequestCapabilityDomain(req)
+	if requestDomain == "" {
+		return ""
+	}
+	if gatewaydispatch.AccountCapabilityDomain(account) != requestDomain {
+		return gatewaydispatch.CapabilityDomainSkipReasonMismatch
+	}
+	return ""
+}
 
 // endpointModeMismatchReason reports the unsupported-endpoint-mode reason for
 // one account, or "" when the account serves the request shape. Accounts with

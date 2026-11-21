@@ -111,6 +111,9 @@ type accountFixture struct {
 	sourceID string
 	// deleted 非空时写入 deleted_at。
 	deleted bool
+	// domain 非空时落 capability_domain 列值（五域退役终态用例需要列值先于
+	// 迁移存在；仅在完整 schema 库 openMigrationDB 上使用）。
+	domain string
 }
 
 func fixtureCredentials(t *testing.T, f accountFixture) string {
@@ -157,13 +160,19 @@ func seedFixtures(t *testing.T, db *sql.DB, fixtures []accountFixture) {
 		}
 		// 目标 schema（设计 §2.1/§9.11）：无 provider_code /
 		// provider_protocol_profile_id，身份落 vendor_code + driver。
+		domainColumn := ""
+		domainValues := ""
+		if f.domain != "" {
+			domainColumn = ", capability_domain"
+			domainValues = ", '" + f.domain + "'"
+		}
 		statement := `INSERT INTO "juhe_business"."accounts"
 			(id, system_account_id, vendor_code, connection_driver_code, protocol_code, protocol_version,
 			 name, type, credentials_encrypted, health_check_model, health_check_endpoint_mode,
-			 authorization_instance_source_account_id, deleted_at, created_at, updated_at)
+			 authorization_instance_source_account_id, deleted_at, created_at, updated_at` + domainColumn + `)
 			VALUES ('` + f.id + `', 'sys-1', 'gpt', 'gpt', 'openai', 'v1',
 			 '` + f.id + `', 'api_key', '` + fixtureCredentials(t, f) + `', 'model-x', 'chat_json',
-			 ` + source + `, ` + deletedAt + `, '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z')`
+			 ` + source + `, ` + deletedAt + `, '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z'` + domainValues + `)`
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatalf("seed account %s: %v", f.id, err)
 		}
@@ -569,8 +578,9 @@ func TestRunM2CutoverLifecycle(t *testing.T) {
 		t.Fatalf("m1: %v", err)
 	}
 	// m1_running 阶段拒绝 m2：手工把记录拨回 m1_running 模拟未完成 M1。
+	//（ruleVersion 用现行常量 2：向量/重排拆分后 Run 直接写 ruleVersion=2。）
 	if _, err := db.Exec(`UPDATE "juhe_business"."global_settings" SET value_json = $1 WHERE key = $2`,
-		`{"stage":"m1_running","ruleVersion":1,"updatedAt":"2026-10-12T08:00:00Z"}`, capdomain.MigrationSettingKey); err != nil {
+		`{"stage":"m1_running","ruleVersion":2,"updatedAt":"2026-10-12T08:00:00Z"}`, capdomain.MigrationSettingKey); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Run(context.Background(), db, migrationOptions(capdomain.TargetM2Cutover)); err == nil || !strings.Contains(err.Error(), "拒绝") {
@@ -578,7 +588,7 @@ func TestRunM2CutoverLifecycle(t *testing.T) {
 	}
 	// 拨回 m1_complete 再进 M2。
 	if _, err := db.Exec(`UPDATE "juhe_business"."global_settings" SET value_json = $1 WHERE key = $2`,
-		`{"stage":"m1_complete","ruleVersion":1,"updatedAt":"2026-10-12T08:00:00Z"}`, capdomain.MigrationSettingKey); err != nil {
+		`{"stage":"m1_complete","ruleVersion":2,"updatedAt":"2026-10-12T08:00:00Z"}`, capdomain.MigrationSettingKey); err != nil {
 		t.Fatal(err)
 	}
 	report, err := Run(context.Background(), db, migrationOptions(capdomain.TargetM2Cutover))
@@ -695,6 +705,69 @@ func TestPostflightFinalizedInstanceChecks(t *testing.T) {
 	})
 }
 
+// TestPostflightFinalizedRetiredDomainTerminal 覆盖五域退役终态与 m2 核验的
+// 兼容（上游接口能力设计 §3；revision 30 清洗删键后，m2 postflight 不得把
+// 「落库五域 + 凭据无键」判 modes_missing）：
+//   - 五域行（域列已落值、凭据无键）迁移赋域与 postflight 全通过；
+//   - 五域源的授权实例继承源落库域，不判 instance_source_failed；
+//   - chat 行（含显式 chat 域列值）凭据无键仍判 modes_missing——chat 声明
+//     契约保留现状，豁免不得外溢。
+func TestPostflightFinalizedRetiredDomainTerminal(t *testing.T) {
+	t.Run("五域无键合法且实例继承源落库域", func(t *testing.T) {
+		db := openMigrationDB(t)
+		seedFixtures(t, db, []accountFixture{
+			{id: "acct-chat", modesJSON: `["chat_json"]`},
+			{id: "acct-image", domain: "image"},           // 退役终态：无键
+			{id: "acct-rerank", domain: "rerank"},         // 退役终态：无键
+			{id: "inst-of-image", sourceID: "acct-image"}, // 实例跟随五域源
+		})
+		if _, err := Run(context.Background(), db, migrationOptions(capdomain.TargetM1)); err != nil {
+			t.Fatalf("m1: %v", err)
+		}
+		if got := accountDomain(t, db, "acct-image"); got != "image" {
+			t.Fatalf("五域退役行应保域 image，got %q", got)
+		}
+		if _, err := Run(context.Background(), db, migrationOptions(capdomain.TargetM2Cutover)); err != nil {
+			t.Fatalf("m2-cutover: %v", err)
+		}
+		if got := accountDomain(t, db, "inst-of-image"); got != "image" {
+			t.Fatalf("实例应继承五域源落库域 image，got %q", got)
+		}
+		report, err := Verify(context.Background(), db, Options{
+			Target: capdomain.TargetM2Cutover, Check: CheckPostflight, Secret: testSecret,
+		})
+		if err != nil {
+			t.Fatalf("finalized postflight: %v", err)
+		}
+		if !report.Ready() {
+			t.Fatalf("五域退役终态行不得进失败清单: %+v", report.Failures)
+		}
+	})
+
+	t.Run("chat 行凭据无键仍判 modes_missing", func(t *testing.T) {
+		db := openMigrationDB(t)
+		seedFixtures(t, db, []accountFixture{
+			{id: "acct-chat-nokey", domain: "chat"},
+		})
+		report, err := Run(context.Background(), db, migrationOptions(capdomain.TargetM1))
+		if err != nil {
+			t.Fatalf("m1: %v", err)
+		}
+		if report.Ready() {
+			t.Fatalf("chat 域凭据无键必须仍判 modes_missing: %+v", report)
+		}
+		found := false
+		for _, failure := range report.Failures {
+			if failure.AccountID == "acct-chat-nokey" && failure.Kind == capdomain.FailureModesMissing {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("failures 缺少 acct-chat-nokey(modes_missing): %+v", report.Failures)
+		}
+	})
+}
+
 // TestM2CutoverRecomputesStaleRows 覆盖 M2 停写全量重算语义：窗口期把视频
 // 账户凭据改成对话声明后，m1_complete 重复执行不重算，m2-cutover 重算落 chat。
 func TestM2CutoverRecomputesStaleRows(t *testing.T) {
@@ -793,8 +866,10 @@ func TestRunCorruptRecordRejected(t *testing.T) {
 		name      string
 		valueJSON string
 	}{
-		{"stage 枚举外", `{"stage":"m3_running","ruleVersion":1,"updatedAt":"2026-10-12T08:00:00Z"}`},
-		{"ruleVersion 不符", `{"stage":"m1_running","ruleVersion":2,"updatedAt":"2026-10-12T08:00:00Z"}`},
+		{"stage 枚举外", `{"stage":"m3_running","ruleVersion":2,"updatedAt":"2026-10-12T08:00:00Z"}`},
+		// ruleVersion 与现行常量（2）不符：拆分升级后历史值 1 走专用升级通道，
+		// 未知值才构成损坏拒绝。
+		{"ruleVersion 不符", `{"stage":"m1_running","ruleVersion":99,"updatedAt":"2026-10-12T08:00:00Z"}`},
 		{"非 JSON", `not-json`},
 	}
 	for _, testCase := range cases {

@@ -633,11 +633,13 @@ func (s *Store) CreateOAuthAccount(ctx context.Context, input CreateAccountInput
 	}
 	credentials := input.Credentials
 	if normalizedDomain := strings.TrimSpace(input.CapabilityDomain); normalizedDomain != "" && normalizedDomain != accountscore.CapabilityDomainChat {
-		// 媒体域托管建户不继承 chat 形态的凭据声明集（gemini 构建器为
-		// code_assist/google_one 钉入 generate_content CLI 对，属 chat 域声明，
-		// 会被写面「声明集 ⊆ 域允许集」校验拒绝）：去掉该键，让写面对缺省键按
-		// 域种子 DefaultEndpointModesForDomain（媒体域落媒体 lane 集；ai_studio
-		// 构建器本就不带该键，chat 域行为不变）。不改动调用方持有的 map。
+		// 五域退役托管建户不继承 chat 形态的凭据声明集（gemini 构建器为
+		// code_assist/google_one 钉入 generate_content CLI 对，属 chat 域声
+		// 明）：去掉该键，让写面对五域账户走声明退役臂——不校验、不按域种子
+		// DefaultEndpointModesForDomain 播种默认集（AI账户上游接口能力设计 §3，
+		// 2026-11-21 五域退役批：五域凭据不落 supported_endpoint_modes 键；
+		// ai_studio 构建器本就不带该键，chat 域行为不变）。不改动调用方持有
+		// 的 map。
 		if _, present := credentials["supported_endpoint_modes"]; present {
 			seeded := make(map[string]any, len(credentials)-1)
 			for key, value := range credentials {

@@ -1,8 +1,6 @@
 import { formatCompactUsageAmount, formatDateTime, formatNumber, formatRequestCountTag, formatUsd, serverDateTimeTimestamp } from '@/shared/formatters'
 import type { AccountUsageSummary, GroupAccountStats, GroupListItem, GroupSummary } from '@/types/domain'
 import { systemAccountDisplayText } from '@/utils/systemAccountFilter'
-import { hasQuotaLimits } from '../shared/requestQuotaForm'
-import { quotaLimitSummaryText } from '../shared/requestQuotaFormatters'
 import { isAuthorizedGroup } from './groupRowActions'
 
 type GroupRow = GroupListItem | GroupSummary
@@ -119,9 +117,6 @@ function authorizedGroupTooltip(group: GroupRow): string {
     `授权来源：${authorizedGroupSourceText(group)}`,
     `授权到期：${expiresText}`
   ]
-  if ('authorizationLimits' in group) {
-    lines.push(`授权限额：${quotaLimitSummaryText(group.authorizationLimits)}`)
-  }
   if (group.authorizationStatus === 'expired') {
     lines.push('授权已到期，当前不可用。')
   } else if (group.authorizationStatus === 'paused') {
@@ -167,7 +162,6 @@ function authorizedGroupIconClass(group: GroupRow): string {
 function authorizedGroupSourceTone(group: GroupRow): 'normal' | 'warning' | 'danger' {
   if (group.authorizationStatus && group.authorizationStatus !== 'active') return 'danger'
   if (isAuthorizationExpiringSoon(group)) return 'warning'
-  if ('authorizationLimits' in group && hasQuotaLimits(group.authorizationLimits)) return 'warning'
   return 'normal'
 }
 

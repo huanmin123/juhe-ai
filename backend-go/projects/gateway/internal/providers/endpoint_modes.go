@@ -84,29 +84,63 @@ var catalogLegacyModeRank = map[string]int{
 	"rerank":           6,
 }
 
+// catalogAuxiliaryEmbeddingModes 是计数辅助 mode：anthropic
+// message_token_counting 与 gemini count_tokens 是对话族的附属接口，投影虽落
+// 旧 embedding mode，但不参与行主 mode 竞争——含对话生成 mode 的行不得被辅助
+// 接口抬成 embedding（六域拆分后 embedding 是模型广场独立分类，2026-11-21
+// 复查发现 claude/gemini 对话模型因计数辅助混入向量 tab）。行内仅剩辅助 mode
+// 时回落 embedding，保持纯辅助行的旧派生行为。与 chain_catalog 同名逻辑同步。
+var catalogAuxiliaryEmbeddingModes = map[string]bool{
+	"message_token_counting": true,
+	"count_tokens":           true,
+}
+
 // DeriveLegacyModeAndProtocols 从 supported_endpoint_modes_json 元素反推旧目
-// 录行的 mode 与 supportedApiProtocols 投影：mode 取词表最高优先命中，协议
-// token 去重升序；空 mode 集（draft/disabled 行）返回空 mode 与空协议（调用方
-// 按旧行为渲染 NULL→absent / 空数组）。
+// 录行的 mode 与 supportedApiProtocols 投影：mode 取词表最高优先命中（计数
+// 辅助 mode 不参与竞争，见 catalogAuxiliaryEmbeddingModes），协议 token 去重
+// 升序；空 mode 集（draft/disabled 行）返回空 mode 与空协议（调用方按旧行为
+// 渲染 NULL→absent / 空数组）。
 func DeriveLegacyModeAndProtocols(endpointModes []string) (mode string, protocols []string) {
 	seenProtocols := map[string]bool{}
 	protocols = []string{}
-	bestMode := ""
-	bestRank := -1
-	for _, endpointMode := range endpointModes {
-		for _, pair := range catalogEndpointModeLegacyProjection[endpointMode] {
-			if rank, known := catalogLegacyModeRank[pair[0]]; known && rank > bestRank {
-				bestRank = rank
-				bestMode = pair[0]
+	rankOf := func(modes []string) (string, int) {
+		bestMode := ""
+		bestRank := -1
+		for _, endpointMode := range modes {
+			for _, pair := range catalogEndpointModeLegacyProjection[endpointMode] {
+				if rank, known := catalogLegacyModeRank[pair[0]]; known && rank > bestRank {
+					bestRank = rank
+					bestMode = pair[0]
+				}
 			}
-			if !seenProtocols[pair[1]] {
-				seenProtocols[pair[1]] = true
-				protocols = append(protocols, pair[1])
+		}
+		return bestMode, bestRank
+	}
+	var primary, auxiliary []string
+	for _, endpointMode := range endpointModes {
+		if catalogAuxiliaryEmbeddingModes[endpointMode] {
+			auxiliary = append(auxiliary, endpointMode)
+			continue
+		}
+		primary = append(primary, endpointMode)
+	}
+	// 协议投影始终全量（含辅助计数协议）；mode 竞争排除辅助计数 mode。
+	for _, group := range [][]string{primary, auxiliary} {
+		for _, endpointMode := range group {
+			for _, pair := range catalogEndpointModeLegacyProjection[endpointMode] {
+				if !seenProtocols[pair[1]] {
+					seenProtocols[pair[1]] = true
+					protocols = append(protocols, pair[1])
+				}
 			}
 		}
 	}
+	mode, _ = rankOf(primary)
+	if mode == "" {
+		mode, _ = rankOf(auxiliary)
+	}
 	sort.Strings(protocols)
-	return bestMode, protocols
+	return mode, protocols
 }
 
 // ForwardProtocolsToEndpointModes 把目录行声明的协议列表正向映射为设计 §2.2

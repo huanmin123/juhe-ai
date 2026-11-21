@@ -156,7 +156,6 @@
       @menu-click="handleAccountMenuClick"
       @mobile-load-more="loadMoreMobileAccounts"
       @mobile-refresh="refreshMobileAccounts"
-      @return-authorization="returnAuthorizationAccount"
       @refresh-balance="refreshAccountBalance"
       @sort-change="handleAccountSortChange"
       @start-priority-edit="startPriorityEditor"
@@ -366,6 +365,7 @@ import { useAccountProxyOptions } from './useAccountProxyOptions'
 import { useAccountMenuActions } from './useAccountMenuActions'
 import { accountOperationScopeParams, accountOperationSystemAccountId } from './accountOperationScope'
 import { mergeAuthorizedDispatchMutation } from './accountListMutations'
+import type { AuthorizedAccountDispatchPayload } from '@/api/domains/accounts'
 import { buildAccountBalancePayload, formatAccountBalance } from './accountBalanceQuery'
 import { useAccountReauthorize } from './useAccountReauthorize'
 import { useAccountRemovalActions } from './useAccountRemovalActions'
@@ -788,7 +788,7 @@ async function saveAccountConcurrency(
   account: AccountListItem,
   limits: { concurrencyLimit: number; rpmLimit: number }
 ): Promise<boolean> {
-  if (!canEditAccount(account) || isAuthorizedAccount(account)) {
+  if (!canEditAccount(account)) {
     message.warning('当前账户无权修改限频')
     return false
   }
@@ -822,7 +822,22 @@ async function saveAccountConcurrency(
       return false
     }
     // 两个上限是一个整体控件，但 PATCH 只提交实际变化的字段；后端同时支持
-    // concurrencyLimit 与 rpmLimit 的差量更新。
+    // concurrencyLimit 与 rpmLimit 的差量更新。授权实例走 authorized-dispatch
+    // 白名单通道，后端校验不能超过源账户上限。
+    if (isAuthorizedAccount(account)) {
+      const payload: AuthorizedAccountDispatchPayload = { expectedConfigRevision: configRevision }
+      if (concurrencyChanged) payload.concurrencyLimit = limits.concurrencyLimit
+      if (rpmChanged) payload.rpmLimit = limits.rpmLimit
+      const updated = isManagementView.value
+        ? await api.accounts.updateAuthorizedDispatch(account.id, payload, scopeParams)
+        : await api.myAccounts.updateAuthorizedDispatch(account.id, payload)
+      updateLoadedAccount(mergeAuthorizedDispatchMutation(
+        { ...account, concurrencyLimit: limits.concurrencyLimit, rpmLimit: limits.rpmLimit },
+        updated
+      ))
+      message.success('限频已更新')
+      return true
+    }
     const payload: { expectedConfigRevision: number; concurrencyLimit?: number; rpmLimit?: number } = {
       expectedConfigRevision: configRevision
     }
@@ -1157,7 +1172,8 @@ async function refreshAccountModelCatalog(): Promise<void> {
     const allowedProtocolModels = new Set(providerModelsForProtocolProfile(
       allowedDomainOptions.data,
       selectedProtocolProfile.value,
-      form.type
+      form.type,
+      form.capabilityDomain
     ).map((option) => option.value))
     const allowedAddedModels = result.addedModels.filter((model) => allowedProtocolModels.has(model))
     form.supportedModels = [...new Set([
@@ -1485,8 +1501,7 @@ const {
 })
 const {
   batchDeleteSelected,
-  removeAccount,
-  returnAuthorizationAccount
+  removeAccount
 } = useAccountRemovalActions({
   accountById,
   accounts,

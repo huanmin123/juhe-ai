@@ -23,6 +23,56 @@ func catalogItemOfMode(mode string) *ModelCatalogItem {
 	return &ModelCatalogItem{ProviderCode: "glm", Model: "lint-probe", Mode: &mode}
 }
 
+func TestCatalogDisplayConfiguredCacheWriteAndModalityPrices(t *testing.T) {
+	cases := []struct {
+		item ModelCatalogItem
+		want []catalogDisplayItem
+	}{
+		{
+			item: ModelCatalogItem{
+				ProviderCode: "gemini", Model: "gemini-2.5-pro",
+				CacheWriteUsdPer1M:             ptrFloat64(0.125),
+				LongContextInputTokenThreshold: ptrInt64(200_000),
+				LongContextInputCostMultiplier: ptrFloat64(2),
+			},
+			want: []catalogDisplayItem{
+				{Key: "cache_write", Label: "缓存写入", Value: 0.125, Format: "usd_per_1m_tokens"},
+				{Key: "long_context_cache_write", Label: "长上下文（> 200K）缓存写入", Value: 0.25, Format: "usd_per_1m_tokens"},
+			},
+		},
+		{
+			item: ModelCatalogItem{
+				ProviderCode: "qwen", Model: "qwen3-omni-flash", Mode: ptr("chat"),
+				ImageInputUsdPer1M:  ptrFloat64(0.78),
+				AudioOutputUsdPer1M: ptrFloat64(15.11),
+			},
+			want: []catalogDisplayItem{
+				{Key: "image_input", Label: "图片输入", Value: 0.78, Format: "usd_per_1m_tokens"},
+				{Key: "audio_output", Label: "音频输出", Value: 15.11, Format: "usd_per_1m_tokens"},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.item.Model, func(t *testing.T) {
+			for _, section := range buildProviderCatalogDisplay(&tc.item) {
+				if section.Key != "token_pricing" {
+					continue
+				}
+				if len(section.Items) != len(tc.want) {
+					t.Fatalf("Token 价格项 = %+v，预期 %+v", section.Items, tc.want)
+				}
+				for i, want := range tc.want {
+					if got := section.Items[i]; got != want {
+						t.Errorf("Token 价格项 %d = %+v，预期 %+v", i, got, want)
+					}
+				}
+				return
+			}
+			t.Fatal("缺少 token_pricing")
+		})
+	}
+}
+
 func TestCatalogDisplayRequiredSectionsByMode(t *testing.T) {
 	imageMode := "image_generation"
 	imageLegacy := "image"

@@ -78,7 +78,7 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
 - 如果账户绑定代理池，导出写入账户 `proxyPoolRef: "proxy-pool-<id>"`，并在顶层 `proxyPools` 写出池名/策略/成员引用（成员用 `proxyRef` 或 `proxyProfileId`，不重复导出成员密码）；第一版导入只复用目标环境已存在池，不据此创建。
 - 导出会保留账户标签为 `tags` 字符串数组；再次导入时会在目标系统账户维度自动创建缺失标签并绑定到账户。
 - 导出会保留账户级 `healthCheckModel` 和精确 `healthCheckEndpointMode`；再次导入时检查模型必须属于同一账户的 `supportedModels`。文本请求形态必须是账户已启用的 Chat / Responses / Messages / GenerateContent JSON 或 Streaming mode；`images_json` 只允许模型目录证明检查模型支持 `images` 时使用，否则预览失败。导入省略请求形态时按新账户默认规则解析。
-- 导出会为每个账户写出完整 `connections` 数组和健康检查三件套 `healthCheckConnectionPresetCode`、`healthCheckModel`、`healthCheckEndpointMode`，与导入必填键一一对应，导出文件可直接回导。
+- 导出会为每个账户写出完整 `connections` 数组和健康检查三件套 `healthCheckConnectionPresetCode`、`healthCheckModel`、`healthCheckEndpointMode`，与导入必填键一一对应，导出文件可直接回导（2026-11-21 五域退役起五域账户连接省略 `endpointModes` 键——仅对话域连接持有该键，凭据白名单同样不含五域的 `supported_endpoint_modes`）。
 - 导出必须为每个账户写出当前 `providerProtocolProfileId`，保证重新导入能还原到同一供应商协议档案；导入不得靠 `credentials.base_url`、供应商默认值或历史接入类型字段猜测档案。
 - 账户当前为 `pending_test` 时导出为 `status: "pending_test"`；账户当前为 `active` 且参与调度时导出为 `status: "active"`；其他运行态状态统一导出为 `status: "disabled"`。导入时 `active` 会按安全策略落成 `pending_test`，后台激活检查成功后才转为 `active`。
 - 导出的 JSON 文件可以在“导入账户”弹窗中直接粘贴预览，再确认导入。
@@ -329,7 +329,7 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
 | `connections` | 是 | 连接集合，必须恰好一条；描述该账户唯一的上游连接（见下文「connections 条目字段」）。多个 API Key 放在 `credentials` 中，不支持多条连接。 |
 | `healthCheckConnectionPresetCode` | 是 | 健康检查三件套之一；必须等于本账户唯一一条 `enabled: true` 连接的 `connectionPresetCode`，落库时同事务解析为 `health_check_connection_id`。 |
 | `healthCheckModel` | 是 | 健康检查三件套之一；账户级检查模型，必须属于账户 `supportedModels`（含供应商默认回填后的集合）。管理面手动创建时才允许省略并由创建事务在最终支持模型集内解析；`native` 导入必须显式提交。 |
-| `healthCheckEndpointMode` | 是 | 健康检查三件套之一；后台健康检查精确请求形态。允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`、`images_json`、`audio_speech`、`audio_transcription_json`、`audio_job_create`、`video_create`、`realtime_session`、`embeddings_json`、`rerank_json`（后两者仅作持久化诊断形态，无自动探针）。`images_json` 只允许模型目录证明检查模型支持 `images` 时使用。必须属于 `healthCheckConnectionPresetCode` 指向连接的 `endpointModes`，且检查模型须在模型目录声明该形态。非原生来源省略时按流式优先解析（[AI账户检查模型与人工测试设计](AI账户检查模型与人工测试设计.md) §健康检查请求形态 2026-10-19 定案）：先从连接 `endpointModes` 取首个可检查 `_sse` 形态，无 `_sse` 才按声明顺序回退；`native` 导入必须显式提交，不做缺省解析。 |
+| `healthCheckEndpointMode` | 是 | 健康检查三件套之一；后台健康检查精确请求形态。允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`、`images_json`、`audio_speech`、`audio_transcription_json`、`audio_job_create`、`video_create`、`realtime_session`、`embeddings_json`、`rerank_json`（2026-11-21 起为独立能力域（embedding/rerank）默认检查形态，恒连接测试，无自动探针）。`images_json` 只允许模型目录证明检查模型支持 `images` 时使用。对话域账户的检查形态必须属于 `healthCheckConnectionPresetCode` 指向连接的 `endpointModes`，且检查模型须在模型目录声明该形态（五域账户连接行无 modes——2026-11-21 五域退役——「属于连接 modes」的成员校验按域跳过，检查形态只是记录值）。非原生来源省略时按流式优先解析（[AI账户检查模型与人工测试设计](AI账户检查模型与人工测试设计.md) §健康检查请求形态 2026-10-19 定案）：先从连接 `endpointModes` 取首个可检查 `_sse` 形态，无 `_sse` 才按声明顺序回退；`native` 导入必须显式提交，不做缺省解析。 |
 | `modelMappings` | 否 | 账号模型映射列表；2026-11-07 起只允许协议等价组合（同族模型名改写 + Gemini `stream_generate_content → generate_content` 归一），跨协议组合一律拒绝。`sourceModel` 可跨供应商选择，但必须支持所选协议；`upstreamModel` 必须来自当前账户供应商目录与账户支持模型。条目包含 `sourceModel`、`sourceEndpointFamily`、`upstreamModel`、`upstreamEndpointFamily`、`enabled`。 |
 | `tags` | 否 | 账户标签字符串数组；导入时按目标系统账户自动创建缺失标签并绑定到当前账户。 |
 | `accountExpiresAt` | 否 | 账户过期时间。 |
@@ -343,7 +343,7 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
 - `proxyRef` 和 `proxyProfileId` 不能同时填写；`proxyPoolRef`/`proxyPoolId` 与两者互斥，且 `proxyPoolRef`/`proxyPoolId` 自身只能填一个。池引用只接受目标环境已存在且 enabled 的池；缺失/停用该账户失败，不静默丢绑、不直连。
 - `concurrencyLimit` 必须是正整数且不超过 `2147483647`（int4 上限）；`rpmLimit` 必须是非负整数且不超过 `2147483647`（`0` 表示不限制）；`priority` 必须是非负整数且不超过 `2147483647`。超界均在预览期按字段错误拒绝，不等落库报 500。
 - `supportedModels` 只填明确支持的模型名称；不确定时省略，系统会按供应商默认支持模型回填。
-- 健康检查三件套 `healthCheckConnectionPresetCode`、`healthCheckModel`、`healthCheckEndpointMode` 在 `native` 导入中必须全部显式提交，缺一整账户失败；三键共同约束为：preset 指向本账户一条 `enabled: true` 连接，检查形态属于该连接 `endpointModes`，检查模型属于 `supportedModels`。
+- 健康检查三件套 `healthCheckConnectionPresetCode`、`healthCheckModel`、`healthCheckEndpointMode` 在 `native` 导入中必须全部显式提交，缺一整账户失败；三键共同约束为：preset 指向本账户一条 `enabled: true` 连接，检查形态属于该连接 `endpointModes`（对话域；五域账户连接行无 modes，该成员校验按域跳过，检查形态只是记录值），检查模型属于 `supportedModels`。
 - `healthCheckModel` 只在账户创建阶段使用默认链补齐；账户落库后后台系统检查严格读取该字段，不动态跟随供应商默认值。
 - 需要承接 OpenAI Responses 的 GPT 账户，请在 `credentials.supported_endpoint_modes` 中包含 `responses_json` 或 `responses_sse`。
 - `modelMappings` 只做协议等价的账号模型别名（2026-11-07 跨协议退役后口径）：Chat Completions → Chat Completions，Responses → Responses，Messages → Messages，GenerateContent → GenerateContent，流式 GenerateContent → GenerateContent（Gemini 同族归一），video_generation → video_generation，tts → tts。跨协议方向（含原 Responses → Chat Completions bridge）一律返回中文 400。
@@ -357,13 +357,13 @@ AI 账户导入弹窗支持 5 种来源模式：`native`（本协议自定义 JS
 
 ## connections 条目字段
 
-每个账户的 `connections` 必须恰好一条，元素键固定如下；出现未知键、缺少任一必填键或 `endpointModes` 为空都会导致该账户失败（与创建链共享 `ParseConnectionInput` 严格解析，不造兼容层）；多于一条按「账户只支持一个上游连接」失败：
+每个账户的 `connections` 必须恰好一条，元素键固定如下；出现未知键、缺少任一必填键或（对话域）`endpointModes` 为空都会导致该账户失败（与创建链共享 `ParseConnectionInput` 严格解析，不造兼容层）；多于一条按「账户只支持一个上游连接」失败。2026-11-21 五域退役（[AI账户上游接口能力设计](AI账户上游接口能力设计.md) §3）：图像 / 音频 / 视频 / 向量 / 重排五域账户的连接 `endpointModes` 键缺失合法、提交值不做组合校验也不落连接行（对话域必填非空语义不变）。
 
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
 | `connectionPresetCode` | 是 | 连接器注册表预设标识，当前恰好 14 个值：`gpt_openai_v1`、`xai_openai_v1`、`deepseek_openai_v1`、`deepseek_anthropic_v1`、`anthropic_v1`、`gemini_openai_chat_v1beta`、`gemini_native_v1beta`、`glm_general_openai_v1`、`glm_coding_openai_v1`、`glm_coding_anthropic_v1`、`minimax_media`、`volcengine_ark`、`volcengine_openspeech`、`qwen_dashscope`。必须与账户 `providerCode` + `providerProtocolProfileId` 的能力组合匹配，同一账户内不能重复。 |
 | `baseUrl` | 是 | 包含版本前缀的根地址（如 `/v1`、`/api/v3`），不能带 `/chat/completions`、`/messages` 等具体接口路径，必须通过 registry URL 契约校验；通常与 `credentials.base_url` 相同。 |
-| `endpointModes` | 是 | 非空字符串数组，无重复；取值必须在该预设与账户组合允许的 mode 集合内。常用组合：`gpt_openai_v1` API Key 允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`；`gpt_openai_v1` 与 `xai_openai_v1` 的 OAuth 收窄为 `responses_json`、`responses_sse`；`glm_general_openai_v1`、`glm_coding_openai_v1` 允许 `chat_json`、`chat_sse`；`deepseek_anthropic_v1`、`glm_coding_anthropic_v1` 允许 `messages_json`、`messages_sse`；`anthropic_v1` 允许 `messages_json`、`messages_sse`、`message_token_counting`。 |
+| `endpointModes` | 对话域是；五域否（键缺失合法，导出侧五域连接省略该键） | 对话域为非空字符串数组，无重复；取值必须在该预设与账户组合允许的 mode 集合内。常用组合：`gpt_openai_v1` API Key 允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`；`gpt_openai_v1` 与 `xai_openai_v1` 的 OAuth 收窄为 `responses_json`、`responses_sse`；`glm_general_openai_v1`、`glm_coding_openai_v1` 允许 `chat_json`、`chat_sse`；`deepseek_anthropic_v1`、`glm_coding_anthropic_v1` 允许 `messages_json`、`messages_sse`；`anthropic_v1` 允许 `messages_json`、`messages_sse`、`message_token_counting`。 |
 | `enabled` | 是 | 是否启用；必须显式填写，省略或非布尔即失败。健康检查只能指向 `enabled: true` 的连接。 |
 | `protocolSurfaceCode` | 否 | 协议面回显；省略即可，填写时必须与预设注册的协议面一致（`openai_v1`、`anthropic_v1`、`gemini_v1beta`）。 |
 
@@ -472,7 +472,7 @@ Grok OAuth 账户：
 - `providerCode = gemini` 且 `providerProtocolProfileId = profile_gemini_native_v1beta` 时不配置普通账户 OpenAI / Anthropic 跨协议模型映射；Code Assist / Google One 也不能通过导入的 endpoint modes 放开 Interactions、Count Tokens 或 Embedding。
 - `providerCode = gemini` 且 `providerProtocolProfileId = profile_gemini_openai_chat_v1beta` 时，`credentials.base_url` 默认建议填写 `https://generativelanguage.googleapis.com/v1beta/openai`，`credentials.supported_endpoint_modes` 使用 `chat_json`、`chat_sse`；（已随 2026-11-07 退役）原“如需 Codex / Responses 使用 Gemini OpenAI Chat，可配置 `responses -> chat_completions` 模型别名”已删除，该档案只承接 Chat Completions 直连。该档案不接受 Anthropic Messages 来源的账户模型别名。
 - `credentials.base_url` 必须显式填写，不从供应商配置自动补值。
-- `credentials.supported_endpoint_modes` 可限制协议端点能力。xAI API Key 可用 Chat / Responses，Grok OAuth 固定 Responses；Anthropic 使用 Messages / Count Tokens；Gemini native 枚举 GenerateContent、Interactions、Count Tokens、Embedding，但 Code Assist / Google One 固定只有 GenerateContent JSON / SSE。省略时按供应商、协议档案和认证模式默认值回填，不能只按协议大类放宽。
+- `credentials.supported_endpoint_modes` 在 `native` 导入中的口径（2026-11-21 五域退役，[AI账户上游接口能力设计](AI账户上游接口能力设计.md) §3）：包内该键仅用于 `DeriveDomain` 推域（历史文件兼容，缺失视为对话域）；推导域为五域时落库剥离该键、不补缺省、不做 ⊆ allowed 能力校验；对话域导入校验保留——省略时按供应商、协议档案和认证模式默认值回填，显式声明仍走 ⊆ 域允许集校验。对话域词表语境不变：xAI API Key 可用 Chat / Responses，Grok OAuth 固定 Responses；Anthropic 使用 Messages / Count Tokens；Gemini native 枚举 GenerateContent、Interactions、Count Tokens、Embedding，但 Code Assist / Google One 固定只有 GenerateContent JSON / SSE。
 - Codex Responses 请求的客户端画像由网关自动识别；目标账号必须具备对应真实上游能力。GPT / 通用 OpenAI 原生 Responses 账号必须具备 `responses_sse`；DeepSeek `deepseek-v4-flash` 与预兼容的 `deepseek-v4-pro` 原生 Responses 账号必须具备 `responses_sse`。（已随 2026-11-07 退役）原“Chat-only DeepSeek、GLM Coding 和 Gemini OpenAI Chat 账号配置 `responses -> chat_completions` 模型别名并具备 `chat_sse` 后承接”的路径已删除，Chat-only 账户不再承接 Responses 请求。
 - `credentials` 只接受当前账户类型支持的字段；未知字段会在预览阶段标记为失败。
 - 凭据属于敏感数据，只在受控账户凭据路径保存和展示。
@@ -505,4 +505,4 @@ Grok OAuth 账户：
 - 账户 `connections` 必须恰好一条：导入包必须提交恰好一个连接对象（connectionPresetCode/baseUrl/endpointModes/enabled）；多个 API Key 放在 `credentials` 中，不支持多连接。
 - `healthCheckConnectionPresetCode` 不能为空：健康检查三件套必须显式提交；即使填写，指向的也必须是本账户一条 `enabled: true` 连接（否则执行阶段报 `health_check_connection_conflict`）。
 - `healthCheckModel` 不能为空：健康检查三件套必须显式提交；填写后仍必须属于 `supportedModels`。
-- `healthCheckEndpointMode` 不能为空：健康检查三件套必须显式提交；填写后必须属于 `healthCheckConnectionPresetCode` 指向连接的 `endpointModes`，且检查模型须在模型目录声明该形态。
+- `healthCheckEndpointMode` 不能为空：健康检查三件套必须显式提交；填写后必须属于 `healthCheckConnectionPresetCode` 指向连接的 `endpointModes`（对话域；五域账户连接行无 modes，该成员校验按域跳过），且检查模型须在模型目录声明该形态。

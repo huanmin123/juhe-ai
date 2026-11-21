@@ -3,7 +3,8 @@ import type { AccountType, ProviderCode } from './base'
 export type ProviderModelScope = 'built_in' | 'global' | 'personal'
 export type CustomProviderModelScope = Exclude<ProviderModelScope, 'built_in'>
 export type ProviderModelStatus = 'draft' | 'active' | 'disabled'
-export type ProviderModelMode = 'text' | 'image' | 'audio' | 'video'
+/** 自定义模型行 UI 分类（后端 catalogLegacyModeRank 同源词表；2026-11-21 起含向量/重排）。 */
+export type ProviderModelMode = 'text' | 'embedding' | 'rerank' | 'image' | 'audio' | 'video'
 export type ProviderModelServiceTier = string
 export type ProviderModelReasoningEffort = string
 export type ProviderModelCodexReasoningLevel = ProviderModelReasoningEffort | 'ultra'

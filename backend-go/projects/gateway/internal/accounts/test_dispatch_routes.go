@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountstest"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authsys"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
@@ -743,6 +744,11 @@ func (d *Deps) writeTestError(w http.ResponseWriter, err error) {
 type TestDraftAccountInput struct {
 	ProviderCode              string
 	ProviderProtocolProfileID string
+	// CapabilityDomain 是草稿账户的能力域（五域退役修订，AI账户上游接口能力
+	// 设计 §3/§5）：创建/编辑表单经 draft payload 透传 form.capabilityDomain；
+	// saved 账户草稿由 savedAccountDraftTestSnapshot 以账户行 capability_domain
+	// 覆写为权威。空串按 chat 缺省（列 DEFAULT 'chat' 同义），chat 链行为不变。
+	CapabilityDomain string
 	// ConnectionPresetCode 是草稿测试所用连接 preset（连接测试规格查找）；
 	// 前端从表单连接载荷透传，缺失时连接测试 fail closed。
 	ConnectionPresetCode    string
@@ -843,7 +849,8 @@ func parseTestDraftAccountInput(record map[string]any) (*TestDraftAccountInput, 
 		case "providerCode", "providerProtocolProfileId", "connectionPresetCode", "name", "type", "credentials",
 			"supportedModels", "healthCheckModel", "healthCheckEndpointMode", "modelMappings",
 			"concurrencyLimit", "priority", "superPriorityEnabled", "fallbackEnabled",
-			"proxyProfileId", "proxyPoolId", "groupId", "accountExpiresAt", "availabilitySchedule", "notes":
+			"proxyProfileId", "proxyPoolId", "groupId", "accountExpiresAt", "availabilitySchedule", "notes",
+			"capabilityDomain":
 		default:
 			return nil, "账户测试参数无效"
 		}
@@ -865,6 +872,18 @@ func parseTestDraftAccountInput(record map[string]any) (*TestDraftAccountInput, 
 	input.Name, _ = text("name")
 	input.Type, _ = text("type")
 	input.HealthCheckModel, _ = text("healthCheckModel")
+	// capabilityDomain 是草稿能力域通道（五域退役修订，设计 §3/§5）：空串/
+	// 缺失按 chat 缺省；词表外值在解析层拒绝（fail closed），不静默折到 chat。
+	if value, exists := record["capabilityDomain"]; exists && value != nil {
+		domain, ok := value.(string)
+		if !ok {
+			return nil, "账户测试参数无效"
+		}
+		input.CapabilityDomain = strings.TrimSpace(domain)
+		if input.CapabilityDomain != "" && !capabilitydomain.Domain(strings.ToLower(input.CapabilityDomain)).Valid() {
+			return nil, "账户测试参数无效"
+		}
+	}
 	if value, exists := record["healthCheckEndpointMode"]; exists && value != nil {
 		mode, ok := value.(string)
 		if !ok || !isAccountHealthCheckEndpointMode(strings.TrimSpace(mode)) {
@@ -1104,8 +1123,11 @@ func (v *AccountForTestView) manualContext() *ManualTestContext {
 		ClientCompatibility:       v.item.ClientCompatibility,
 		HealthCheckModel:          v.item.HealthCheckModel,
 		HealthCheckEndpointMode:   v.item.HealthCheckEndpointMode,
-		SupportedEndpointModes:    v.modeSource.SupportedEndpointModes,
-		ModelMappings:             v.modeSource.ModelMappings,
+		// CapabilityDomain 随列表行走读通道投影（五域退役修订：五域账户按域
+		// 判定测试方式，不再依赖声明集词面）。
+		CapabilityDomain:       v.item.CapabilityDomain,
+		SupportedEndpointModes: v.modeSource.SupportedEndpointModes,
+		ModelMappings:          v.modeSource.ModelMappings,
 	}
 }
 
@@ -1172,6 +1194,13 @@ func manualTestCapabilitiesContextFromDraft(draft *TestDraftSnapshot) *ManualTes
 		protocolVersion = *draft.ProtocolVersion
 	}
 	modes := supportedEndpointModesFromCredentials(Credentials(draft.Credentials))
+	// 能力域优先取快照显式键（五域退役修订）：五域草稿凭据不落声明键，从
+	// modes 反推恒 chat 是误报 testKind=model 的根因；旧快照无该键维持
+	// DeriveDomain 既有语义（chat 链行为不变）。
+	capabilityDomain := strings.TrimSpace(draft.CapabilityDomain)
+	if capabilityDomain == "" {
+		capabilityDomain = string(capabilitydomain.DeriveDomain(modes))
+	}
 	return &ManualTestContext{
 		ID:                        draft.ID,
 		FactAccountID:             factAccountID,
@@ -1184,7 +1213,7 @@ func manualTestCapabilitiesContextFromDraft(draft *TestDraftSnapshot) *ManualTes
 		ClientCompatibility:       draft.ClientCompatibility,
 		HealthCheckModel:          draft.HealthCheckModel,
 		HealthCheckEndpointMode:   draft.HealthCheckEndpointMode,
-		CapabilityDomain:          string(capabilitydomain.DeriveDomain(modes)),
+		CapabilityDomain:          capabilityDomain,
 		SupportedEndpointModes:    modes,
 		ModelMappings:             draft.ModelMappings,
 	}
@@ -1202,6 +1231,10 @@ func (s *Store) savedAccountDraftTestSnapshot(ctx context.Context, view *Account
 	if input.ProviderCode != account.ProviderCode || input.Type != account.Type {
 		return nil, &ValidationError{Message: "账户测试草稿与当前账户不一致"}
 	}
+	// saved 草稿以账户行 capability_domain 为权威（域创建时确定、不可更改 D3）：
+	// 编辑态表单域与账户行同源，覆写保证 prepare 链按行值落域——saved 账户的
+	// 测试方式与连接测试口径不依赖入参。
+	input.CapabilityDomain = account.CapabilityDomain
 	draft, err := s.prepareAccountDraftTestSnapshotWithOwner(ctx, input, access, account.ID, account.OwnerSystemAccountID)
 	if err != nil {
 		return nil, err
@@ -1281,6 +1314,16 @@ func (s *Store) prepareAccountDraftTestSnapshotWithOwner(ctx context.Context, in
 	if input.Credentials != nil {
 		credentialsInput = input.Credentials
 	}
+	// 草稿能力域通道（五域退役修订，AI账户上游接口能力设计 §3/§5）：入参域
+	// 空/词表外按 chat 缺省（列 DEFAULT 'chat' 同义，与 dispatch 域归一同款）；
+	// 五域走写面退役臂（凭据剥声明键、不播种默认集），chat（含空串缺省）保持
+	// 既有归一化语义。
+	draftDomain := capabilitydomain.DomainChat
+	if trimmed := strings.TrimSpace(input.CapabilityDomain); trimmed != "" {
+		if domain := capabilitydomain.Domain(strings.ToLower(trimmed)); domain.Valid() {
+			draftDomain = domain
+		}
+	}
 	if input.Type == "oauth" {
 		if _, hasBaseURL := credentialsInput["base_url"]; !hasBaseURL || !credentialTextPresent(credentialsInput["base_url"]) {
 			// draftAccountCredentials：oauth 草稿缺省 base_url 按 vendor 默认
@@ -1303,6 +1346,7 @@ func (s *Store) prepareAccountDraftTestSnapshotWithOwner(ctx context.Context, in
 		ProviderProtocolProfileID: profile.profileID,
 		ProtocolCode:              profile.protocolCode,
 		ProtocolVersion:           profile.protocolVersion,
+		CapabilityDomain:          string(draftDomain),
 	})
 	if err != nil {
 		return nil, err
@@ -1325,8 +1369,15 @@ func (s *Store) prepareAccountDraftTestSnapshotWithOwner(ctx context.Context, in
 	// 形态：模型取首个支持模型，形态交给 resolveHealthCheckEndpointMode 按
 	// 最终声明集落默认值。模型测试草稿仍要求显式三件套。
 	enabledModes := supportedEndpointModesFromCredentials(credentials)
-	draftDomain := capabilitydomain.DeriveDomain(enabledModes)
-	connectionTest := capabilitydomain.TestKindForAccount(string(draftDomain), enabledModes) == capabilitydomain.TestKindConnection
+	// 五域退役修订：入参域为退役五域时草稿域直接取入参——五域凭据不落声明
+	// 键（enabledModes 恒空），从播种结果反推恒 chat 是断链根因（五域草稿被
+	// 误判模型测试后撞「检查模型不能为空」400）；chat（含空串缺省）保持既有
+	// 从凭据声明集推导的语义。
+	draftDomainResolved := draftDomain
+	if draftDomainResolved == capabilitydomain.DomainChat {
+		draftDomainResolved = capabilitydomain.DeriveDomain(enabledModes)
+	}
+	connectionTest := capabilitydomain.TestKindForAccount(string(draftDomainResolved), enabledModes) == capabilitydomain.TestKindConnection
 	healthCheckModel := strings.TrimSpace(input.HealthCheckModel)
 	if healthCheckModel == "" {
 		if !connectionTest {
@@ -1355,9 +1406,28 @@ func (s *Store) prepareAccountDraftTestSnapshotWithOwner(ctx context.Context, in
 		supported := item != nil && containsString(item.SupportedAPIProtocols, "images")
 		modelSupportsImages = &supported
 	}
-	healthCheckEndpointMode, err := resolveHealthCheckEndpointMode(endpointModeValue, input.ProviderCode, profile.profileID, enabledModes, modelSupportsImages)
-	if err != nil {
-		return nil, err
+	// 显式健康检查形态的成员校验集：chat 入参域按凭据声明集（既有语义，含
+	// 空串缺省经播种推导的分支）；入参为退役五域时声明集剥键恒空，改用域
+	// lane 探测形态集（五域 lane 的权威用途即健康检查默认形态与探测规格
+	// 选型），词表外值仍然拒绝。
+	modeVocabulary := enabledModes
+	if draftDomain != capabilitydomain.DomainChat {
+		modeVocabulary = capabilitydomain.LaneModesForDomain(draftDomain)
+	}
+	// 退役五域连接草稿省略形态：直接落域常量默认（与前端
+	// defaultHealthCheckEndpointModeForCapabilityDomain 同值）——声明集派生
+	// 不再适用（凭据不落声明键，空集派生恒报「无可用请求形态」），也不进
+	// images_json 目录证据分支（连接测试不做模型能力校验）。显式提交的形态
+	// 仍走 resolveHealthCheckEndpointMode（域 lane 词表校验 + images 目录证据
+	// 既有语义）。
+	healthCheckEndpointMode := ""
+	if endpointModeValue != nil || draftDomain == capabilitydomain.DomainChat {
+		healthCheckEndpointMode, err = resolveHealthCheckEndpointMode(endpointModeValue, input.ProviderCode, profile.profileID, modeVocabulary, modelSupportsImages)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		healthCheckEndpointMode = accountscore.DefaultHealthCheckEndpointModeForDomain(string(draftDomain))
 	}
 
 	// Model mappings (strict schema + upstream-allowed assert).
@@ -1368,8 +1438,13 @@ func (s *Store) prepareAccountDraftTestSnapshotWithOwner(ctx context.Context, in
 	}
 
 	// Draft endpoint-mode compatibility asserts (assertDraftEndpointModesCompatible).
-	if err := assertEndpointModesCompatible(input.ProviderCode, input.Type, clientCompatibility, profile.predicate(input.ProviderCode), enabledModes); err != nil {
-		return nil, err
+	// 声明兼容断言属声明面（上游接口能力设计 §3）：五域草稿凭据无声明键，
+	// OAuth/Codex Responses 收窄断言不适用，按域跳过（与批量编辑
+	// batchDeclarationRetired 同口径）；chat 草稿保留既有断言。
+	if draftDomain == capabilitydomain.DomainChat {
+		if err := assertEndpointModesCompatible(input.ProviderCode, input.Type, clientCompatibility, profile.predicate(input.ProviderCode), enabledModes); err != nil {
+			return nil, err
+		}
 	}
 
 	draftID := draftAccountID
@@ -1460,13 +1535,17 @@ func (s *Store) prepareAccountDraftTestSnapshotWithOwner(ctx context.Context, in
 		SupportedModels:           supportedModels,
 		HealthCheckModel:          healthCheckModel,
 		HealthCheckEndpointMode:   healthCheckEndpointMode,
-		ModelMappings:             mappings,
-		ProxyProfileID:            proxyProfileID,
-		ProxyPoolID:               proxyPoolID,
-		AccountExpiresAt:          accountExpiresAt,
-		AvailabilitySchedule:      availabilityScheduleMap,
-		AvailabilityScheduleJSON:  scheduleJSON,
-		Notes:                     notes,
+		// 能力域随快照出站（五域退役修订）：test-draft-options 与草稿测试的
+		// testKind 按域判定；执行侧 worker 投影不消费该键（宽松解析忽略未知
+		// 字段），旧快照无此键走 modes 反推既有语义。
+		CapabilityDomain:         string(draftDomainResolved),
+		ModelMappings:            mappings,
+		ProxyProfileID:           proxyProfileID,
+		ProxyPoolID:              proxyPoolID,
+		AccountExpiresAt:         accountExpiresAt,
+		AvailabilitySchedule:     availabilityScheduleMap,
+		AvailabilityScheduleJSON: scheduleJSON,
+		Notes:                    notes,
 	}, nil
 }
 

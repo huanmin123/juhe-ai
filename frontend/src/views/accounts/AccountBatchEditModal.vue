@@ -64,7 +64,10 @@
                 </template>
               </AccountBatchEditField>
 
+              <!-- 2026-11-21 五域退役：声明集覆盖仅对话域开放；非对话域（图像/音频/
+                   视频/向量/重排）无此配置（连接测试口径域同门）。 -->
               <AccountBatchEditField
+                v-if="!connectionTestDomain"
                 v-model:checked="form.enabled.supportedEndpointModes"
                 :disabled="!homogeneousModelConfiguration"
                 label="上游接口能力"
@@ -221,7 +224,7 @@
               </AccountBatchEditField>
 
               <AccountBatchEditField
-                v-if="!mediaDomain"
+                v-if="!connectionTestDomain"
                 v-model:checked="form.enabled.responseInspectionRules"
                 label="响应检查策略"
                 description="直接覆盖账户专属响应检查规则；留空表示清空。"
@@ -274,7 +277,7 @@
                 </template>
               </AccountBatchEditField>
 
-              <div v-if="!mediaDomain" class="batch-edit-two-columns">
+              <div v-if="!connectionTestDomain" class="batch-edit-two-columns">
                 <AccountBatchEditField
                   v-model:checked="form.enabled.healthCheckModel"
                   :disabled="!homogeneousModelConfiguration"
@@ -505,7 +508,7 @@ interface SelectOption {
 const open = defineModel<boolean>('open', { required: true })
 const props = defineProps<{
   accounts: AccountListItem[]
-  /** 当前能力域：媒体域隐藏检查模型/检查形态、响应检查与请求覆盖（连接测试口径）。 */
+  /** 当前能力域：媒体域与向量/重排域裁剪检查模型/检查形态、响应检查与请求覆盖（连接测试口径）。 */
   capabilityDomain?: AccountCapabilityDomain
   isManagementView: boolean
   providers: ProviderDefinition[]
@@ -556,7 +559,12 @@ const accountNameSummary = computed(() => {
   const names = props.accounts.slice(0, 4).map((account) => account.name)
   return props.accounts.length > 4 ? `${names.join('、')} 等 ${props.accounts.length} 个账户` : names.join('、')
 })
-const mediaDomain = computed(() => capabilityDomainIsMedia(props.capabilityDomain))
+// 连接测试口径域（媒体域 + 向量/重排域，2026-11-21 拆分）：两类域恒走连接测试，
+// 无「检查模型/检查形态、响应检查策略、请求覆盖」概念，批量编辑整体裁剪（§8.3）。
+const connectionTestDomain = computed(() =>
+  capabilityDomainIsMedia(props.capabilityDomain)
+  || props.capabilityDomain === 'embedding'
+  || props.capabilityDomain === 'rerank')
 const homogeneousModelConfiguration = computed(() => {
   if (!accountDetails.value.length) return false
   const signatures = new Set(accountDetails.value.map((account) => [
@@ -623,8 +631,8 @@ const mappingUpstreamModelOptions = computed(() => {
 })
 const endpointModeOptions = computed(() => {
   const profile = selectedProtocolProfile.value ?? homogeneousAccount.value
-  // 批量编辑对四域开放，接口能力候选必须按当前能力域收窄，不能沿用协议族
-  // 全集（否则媒体批量会出现 chat 形态，反之亦然）。
+  // 批量编辑对六域开放，接口能力候选必须按当前能力域收窄，不能沿用协议族
+  // 全集（否则媒体批量会出现 chat 形态，向量/重排批量会出现对话形态，反之亦然）。
   const allowed = new Set(allowedEndpointModesFor({
     capabilityDomain: props.capabilityDomain ?? 'chat',
     providerCode: homogeneousAccount.value?.providerCode,
@@ -670,7 +678,7 @@ const reasoningEffortOverrideFieldVisible = computed(() => Boolean(
     || form.enabled.reasoningEffortOverride)
 ))
 const requestOverridesSupported = computed(() => Boolean(
-  !mediaDomain.value
+  !connectionTestDomain.value
   && homogeneousAccount.value
   && isAccountRequestOverrideProviderSupported(homogeneousAccount.value.providerCode, requestOverrideGuardModes.value)
   && (serviceTierOverrideFieldVisible.value || reasoningEffortOverrideFieldVisible.value)
@@ -818,15 +826,15 @@ async function loadModelOptions(token: number, keyword = ''): Promise<void> {
       isManagementView: props.isManagementView,
       providerCode: account.providerCode,
       scopeParams: scope,
-      // 批量编辑覆盖四域：模型候选按当前能力域过滤（媒体域取 video/audio/
-      // image_generation，不得把对话模型混入）。
+      // 批量编辑覆盖六域：模型候选按当前能力域过滤（向量/重排域取 embedding/
+      // rerank，媒体域取 video/audio/image_generation，不得把对话模型混入）。
       modes: [...DOMAIN_MODEL_MODES[props.capabilityDomain ?? 'chat']],
       selectedIds,
       keyword
     })
     if (token !== loadToken || requestId !== modelOptionsRequestId || !open.value) return
     currentProviderModelOptions.value = models.data
-    modelOptions.value = providerModelsForProtocolProfile(models.data, selectedProtocolProfile.value, homogeneousAccount.value?.type)
+    modelOptions.value = providerModelsForProtocolProfile(models.data, selectedProtocolProfile.value, homogeneousAccount.value?.type, props.capabilityDomain)
     // 截断判定与账户编辑表单同口径（T25）：以服务端 hasMore 元数据为准——
     // 非搜索取数（浏览或纯 selectedIds 单批次补拉）都判定，编辑态恒带
     // selectedIds 的取数也能正确提示；带 keyword 的搜索与多批次补拉不改写。
@@ -949,7 +957,8 @@ async function save(): Promise<void> {
     mappingSourceModelOptionsReady: mappingSourcePoolReady.value,
     mappingUpstreamModelOptions: mappingUpstreamModelOptions.value,
     mappingUpstreamModelOptionsReady: modelOptionsLoaded.value,
-    providerProfile: selectedProtocolProfile.value ?? selectedProvider.value
+    providerProfile: selectedProtocolProfile.value ?? selectedProvider.value,
+    capabilityDomain: props.capabilityDomain
   })
   if (!result.payload) {
     message.warning(result.message ?? '批量编辑配置无效')
@@ -1024,7 +1033,9 @@ function mappingContext() {
     providerProfile: selectedProtocolProfile.value ?? homogeneousAccount.value,
     supportedEndpointModes: form.enabled.supportedEndpointModes
       ? form.supportedEndpointModes
-      : intersectAccountSupportedEndpointModes(accountDetails.value)
+      : intersectAccountSupportedEndpointModes(accountDetails.value),
+    // 五域映射不做声明集目标族能力门（结构门保留，设计 §6.2）。
+    capabilityDomain: props.capabilityDomain
   }
 }
 

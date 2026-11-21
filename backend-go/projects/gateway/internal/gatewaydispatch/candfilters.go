@@ -8,6 +8,7 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproto"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
+	capabilitydomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 )
 
 // Candidate account filters, migrated from dispatch/account-capability-filter.ts
@@ -31,6 +32,9 @@ const (
 	// CapabilitySkipReasonMismatch：driver 单账户 reason 判空时的能力拒绝
 	// 回退标记（BUG-0325 前为唯一折叠值，保留以兼容既有消费点）。
 	CapabilitySkipReasonMismatch = "capability_mismatch"
+	// CapabilityDomainSkipReasonMismatch 是域闸门（五域退役修订，AI 账户上游
+	// 接口能力设计 §4）的逐账户拒绝 reason：账户能力域 ≠ 请求域。
+	CapabilityDomainSkipReasonMismatch = "capability_domain_mismatch"
 	// ModelSkipReasonUnsupportedConstraint：账户未配置支持模型约束
 	// （SupportedModels 为空，invalidModelConstraint 分支）。
 	ModelSkipReasonUnsupportedConstraint = "unsupported_model_constraint"
@@ -41,6 +45,17 @@ const (
 	//（直接匹配失败分支）。
 	ModelSkipReasonModelNotMatched = "model_not_matched"
 )
+
+// AccountCapabilityDomain 归一候选账户的能力域：空值 / 词表外值按列默认语义
+// 落 chat（accounts.capability_domain NOT NULL DEFAULT 'chat'；空串只来自
+// 历史投影与测试零值）。域闸门与切号冻结门共用同一归一，词表校验复用共享
+// capabilitydomain 包（Domain.Valid）。
+func AccountCapabilityDomain(account AccountCandidate) string {
+	if domain := capabilitydomain.Domain(strings.ToLower(strings.TrimSpace(account.CapabilityDomain))); domain.Valid() {
+		return string(domain)
+	}
+	return string(capabilitydomain.DomainChat)
+}
 
 // dispatchCandidateSkipMetadataCap 限制随审计标签出站的逐账户明细条数：
 // 大分组不得爆炸审计记录；截断由 skippedTruncated 布尔键表达。

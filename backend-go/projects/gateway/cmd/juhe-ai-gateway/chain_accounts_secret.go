@@ -10,7 +10,6 @@ package main
 //     gemini-endpoint-modes.ts / hybrid account-credentials.ts
 //     (normalizeGatewayEndpointModesForRuntime + per-protocol defaults),
 //   - provider-protocol.ts (defaultBaseUrlForProtocol),
-//   - resource-authorization-helpers.ts (resourceAuthorizationQuotaLimited),
 //   - group-scheduling.ts (normalizeGroupType + parseGroupSchedulingPolicyJson
 //     guards).
 
@@ -20,7 +19,6 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
@@ -29,8 +27,19 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayscheduling"
+	capabilitydomain "github.com/huanminabc/juhe-ai/backend-go-platform/capabilitydomain"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/proxyresolve"
 )
+
+// chainAccountCapabilityDomain 归一候选行的能力域值：空值 / 词表外值按列默认
+// 语义落 chat（accounts.capability_domain NOT NULL DEFAULT 'chat'；空串只来
+// 自历史投影或测试零值）。
+func chainAccountCapabilityDomain(value string) capabilitydomain.Domain {
+	if domain := capabilitydomain.Domain(strings.ToLower(strings.TrimSpace(value))); domain.Valid() {
+		return domain
+	}
+	return capabilitydomain.DomainChat
+}
 
 // chainSecretOptions mirrors OpenAIAccountSecretOptions (the hydration loads
 // the caller prefetched for the batch).
@@ -210,9 +219,17 @@ func (s *chainAccountsSelector) openAIAccountSecretFromRow(ctx context.Context, 
 	// account_endpoint_modes 实际集合优先（写入侧已按 domain∩preset 词表收
 	// 窄）；为空（老数据未配 mode 的迁移窗口行）回落既有凭据过滤 + vendor
 	// 默认分支（兼容分支，注释钉住——多连接多候选展开留后续批）。
+	// 五域退役修订（设计 §3.4 双保险）：图像 / 音频 / 视频 / 向量 / 重排五域
+	// 账户的运行时声明投影恒空——「上游接口能力」仅 chat 域持有，revision 30
+	// 清洗前的存量声明不再参与派发；五域候选隔离由域闸门（chain driver
+	// capability_domain_mismatch）承接，chat 域保留连接行优先 / 凭据回落逻辑。
+	capabilityDomain := chainAccountCapabilityDomain(row.CapabilityDomain.String)
 	supportedEndpointModes := options.connectionModes[resourceAccountID]
 	if len(supportedEndpointModes) == 0 {
 		supportedEndpointModes = chainNormalizeGatewayEndpointModesForRuntime(anyToAnyList(credentials["supported_endpoint_modes"]), vendorCode, resourceType, clientCompatibility, providerProtocolProfileID, protocolCode, protocolVersion)
+	}
+	if capabilityDomain != capabilitydomain.DomainChat {
+		supportedEndpointModes = nil
 	}
 
 	secret := &gatewayruntimecache.OpenAIAccountSecret{
@@ -230,13 +247,11 @@ func (s *chainAccountsSelector) openAIAccountSecretFromRow(ctx context.Context, 
 		AccountAccessType:                string(access.accountAccessType),
 		GroupAccessType:                  groupAccess.GroupAccessType,
 		AccountAuthorizationExpiresAt:    accountAuthorizationExpiresAt,
-		AccountAuthorizationQuotaLimited: access.quotaLimited,
 		AccountAuthorizationSourceType:   access.sourceType,
 		AccountAuthorizationSourceTeamID: access.sourceTeamID,
 		BindingSystemAccountID:           bindingSystemAccountID,
 		GroupAuthorizationID:             groupAccess.GroupAuthorizationID,
 		GroupAuthorizationExpiresAt:      groupAuthorizationExpiresAt,
-		GroupAuthorizationQuotaLimited:   groupAccess.GroupAuthorizationQuotaLimited,
 		GroupAuthorizationSourceType:     groupAccess.GroupAuthorizationSourceType,
 		GroupAuthorizationSourceTeamID:   groupAccess.GroupAuthorizationSourceTeamID,
 		Name:                             row.Name,
@@ -249,6 +264,7 @@ func (s *chainAccountsSelector) openAIAccountSecretFromRow(ctx context.Context, 
 		FallbackEnabled:                  runtimeStatus == "active" && dispatchFallbackEnabled,
 		ClientCompatibility:              clientCompatibility,
 		SupportedEndpointModes:           supportedEndpointModes,
+		CapabilityDomain:                 string(capabilityDomain),
 		SupportedModels:                  []string{},
 		ModelMappings:                    []gatewayruntimecache.AccountModelMapping{},
 		HealthCheckEndpointMode:          row.HealthCheckEndpointMode.String,
@@ -658,43 +674,8 @@ func chainResolveProxyURL(proxyProfileID string, profiles map[string]chainProxyP
 }
 
 // ---------------------------------------------------------------------------
-// authorization quota / group scheduling helpers
+// group scheduling helpers
 // ---------------------------------------------------------------------------
-
-// chainResourceAuthorizationQuotaLimited mirrors
-// resourceAuthorizationQuotaLimited (hasEnabledRequestQuotaLimit over
-// limits_json).
-func chainResourceAuthorizationQuotaLimited(limitsJSON *string) *bool {
-	if limitsJSON == nil || strings.TrimSpace(*limitsJSON) == "" {
-		return boolPtr(false)
-	}
-	var parsed struct {
-		Hourly *struct {
-			Enabled bool `json:"enabled"`
-		} `json:"hourly"`
-		Daily *struct {
-			Enabled bool `json:"enabled"`
-		} `json:"daily"`
-		Weekly *struct {
-			Enabled bool `json:"enabled"`
-		} `json:"weekly"`
-		Monthly *struct {
-			Enabled bool `json:"enabled"`
-		} `json:"monthly"`
-		Total *struct {
-			Enabled bool `json:"enabled"`
-		} `json:"total"`
-	}
-	if err := json.Unmarshal([]byte(*limitsJSON), &parsed); err != nil {
-		return boolPtr(false)
-	}
-	limited := (parsed.Hourly != nil && parsed.Hourly.Enabled) ||
-		(parsed.Daily != nil && parsed.Daily.Enabled) ||
-		(parsed.Weekly != nil && parsed.Weekly.Enabled) ||
-		(parsed.Monthly != nil && parsed.Monthly.Enabled) ||
-		(parsed.Total != nil && parsed.Total.Enabled)
-	return boolPtr(limited)
-}
 
 // chainNormalizeGroupType normalizes the retired high_concurrency type to
 // personal and reports whether the raw value was legacy.

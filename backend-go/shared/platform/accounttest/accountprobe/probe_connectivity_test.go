@@ -330,6 +330,59 @@ func TestConnectivityProbeOnlyContentMode(t *testing.T) {
 	}
 }
 
+// TestConnectivityProbeModeForViewUsesDomainLaneModes 钉值五域退役读侧口径
+// （AI 账户上游接口能力设计 §5）：五域账户连接测试按域默认形态集
+// （capabilitydomain.LaneModesForDomain）经注册表规格优先级命中——audio 域
+// qwen→audio_job_create、volcengine openspeech / minimax / gemini native→
+// audio_speech；image/video/embedding/rerank 各落单值 lane；五域即使残留旧
+// 声明词面也按域判定；chat / 空域不受 lane 影响，仍走既有声明集 → health 列
+// 回落链（空声明 fail closed）。
+func TestConnectivityProbeModeForViewUsesDomainLaneModes(t *testing.T) {
+	cases := []struct {
+		name      string
+		domain    string
+		preset    string
+		modes     []EndpointMode // 既有声明集（模拟残留词面；nil = 声明恒空）
+		healthCol string
+		want      EndpointMode
+		wantOK    bool
+	}{
+		{"qwen audio 走长音频任务提交", "audio", contracts.PresetQwenDashScope, nil, "", ModeAudioJobCreate, true},
+		{"volcengine openspeech audio 走语音合成", "audio", contracts.PresetVolcengineOpenSpeech, nil, "", ModeAudioSpeech, true},
+		{"minimax audio 走语音合成", "audio", contracts.PresetMiniMaxMedia, nil, "", ModeAudioSpeech, true},
+		{"gemini native audio 走语音合成", "audio", contracts.PresetGeminiNativeV1Beta, nil, "", ModeAudioSpeech, true},
+		{"image 走生图形态", "image", contracts.PresetGPTOpenAIV1, nil, "", ModeImagesJSON, true},
+		{"video 走任务查询", "video", contracts.PresetVolcengineArk, nil, "", ModeVideoCreate, true},
+		{"embedding 走向量形态", "embedding", contracts.PresetQwenDashScope, nil, "", ModeEmbeddingsJSON, true},
+		{"rerank 走重排形态", "rerank", contracts.PresetQwenDashScope, nil, "", ModeRerankJSON, true},
+		// 五域残留旧声明词面仍按域判定（不猜 modes）。
+		{"video 残留 chat 声明仍按域", "video", contracts.PresetVolcengineArk, []EndpointMode{ModeCountTokens}, "chat_sse", ModeVideoCreate, true},
+		{"audio 残留生图声明仍按域", "audio", contracts.PresetVolcengineOpenSpeech, []EndpointMode{ModeImagesJSON}, "images_json", ModeAudioSpeech, true},
+		// chat / 空域不受 lane 影响：既有声明集命中 count_tokens（gemini native
+		// 注册该形态）；全空 fail closed；空域回落 health 列。
+		{"chat 声明集命中不落 lane", "chat", contracts.PresetGeminiNativeV1Beta, []EndpointMode{ModeCountTokens}, "", ModeCountTokens, true},
+		{"chat 空声明 fail closed", "chat", contracts.PresetGPTOpenAIV1, nil, "", "", false},
+		{"空域走既有回落链", "", contracts.PresetGeminiNativeV1Beta, nil, string(ModeCountTokens), ModeCountTokens, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			view := connectivityView("https://upstream.example.com", ModeImagesJSON, "probe-model")
+			view.CapabilityDomain = tc.domain
+			view.ConnectionPresetCode = tc.preset
+			view.HealthCheckEndpointMode = tc.healthCol
+			view.NormalizeEndpointModes = map[EndpointMode]bool{}
+			for _, mode := range tc.modes {
+				view.NormalizeEndpointModes[mode] = true
+			}
+			mode, _, ok := ConnectivityProbeModeForView(view)
+			if ok != tc.wantOK || mode != tc.want {
+				t.Fatalf("domain=%q preset=%s modes=%v → mode=%q ok=%v, want %q %v",
+					tc.domain, tc.preset, tc.modes, mode, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
+}
+
 // TestConnectivityProbeQwenMediaStripsBaseServiceRoot（T221）：qwen 媒体探测
 // opPath 是 DashScope 全路径（/api/v1/tasks/{probe_id}），base 尾部服务根
 // （存量行/凭据域形态）必须先剥一次再直拼，与 gateway 媒体链同构——双根

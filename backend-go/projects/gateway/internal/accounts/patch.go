@@ -1040,6 +1040,9 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	// （§2.1/§2.2）→ 整替换 upsert（保留存量 preset 的 DB id）→ §5.1 禁用
 	// 级联；待删除 preset 登记到 removedPatchConnections，删除终裁在映射整
 	// 替换之后（finishAccountConnectionsReplacement，支持同事务改指向）。
+	// 五域声明面退役：resolveConnectionSet 对五域连接不做 modes 组合校验、
+	// resolved modes 恒空（连接行 modes 不写/清理旧行）。
+	patchDeclarationRetired := accountscore.EndpointModesDeclarationRetired(row.capabilityDomain)
 	removedPatchConnections := []removedConnection{}
 	if input.ConnectionsPresent {
 		patchCredentials := Credentials{}
@@ -1066,13 +1069,15 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			// 既有映射对最终连接/mode 集合重校验（§5.3：映射可执行性依赖
 			// connection ∩ model endpoint modes；modelMappings 显式提交时由
 			// 下方映射块的整替换校验覆盖，此处只补「仅连接参与」的臂）。
+			// 五域声明面退役：§5.3 联动校验按域跳过（resolveEntryMappingTargets
+			// 内部分路），仍做双解析身份校验。
 			if !input.ModelMappingsPresent {
 				currentMappings, err := s.loadAccountModelMappings(ctx, tx, row.id)
 				if err != nil {
 					return nil, err
 				}
 				for _, mapping := range currentMappings {
-					if _, _, err := s.resolveEntryMappingTargets(ctx, tx, row.id, patchVendor.String, row.systemAccountID, mapping); err != nil {
+					if _, _, err := s.resolveEntryMappingTargets(ctx, tx, row.id, patchVendor.String, row.systemAccountID, row.capabilityDomain, mapping); err != nil {
 						return nil, err
 					}
 				}
@@ -1166,30 +1171,35 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		if input.HealthCheckEndpointMode != nil {
 			effectiveMode = strings.TrimSpace(*input.HealthCheckEndpointMode)
 		}
-		connectionModes, err := s.entryConnectionEndpointModes(ctx, tx, healthConnectionID)
-		if err != nil {
-			return nil, err
-		}
-		if !entryModeSet(connectionModes)[effectiveMode] {
-			connectionTest, connErr := patchAccountUsesConnectionTest()
-			if connErr != nil {
-				return nil, connErr
+		// 五域声明面退役（2026-11-21 五域退役设计 §3/§5）：五域连接行无 modes，
+		// 「检查形态属于连接已启用 mode」的成员校验按域跳过——检查形态只是记录
+		// 值（显式提交已过白名单校验，未提交保持行内域默认值）。
+		if !patchDeclarationRetired {
+			connectionModes, err := s.entryConnectionEndpointModes(ctx, tx, healthConnectionID)
+			if err != nil {
+				return nil, err
 			}
-			// 连接测试账户的健康形态只是记录值：连接集合变化导致旧值失效且
-			// 客户端未显式提交时，按最终连接 modes 重新派生；显式提交无效值
-			// 或模型测试账户仍按冲突拒绝。
-			if connectionTest && input.HealthCheckEndpointMode == nil {
-				derived, derr := resolveDefaultHealthCheckEndpointMode(row.providerCode, row.providerProtocolProfileID, connectionModes)
-				if derr != nil {
-					return nil, derr
+			if !entryModeSet(connectionModes)[effectiveMode] {
+				connectionTest, connErr := patchAccountUsesConnectionTest()
+				if connErr != nil {
+					return nil, connErr
 				}
-				effectiveMode = derived
-				addChange("healthCheckEndpointMode", row.healthCheckEndpointMode, effectiveMode)
-				sets = append(sets, "health_check_endpoint_mode = ?")
-				setArgs = append(setArgs, effectiveMode)
-				healthCheckEndpointModeChanged = true
-			} else {
-				return nil, &ValidationError{Message: fmt.Sprintf("health_check_connection_conflict: 检查形态 %s 不在健康检查连接已启用 mode 内", effectiveMode)}
+				// 连接测试账户的健康形态只是记录值：连接集合变化导致旧值失效且
+				// 客户端未显式提交时，按最终连接 modes 重新派生；显式提交无效值
+				// 或模型测试账户仍按冲突拒绝。
+				if connectionTest && input.HealthCheckEndpointMode == nil {
+					derived, derr := resolveDefaultHealthCheckEndpointMode(row.providerCode, row.providerProtocolProfileID, connectionModes)
+					if derr != nil {
+						return nil, derr
+					}
+					effectiveMode = derived
+					addChange("healthCheckEndpointMode", row.healthCheckEndpointMode, effectiveMode)
+					sets = append(sets, "health_check_endpoint_mode = ?")
+					setArgs = append(setArgs, effectiveMode)
+					healthCheckEndpointModeChanged = true
+				} else {
+					return nil, &ValidationError{Message: fmt.Sprintf("health_check_connection_conflict: 检查形态 %s 不在健康检查连接已启用 mode 内", effectiveMode)}
+				}
 			}
 		}
 		effectiveModel := strings.TrimSpace(row.healthCheckModel)
@@ -1292,7 +1302,9 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 	// 显式凭据提交优先（含 credentialsPatch），本臂只在凭据输入缺席时执行；
 	// 仅集合真实变化（忽略顺序）才重封并披露 credentials 变更，幂等请求不写
 	// 不回版本。显式凭据路径的归一化/指纹/mask/OAuth 派生列完全保持原样。
-	if input.ConnectionsPresent && !input.CredentialsPresent {
+	// 五域声明面退役（2026-11-21 五域退役设计 §3）：五域账户不回写影子副本
+	// （连接行无 modes、凭据无键；历史残留键由显式凭据臂的域上下文归一化剥离）。
+	if input.ConnectionsPresent && !input.CredentialsPresent && !patchDeclarationRetired {
 		connectionModes := []string{}
 		for _, connection := range resolvedPatchConnections {
 			if connection.enabled {
@@ -1331,16 +1343,17 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			return nil, err
 		}
 		// credentialsPatch 删键（present-null）的按域默认集收敛（M2 严格不变
-		// 式）：删键若直通归一化，会落入写侧供应商缺省默认集，而该缺省集对
-		// 多个合法组合并不 ⊆ 域允许集（minimax 缺省 audio_speech 对 video 域
-		// 越界；volcengine/qwen 缺省 video_get 对 chat/audio 域越界；hybrid
-		// 缺省为全词表并集对任意单一域越界），D6 域外遗留兼容废除后曾是静默
-		// 击穿口。这里在合并前就地把它替换为 DefaultEndpointModesForDomain 的
-		// 按域默认集数组（谓词与下方 allowedModes 计算同源，与新建缺省播种
+		// 式，2026-11-21 五域退役后收窄为 chat 域不变式）：删键若直通归一化，
+		// 会落入写侧供应商缺省默认集，而该缺省集对多个合法组合并不 ⊆ 域允许集
+		// （minimax 缺省 audio_speech 对 video 域越界；volcengine/qwen 缺省
+		// video_get 对 chat/audio 域越界），D6 域外遗留兼容废除后曾是静默击穿
+		// 口。这里在合并前就地把它替换为 DefaultEndpointModesForDomain 的按域
+		// 默认集数组（谓词与下方 allowedModes 计算同源，与新建缺省播种
 		// write.go 同一收敛点），后续流程把它当显式数组走严格 ⊆ allowed 校验
 		// 与持久化，越界组合自然 400 响亮拒绝。legacy credentials 的显式 null
 		// （恢复现值语义）不在此列，键缺省（absent）不重置声明集。
-		if input.CredentialsPatch {
+		// 五域声明面退役：删键收敛不需要（声明面退役）——合并后统一剥键即可。
+		if input.CredentialsPatch && !patchDeclarationRetired {
 			if raw, present := input.Credentials["supported_endpoint_modes"]; present && raw == nil {
 				input.Credentials["supported_endpoint_modes"] = anyStrings(accountscore.DefaultEndpointModesForDomain(
 					row.capabilityDomain, row.providerCode, row.accountType,
@@ -1363,6 +1376,13 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		} else {
 			next = mergeAccountCredentialsForUpdate(row.accountType, row.oauthType, current, requested)
 		}
+		// 五域声明面退役（AI账户上游接口能力设计 §3）：五域 PATCH 对
+		// supported_endpoint_modes 键提交按忽略处理——合并结果统一剥键（显式
+		// 提交与存量残留一并清除），幂等不报错；落库干净由归一化域上下文兜底
+		// （归一化器对五域同样剥键且不播种默认集）。
+		if patchDeclarationRetired {
+			delete(next, "supported_endpoint_modes")
+		}
 		normalized, err := NormalizeAccountCredentialsForWrite(row.accountType, next, &EndpointModeDefaultContext{
 			ProviderCode:              row.providerCode,
 			AccountType:               row.accountType,
@@ -1370,6 +1390,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			ProviderProtocolProfileID: row.providerProtocolProfileID,
 			ProtocolCode:              row.protocolCode,
 			ProtocolVersion:           row.protocolVersion,
+			CapabilityDomain:          row.capabilityDomain,
 		})
 		if err != nil {
 			return nil, err
@@ -1425,16 +1446,16 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 		}
 	}
 
-	// 严格声明校验（账户能力域不变式，全链路同一规则）：请求显式携带
-	// supported_endpoint_modes 数组时，归一化后的最终声明集必须 ⊆ 域允许集
-	// （allowed 按库中行现值 capability_domain/provider/type/协议档案现算），
-	// 越界一律 400 并列出越界值，不存在任何跨域保留状态。modes 键缺省 =
-	// 不重置声明集（合并结果 = 现值，域内行天然通过）；credentialsPatch 删键
-	// （null）已在补丁准备处替换为按域默认集数组，到这里按显式数组参与校验
+	// 严格声明校验（账户能力域不变式；2026-11-21 五域退役后为 chat 域不变式）：
+	// chat 请求显式携带 supported_endpoint_modes 数组时，归一化后的最终声明集
+	// 必须 ⊆ 域允许集（allowed 按库中行现值 capability_domain/provider/type/
+	// 协议档案现算），越界一律 400 并列出越界值，不存在任何跨域保留状态。modes
+	// 键缺省 = 不重置声明集（合并结果 = 现值，域内行天然通过）；credentialsPatch
+	// 删键（null）已在补丁准备处替换为按域默认集数组，到这里按显式数组参与校验
 	// ——按域默认集不保证 ⊆ allowed（volcengine chat 缺省 video_get 等越界
 	// 组合在此响亮 400，不再静默回写）。旧声明一律服务端读库，不信任客户端
-	// 标记（I7）。
-	if input.CredentialsPresent && credentialModesExplicitlyDeclared(input) {
+	// 标记（I7）。五域声明面退役：不校验声明（键已在合并后剥离，凭据无键）。
+	if input.CredentialsPresent && !patchDeclarationRetired && credentialModesExplicitlyDeclared(input) {
 		declared := credentialEndpointModes(currentCredentials)
 		if credentialsChanged {
 			declared = credentialEndpointModes(nextCredentials)
@@ -1544,7 +1565,7 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			// （account-management-patch.repository.ts:1996-2008），Gemini
 			// 档案特判依赖该 id；目录成员判定只用 providerCode + protocolCode
 			// + protocolVersion。
-		}, mappingValidationSource, credentialEndpointModes(finalCreds)); err != nil {
+		}, mappingValidationSource, credentialEndpointModes(finalCreds), row.capabilityDomain); err != nil {
 			return nil, err
 		}
 	}
@@ -2248,9 +2269,6 @@ func (s *Store) Patch(ctx context.Context, accountID string, input PatchInput, a
 			nextPriority, nextSuperPriority, nextFallback, nowISO, row.id, row.systemAccountID); err != nil {
 			return nil, err
 		}
-	}
-	if err := s.markSourceRevision(ctx, tx, row.id, nowISO); err != nil {
-		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
@@ -2979,7 +2997,7 @@ func (s *Store) assertGroupCanBind(ctx context.Context, q queryer, groupID, syst
 func (s *Store) replaceGroupBinding(ctx context.Context, q queryer, accountID, systemAccountID string, authorizationID sql.NullString, groupID string, priority int, superPriority, fallback bool, nowISO string) error {
 	if authorizationID.Valid && strings.TrimSpace(authorizationID.String) != "" {
 		// 接收方绑定授权实例：实例必须属于当前用户且 runtime 仍为 active。
-		// 来源 material change 会由授权域投影成 needs_review，这里直接拒绝。
+		// 授权接收方以来源材料实时跟随，这里直接拒绝。
 		var status string
 		err := q.QueryRowContext(ctx, s.bind(`SELECT status FROM `+s.table("resource_authorizations")+`
 			WHERE id = ? AND grantee_system_account_id = ? AND resource_type = 'account'

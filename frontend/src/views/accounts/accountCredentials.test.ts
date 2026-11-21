@@ -147,6 +147,35 @@ describe('buildAccountCredentials 明文直提', () => {
     expect(credentials).not.toHaveProperty('client_secret')
     expect(credentials.client_id).toBe('client-id-1')
   })
+
+  it('五域退役：非对话域凭据不落 supported_endpoint_modes（含 OAuth 元数据回填路径）', () => {
+    // api_key 型：表单残留声明集也被剥离。
+    const videoForm = defaultAccountForm('gpt', 'api_key')
+    videoForm.capabilityDomain = 'video'
+    videoForm.baseUrl = 'https://api.openai.com/v1'
+    videoForm.apiKey = 'sk-video'
+    videoForm.supportedEndpointModes = ['chat_json', 'chat_sse']
+    expect(buildAccountCredentials({
+      errorPolicyRules: [],
+      responseInspectionRules: [],
+      form: videoForm
+    })).not.toHaveProperty('supported_endpoint_modes')
+
+    // google_oauth 型（gemini native 媒体域）：存量凭据元数据里的该键不回填。
+    const mediaGoogleForm = defaultAccountForm('gemini', 'google_oauth')
+    mediaGoogleForm.capabilityDomain = 'audio'
+    mediaGoogleForm.baseUrl = 'https://generativelanguage.googleapis.com/v1beta'
+    mediaGoogleForm.accessToken = 'at-media'
+    mediaGoogleForm.refreshToken = 'rt-media'
+    mediaGoogleForm.googleClientId = 'client-id-media'
+    const mediaCredentials = buildAccountCredentials({
+      currentCredentials: { supported_endpoint_modes: ['generate_content_json'] },
+      errorPolicyRules: [],
+      responseInspectionRules: [],
+      form: mediaGoogleForm
+    })
+    expect(mediaCredentials).not.toHaveProperty('supported_endpoint_modes')
+  })
 })
 
 describe('buildAccountBasicEditSnapshot 明文直提', () => {

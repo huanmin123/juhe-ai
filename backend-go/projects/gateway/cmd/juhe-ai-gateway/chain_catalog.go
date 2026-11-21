@@ -376,25 +376,51 @@ var catalogEndpointModeLegacyProjection = map[string][][2]string{
 // catalogDeriveLegacyModeAndProtocols 从 supportedEndpointModes 行键反推旧目
 // 录行的 mode 与 supportedApiProtocols 投影：mode 取词表最高优先命中（rerank >
 // video > audio > image_generation > embedding > responses > chat，与旧 seed 行的
-// mode 值域一致），协议 token 去重升序；空 mode 集（draft/disabled 行）不注入
+// mode 值域一致；计数辅助 mode message_token_counting / count_tokens 是对话族
+// 附属接口，不参与行主 mode 竞争、仅纯辅助行回落 embedding——与
+// internal/providers endpoint_modes.go 同名派生逻辑同步，2026-11-21 模型广场
+// 向量分类复查定案），协议 token 去重升序；空 mode 集（draft/disabled 行）不注入
 // mode 键（旧行为 NULL→absent），协议投影保持空数组。
 func catalogDeriveLegacyModeAndProtocols(row map[string]any) {
 	modeRank := map[string]int{"chat": 0, "responses": 1, "embedding": 2, "image_generation": 3, "audio": 4, "video": 5, "rerank": 6}
+	auxiliaryEmbeddingModes := map[string]bool{"message_token_counting": true, "count_tokens": true}
 	seenProtocols := map[string]bool{}
 	protocols := []string{}
-	bestMode := ""
-	bestRank := -1
-	for _, mode := range catalogStringList(row["supportedEndpointModes"]) {
-		for _, pair := range catalogEndpointModeLegacyProjection[mode] {
-			if rank := modeRank[pair[0]]; rank > bestRank {
-				bestRank = rank
-				bestMode = pair[0]
-			}
-			if !seenProtocols[pair[1]] {
-				seenProtocols[pair[1]] = true
-				protocols = append(protocols, pair[1])
+	rankOf := func(modes []string) (string, int) {
+		bestMode := ""
+		bestRank := -1
+		for _, mode := range modes {
+			for _, pair := range catalogEndpointModeLegacyProjection[mode] {
+				if rank := modeRank[pair[0]]; rank > bestRank {
+					bestRank = rank
+					bestMode = pair[0]
+				}
 			}
 		}
+		return bestMode, bestRank
+	}
+	var primary, auxiliary []string
+	for _, mode := range catalogStringList(row["supportedEndpointModes"]) {
+		if auxiliaryEmbeddingModes[mode] {
+			auxiliary = append(auxiliary, mode)
+			continue
+		}
+		primary = append(primary, mode)
+	}
+	// 协议投影始终全量（含辅助计数协议）；mode 竞争排除辅助计数 mode。
+	for _, group := range [][]string{primary, auxiliary} {
+		for _, mode := range group {
+			for _, pair := range catalogEndpointModeLegacyProjection[mode] {
+				if !seenProtocols[pair[1]] {
+					seenProtocols[pair[1]] = true
+					protocols = append(protocols, pair[1])
+				}
+			}
+		}
+	}
+	bestMode, bestRank := rankOf(primary)
+	if bestRank < 0 {
+		bestMode, bestRank = rankOf(auxiliary)
 	}
 	sort.Strings(protocols)
 	row["supportedApiProtocols"] = protocols

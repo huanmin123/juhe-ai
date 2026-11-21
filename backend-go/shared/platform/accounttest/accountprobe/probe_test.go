@@ -8,8 +8,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/accountquality"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamhttp"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/upstreamidentity"
 )
 
@@ -446,5 +448,45 @@ func TestFingerprintStableAndDistinct(t *testing.T) {
 	}
 	if first == service.FingerprintAPIKey("sk-other") {
 		t.Fatal("不同 Key 指纹必须不同")
+	}
+}
+
+// TestConnectivityRetryTimeoutsPinned 锁定连接测试专用预算（2026-11-22 用户
+// 裁决）：三级容错 [10s,20s,30s]，单 Key 最坏 60s；withScheduleForView 对
+// ConnectivityOnly 视图必须派生该预算，不得回落对话诊断默认阶梯，也不得
+// 使用 images_json 120s 长预算档；派生服务必须完整保留原服务字段（浅拷贝，
+// 不丢 dialGuard/slots）。
+func TestConnectivityRetryTimeoutsPinned(t *testing.T) {
+	want := []time.Duration{10 * time.Second, 20 * time.Second, 30 * time.Second}
+	if len(ConnectivityRetryTimeouts) != len(want) {
+		t.Fatalf("ConnectivityRetryTimeouts = %v, want %v", ConnectivityRetryTimeouts, want)
+	}
+	for i, d := range want {
+		if ConnectivityRetryTimeouts[i] != d {
+			t.Fatalf("ConnectivityRetryTimeouts = %v, want %v", ConnectivityRetryTimeouts, want)
+		}
+	}
+	guard := upstreamhttp.NewDialGuard(upstreamhttp.URLSecurityConfig{}, nil, nil)
+	service := &Service{retryTimeouts: DiagnosticRetryTimeouts, dialGuard: guard}
+	derived := service.withScheduleForView(&View{ConnectivityOnly: true})
+	if len(derived.retryTimeouts) != len(want) {
+		t.Fatalf("连接测试派生预算 = %v, want %v", derived.retryTimeouts, want)
+	}
+	for i, d := range want {
+		if derived.retryTimeouts[i] != d {
+			t.Fatalf("连接测试派生预算 = %v, want %v", derived.retryTimeouts, want)
+		}
+	}
+	if derived.dialGuard != service.dialGuard {
+		t.Fatal("连接测试派生服务必须保留原服务 dialGuard")
+	}
+	plain := service.withScheduleForView(&View{})
+	if len(plain.retryTimeouts) != len(DiagnosticRetryTimeouts) {
+		t.Fatalf("非连接视图不得改变默认阶梯: %v", plain.retryTimeouts)
+	}
+	for i, d := range DiagnosticRetryTimeouts {
+		if plain.retryTimeouts[i] != d {
+			t.Fatalf("非连接视图不得改变默认阶梯: %v", plain.retryTimeouts)
+		}
 	}
 }

@@ -99,12 +99,19 @@ systemctl stop juhe-ai-gateway juhe-ai-jobs
 # revision 25 会在同一窗口把旧分组 clientIpConcurrencyLimit 迁到可达 API Key 并单键化
 # 分组策略；多个不同旧值默认阻断，先跑只读盘点核对 conflicts/needsReview。
 # revision 26 为 models.media_pricing_json 加法列；revision 27 把两个 endpoint_mode
-# CHECK 词表扩到 27 值（纯 DDL）；revision 28 为授权接收方确认与来源治理，
-# RequiredBeforeStartup=true，必须停写 + 可恢复备份并执行数据回填，
-# 不能靠 --phase=expand 跳过。发布方式按库当前 revision 分流：
+# CHECK 词表扩到 27 值（纯 DDL）；revision 28 为授权接收方确认与来源治理（随后被
+# revision 31 整体退役），RequiredBeforeStartup=true，必须停写 + 可恢复备份并执行
+# 数据回填，不能靠 --phase=expand 跳过；revision 29 为向量/重排独立能力域批
+# （capability-domain-vector-rerank：accounts.capability_domain CHECK 四值→六值 +
+# 阶段记录 ruleVersion 1→2 升级与存量账户推导 v2 重推导）；revision 30 为五域
+# 上游接口能力声明退役（capability-domain-declaration-retirement，凭据键与五域
+# 连接行清洗）；revision 31 为授权大简化（authz-claim-simplification：单事务 DROP
+# 四张退役表 + 29 条退役列 + 状态收敛为 7 值词表 + quota binding 清零，DROP 不可回滚）。
+# revision 28/29/30/31 均 RequiredBeforeStartup=true。
+# 发布方式按库当前 revision 分流：
 #   库低于 revision 26 → 必须用 --phase=all（含 revision 25 启动前必需迁移；expand 会被 blocked）；
-#   库已在 26/27 且本批包含 revision 28 → 仍必须用 --phase=all 完成 RequiredBeforeStartup 步骤，
-#   不存在仅靠 expand 的 revision 28 回滚窗口。
+#   库已在 26/27/28/29/30 且本批包含 revision 28-31 → 仍必须用 --phase=all 完成 RequiredBeforeStartup 步骤，
+#   不存在仅靠 expand 的 revision 28-31 回滚窗口。
 /opt/juhe-ai/bin/juhe-ai-maintenance migrate-group-policy --dry-run \
   --manifest-out /opt/juhe-ai/data/group-policy-$(date +%Y%m%d-%H%M).json \
   --global-max "${JUHE_AI_CONCURRENCY_GLOBAL_MAX:-5000}" \
@@ -112,8 +119,10 @@ systemctl stop juhe-ai-gateway juhe-ai-jobs
 /opt/juhe-ai/bin/juhe-ai-maintenance migrate-key-client-ip-limit --dry-run \
   --manifest-out /opt/juhe-ai/data/key-client-ip-limit-$(date +%Y%m%d-%H%M).json \
   --dsn "$JUHE_AI_POSTGRES_URL" </dev/null
-# 本批包含 revision 28 授权接收方确认与来源治理；该步骤 RequiredBeforeStartup=true，
-# 必须用 --phase=all 停写执行，并先备份、核对 legacy source/grant 盘点。
+# 本批包含 revision 28 授权接收方确认与来源治理、revision 29 向量/重排独立能力域、
+# revision 30 五域声明退役与 revision 31 授权大简化；
+# 四步骤均 RequiredBeforeStartup=true，必须用 --phase=all 停写执行，并先备份、
+# 核对 legacy source/grant 盘点（revision 31 DROP 前确认备份可恢复）。
 /opt/juhe-ai/bin/juhe-ai-maintenance upgrade --phase=all \
   --dsn "$JUHE_AI_POSTGRES_URL" --secret "$JUHE_AI_SECRET" \
   --stop-write-confirmed --backup-confirmed </dev/null
@@ -132,7 +141,7 @@ systemctl stop juhe-ai-gateway juhe-ai-jobs
 systemctl start juhe-ai-gateway juhe-ai-jobs
 ```
 
-> `--phase=expand` 只适用于没有未完成的 `RequiredBeforeStartup=true` 步骤、且本批只剩纯加法 DDL 的库。revision 28 的 `authz-recipient-consent-governance` 是启动前必需步骤，必须走 `--phase=all`（含 revision 25 与 revision 28 的数据回填）；管线只对 `RequiredBeforeStartup=true` 的未完成步骤（未 applied 且 `Satisfied=false`，或该步骤账本残留 `running`/`outdated-impl`）直接 blocked，其余破坏性步骤进 `plan.skippedDestructive` + stderr WARN，不能靠 expand 当成已完成。
+> `--phase=expand` 只适用于没有未完成的 `RequiredBeforeStartup=true` 步骤、且本批只剩纯加法 DDL 的库。revision 28 的 `authz-recipient-consent-governance`、revision 29 的 `capability-domain-vector-rerank`、revision 30 的 `capability-domain-declaration-retirement` 与 revision 31 的 `authz-claim-simplification` 均是启动前必需步骤，必须走 `--phase=all`（含 revision 25、revision 28 与 revision 29 的数据回填）；管线只对 `RequiredBeforeStartup=true` 的未完成步骤（未 applied 且 `Satisfied=false`，或该步骤账本残留 `running`/`outdated-impl`）直接 blocked，其余破坏性步骤进 `plan.skippedDestructive` + stderr WARN，不能靠 expand 当成已完成。
 
 ## 6. 端口与防火墙
 
@@ -149,7 +158,7 @@ systemctl start juhe-ai-gateway juhe-ai-jobs
 ## 7. 升级门禁与回滚
 
 - gateway/jobs 启动时只读比对库 revision；落后于二进制认识的值会 fail-fast 并提示 `upgrade`。
-- 回滚二进制时若库 revision 高于旧二进制认识的值，启动门禁会拒绝：恢复升级前备份（当前 revision 28；revision 17 的清退与 accounts CHECK、revision 20 的映射/schema 删除、revision 22 的分组行迁移、revision 23 的四表 DROP、revision 25 的单键化与 Key 值迁移、revision 28 的来源确认/快照/约束收紧均不可逆或需前向修复，不支持只下调 revision 后启动旧二进制）。revision 26 的 `media_pricing_json` 为加法列：库在 25 时用 `--phase=expand`，minReadable 仍为 25，旧二进制可回退并忽略新列、按 legacy 价结算；观察稳定后执行 `upgrade --phase=contract --old-writers-drained --backup-confirmed` 关闭窗口，此后旧二进制不可启动。revision 27 的两个 CHECK 词表为旧词表超集、纯 DDL，但已并入 revision 28 合并基线，不单独提供 expand 回滚窗口；库在 26 也随 revision 28 的 `--phase=all` 执行，回滚只能恢复停写备份。**revision 28 不提供 expand 回滚窗口**：`RequiredBeforeStartup=true` 的数据回填和约束收紧必须停写执行；一旦产生 `pending` / `needs_review` / `dormant` / `declined` / `returned` 等新状态，旧 gateway 会 revive 并自动绑定，禁止回滚旧二进制，只能前向修复或恢复停写备份；gateway/jobs/frontend 必须同批。
+- 回滚二进制时若库 revision 高于旧二进制认识的值，启动门禁会拒绝：恢复升级前备份（当前合并基线 revision 31；revision 17 的清退与 accounts CHECK、revision 20 的映射/schema 删除、revision 22 的分组行迁移、revision 23 的四表 DROP、revision 25 的单键化与 Key 值迁移、revision 28 的来源确认/快照/约束收紧、revision 31 的四表与 29 列 DROP 及状态收敛均不可逆或需前向修复，不支持只下调 revision 后启动旧二进制）。revision 26 的 `media_pricing_json` 为加法列：库在 25 时用 `--phase=expand`，minReadable 仍为 25，旧二进制可回退并忽略新列、按 legacy 价结算；观察稳定后执行 `upgrade --phase=contract --old-writers-drained --backup-confirmed` 关闭窗口，此后旧二进制不可启动。revision 27 的两个 CHECK 词表为旧词表超集、纯 DDL，但已并入当前合并基线，不单独提供 expand 回滚窗口；库在 26 也随合并基线的 `--phase=all` 执行，回滚只能恢复停写备份。**revision 28/29/30/31 不提供 expand 回滚窗口**：四者均 `RequiredBeforeStartup=true`（revision 28 数据回填和约束收紧、revision 29 阶段记录 ruleVersion 升级与存量重推导、revision 30 凭据/连接行清洗、revision 31 DROP 与状态收敛），必须停写执行；一旦产生新版授权状态或 revision 31 DROP 完成，禁止回滚旧二进制，只能前向修复或恢复停写备份；gateway/jobs/frontend 必须同批。
 - 直跑没有 compose 的健康等待：升级失败保持两个 unit 停止，修复后重跑 `upgrade`（账本断点续跑）。
 
 ## 8. 日志与排障

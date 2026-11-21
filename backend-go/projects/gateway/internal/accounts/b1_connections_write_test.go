@@ -633,18 +633,22 @@ func TestB1CloneConnectionTestDerivesHealthTrioWithoutSourcePreset(t *testing.T)
 				t.Fatalf("克隆体三件套未按最终连接派生：%q %q %q（连接 %q）",
 					healthConnection, healthMode, healthModel, cloneConnectionID)
 			}
-			if env.count(t, `SELECT COUNT(*) FROM account_endpoint_modes
-				WHERE connection_id = ? AND endpoint_mode = ?`, cloneConnectionID, healthMode) != 1 {
-				t.Fatalf("健康检查形态 %q 不属于克隆体连接 modes", healthMode)
+			// 五域声明面退役（AI账户上游接口能力设计 §3）：克隆体连接行不写
+			// account_endpoint_modes，三件套按域默认检查形态派生（成员校验
+			// 随声明面一并退役）。
+			if got := env.count(t, `SELECT COUNT(*) FROM account_endpoint_modes
+				WHERE connection_id = ?`, cloneConnectionID); got != 0 {
+				t.Fatalf("五域克隆体连接行不应写 modes：%d", got)
 			}
 		})
 	}
 }
 
-// TestB1CloneConnectionTestUsesExplicitFinalConnectionsForHealthTrio：连接测试
-// 克隆显式提交不同 endpointModes 的连接且不带三件套时，按最终连接派生而非
-// 沿用源三件套（源 mode video_create 已不在最终连接 modes 内）。
-func TestB1CloneConnectionTestUsesExplicitFinalConnectionsForHealthTrio(t *testing.T) {
+// TestB1CloneConnectionIgnoresExplicitModesForRetiredDomains：五域声明面退役
+// （AI账户上游接口能力设计 §3）后，克隆显式提交的 endpointModes 一律忽略
+// （凭据剥键、连接行不写 modes），三件套按域默认检查形态派生而非沿用源
+// 三件套（源 mode video_create 的成员语义随声明面退役）。
+func TestB1CloneConnectionIgnoresExplicitModesForRetiredDomains(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	env.seedProviderAndDefaultGroup(t, adminID)
@@ -685,20 +689,17 @@ func TestB1CloneConnectionTestUsesExplicitFinalConnectionsForHealthTrio(t *testi
 	if got := env.queryCell(t, `SELECT base_url FROM account_connections WHERE id = ?`, cloneConnectionID); got != explicitBaseURL {
 		t.Fatalf("克隆连接应采纳显式 baseUrl：%q", got)
 	}
-	if got := env.count(t, `SELECT COUNT(*) FROM account_endpoint_modes WHERE connection_id = ?`, cloneConnectionID); got != 1 {
-		t.Fatalf("克隆连接 modes 应采纳显式集合：%d", got)
+	if got := env.count(t, `SELECT COUNT(*) FROM account_endpoint_modes WHERE connection_id = ?`, cloneConnectionID); got != 0 {
+		t.Fatalf("五域克隆显式 endpointModes 应被忽略（连接行不写 modes）：%d", got)
 	}
 	var healthConnection, healthMode, healthModel string
 	if err := env.db.QueryRow(`SELECT health_check_connection_id, health_check_endpoint_mode, health_check_model
 		FROM accounts WHERE id = $1`, cloneID).Scan(&healthConnection, &healthMode, &healthModel); err != nil {
 		t.Fatal(err)
 	}
-	if healthConnection != cloneConnectionID || healthMode != "video_get" || healthModel != "m-default" {
-		t.Fatalf("克隆三件套未按最终连接派生：%q %q %q", healthConnection, healthMode, healthModel)
-	}
-	if env.count(t, `SELECT COUNT(*) FROM account_endpoint_modes WHERE connection_id = ? AND endpoint_mode = ?`,
-		cloneConnectionID, healthMode) != 1 {
-		t.Fatalf("健康检查形态 %q 不属于最终连接 modes", healthMode)
+	// 三件套按域默认检查形态派生：显式 video_get 被忽略后回落 video_create。
+	if healthConnection != cloneConnectionID || healthMode != "video_create" || healthModel != "m-default" {
+		t.Fatalf("克隆三件套未按域默认检查形态派生：%q %q %q", healthConnection, healthMode, healthModel)
 	}
 }
 

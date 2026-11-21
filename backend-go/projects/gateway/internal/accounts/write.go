@@ -533,8 +533,10 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 
 	// 能力域保存规则（计划 §服务端统一校验）：域由请求显式
 	// 携带（camelCase capabilityDomain，缺省 chat，创建后不可更改 D3）。
-	// 新建不允许任何域外声明：最终声明集 ⊆ allowed；allowed 为空 = 该供应
-	// 商不支持该域。
+	// 2026-11-21 五域退役（AI账户上游接口能力设计 §3）：「上游接口能力」声明
+	// 面仅 chat 域账户持有——五域创建不播种默认集、不做 ⊆ allowed 校验、凭据
+	// 不落 supported_endpoint_modes 键；域×供应商矩阵门保留（AllowedEndpointModes
+	// 空集 = 该供应商不支持该域账户，与请求显式域共同承担域开通判定）。
 	domain := strings.TrimSpace(input.CapabilityDomain)
 	if domain == "" {
 		domain = accountscore.CapabilityDomainChat
@@ -542,6 +544,7 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	if !accountscore.AccountCapabilityDomainSet[domain] {
 		return nil, &ValidationError{Message: "能力域无效"}
 	}
+	declarationRetired := accountscore.EndpointModesDeclarationRetired(domain)
 
 	// 后台自动探测总开关（AI账户后台自动探测总开关设计 §2/§8）：缺省开启；
 	// 2026-11-21 起图像/音频/视频统一适用该开关（媒体域新增连通性健康检查
@@ -628,7 +631,8 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	protocol := deriveConnectionProtocolContext(resolvedConnections)
 
 	// 能力域允许集（legacy 词表机器，矩阵门 × 域 lane × 写侧词表；喂参换成
-	// 推导上下文，行为不变）。
+	// 推导上下文，行为不变）。矩阵门（空集 = 该供应商不支持该域账户）对全部
+	// 六域生效；声明集 ⊆ allowed 的严格校验自五域退役起仅 chat 域执行。
 	profilePredicate := protocol.predicate(providerCode)
 	allowedModes := accountscore.AllowedEndpointModes(domain, providerCode, accountType, toProtocolPredicate(profilePredicate))
 	if len(allowedModes) == 0 {
@@ -652,8 +656,22 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// 默认逐项一致——I3）。显式 null/非数组/空数组不注入，走既有归一化错误
 	// 文案（行为与现状一致）。显式提供的 modes 原样进入归一化，越界值由
 	// 归一化后的 ⊆ allowed 校验拒绝（新建不允许任何域外声明）。
+	// 五域退役（设计 §3）：创建不再按 DefaultEndpointModesForDomain 播种默认
+	// 集；显式提交的 supported_endpoint_modes 键入口剥离（忽略提交，不报错），
+	// 凭据归一化（下方域上下文）保证落库无键。
 	createCredentials := input.Credentials
-	if _, present := createCredentials["supported_endpoint_modes"]; !present {
+	if declarationRetired {
+		if _, present := createCredentials["supported_endpoint_modes"]; present {
+			stripped := Credentials{}
+			for key, value := range createCredentials {
+				if key == "supported_endpoint_modes" {
+					continue
+				}
+				stripped[key] = value
+			}
+			createCredentials = stripped
+		}
+	} else if _, present := createCredentials["supported_endpoint_modes"]; !present {
 		defaultModes := accountscore.DefaultEndpointModesForDomain(domain, providerCode, accountType, toProtocolPredicate(profilePredicate))
 		if len(defaultModes) == 0 {
 			return nil, accountscore.CapabilityDomainUnsupportedError(providerCode, domain)
@@ -672,14 +690,18 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 		ProviderProtocolProfileID: protocol.profileID,
 		ProtocolCode:              protocol.protocolCode,
 		ProtocolVersion:           protocol.protocolVersion,
+		CapabilityDomain:          domain,
 	})
 	if err != nil {
 		return nil, err
 	}
 	// 新建域内校验：归一化后的最终声明集必须 ⊆ allowed（列出越界值）。
+	// 五域声明面退役：不校验声明（归一化后凭据无键），域开通由上方矩阵门承担。
 	declaredModes := credentialEndpointModes(credentials)
-	if outliers := accountscore.OutOfDomainModes(declaredModes, allowedModes); len(outliers) > 0 {
-		return nil, accountscore.CapabilityDomainOutlierError(domain, outliers)
+	if !declarationRetired {
+		if outliers := accountscore.OutOfDomainModes(declaredModes, allowedModes); len(outliers) > 0 {
+			return nil, accountscore.CapabilityDomainOutlierError(domain, outliers)
+		}
 	}
 	// 测试/健康检查方式：媒体域与只声明非生成能力的 chat 账户走连接测试，
 	// 健康检查由连接器注册表驱动的连通性探测承载；真实对话生成形态走模型
@@ -859,8 +881,8 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	}
 	// Model mapping catalog assertion（设计 §5.1/§5.2，models 表身份门）：
 	// 协议矩阵门 + target 模型 models 身份解析；上游端点能力取归一化后凭据的
-	// supported_endpoint_modes。
-	if err := s.assertAccountModelMappingsInProviderCatalog(ctx, tx, providerCode, systemAccountID, profilePredicate, input.ModelMappings, credentialEndpointModes(credentials)); err != nil {
+	// supported_endpoint_modes（五域声明面退役：按域跳过声明能力格门）。
+	if err := s.assertAccountModelMappingsInProviderCatalog(ctx, tx, providerCode, systemAccountID, profilePredicate, input.ModelMappings, credentialEndpointModes(credentials), domain); err != nil {
 		return nil, err
 	}
 
@@ -1111,7 +1133,7 @@ func (s *Store) createInTx(ctx context.Context, tx *sql.Tx, input CreateInput, a
 	// connection_id（preset → enabled 连接行）并以一条 UPDATE 补齐三字段，提交
 	// 前读回校验非 NULL（§9 事务级校验硬规则）。初始 INSERT 三列保持 NULL。
 	if err := s.finalizeAccountHealthCheckTrio(ctx, tx, id, vendorCode.String, systemAccountID,
-		healthCheckConnectionPresetCode, healthCheckEndpointMode, healthCheckModel, supportedModels, connectionHealthCheck); err != nil {
+		healthCheckConnectionPresetCode, healthCheckEndpointMode, healthCheckModel, supportedModels, connectionHealthCheck, domain); err != nil {
 		return nil, err
 	}
 	// Dispatch revision family advance (repositories.ts:2412-2417): the fresh
@@ -1465,15 +1487,17 @@ func (s *Store) replaceAccountModelMappings(ctx context.Context, q queryer, acco
 		return err
 	}
 	vendor := vendorNull.String
-	var owner string
-	if err := q.QueryRowContext(ctx, s.bind(`SELECT system_account_id FROM `+s.table("accounts")+` WHERE id = ?`), accountID).Scan(&owner); err != nil {
+	// owner + capability_domain 同行读取（五域退役设计 §3：§5.3 声明联动校验
+	// 仅 chat 域执行，五域连接行无 modes 可交集）。
+	var owner, capabilityDomain string
+	if err := q.QueryRowContext(ctx, s.bind(`SELECT system_account_id, capability_domain FROM `+s.table("accounts")+` WHERE id = ?`), accountID).Scan(&owner, &capabilityDomain); err != nil {
 		return err
 	}
 	if _, err := q.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("account_entry_mappings")+` WHERE account_id = ?`), accountID); err != nil {
 		return err
 	}
 	for _, mapping := range mappings {
-		connectionID, modelID, err := s.resolveEntryMappingTargets(ctx, q, accountID, vendor, owner, mapping)
+		connectionID, modelID, err := s.resolveEntryMappingTargets(ctx, q, accountID, vendor, owner, capabilityDomain, mapping)
 		if err != nil {
 			return err
 		}

@@ -586,18 +586,6 @@ const permissionDeniedAccount = accountFixture({
   }
 })
 assertStatus('无可用权限', permissionDeniedAccount, '无可用权限', 'red')
-assertStatus('授权额度耗尽', accountFixture({
-  accessType: 'authorized',
-  authorizationQuotaExceeded: true,
-  effectiveAvailability: {
-    available: false,
-    status: 'authorization_quota_exceeded',
-    label: '授权额度已用完',
-    color: 'red',
-    blockerScope: 'authorization',
-    reason: '授权额度已用完，当前账户不能调用'
-  }
-}), '授权额度已用完', 'red')
 assertStatus('授权未绑定分组', accountFixture({
   accessType: 'authorized',
   boundGroupId: undefined,

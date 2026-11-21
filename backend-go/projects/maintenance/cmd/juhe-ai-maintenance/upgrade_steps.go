@@ -1,4 +1,4 @@
-// `maintenance upgrade` 的 17 步骤注册表（升级兼容与迁移账本设计 §8/§10）。
+// `maintenance upgrade` 的 19 步骤注册表（升级兼容与迁移账本设计 §8/§10）。
 // 每个步骤的 Apply 复用既有一次性命令的内部函数（单一实现），stdout/stderr
 // 经 CaptureOutput 捕获后进 detail_json；Check 与 Verify 同源（本文件每个
 // 步骤的 check 闭包同时作为 Satisfied 与 Verify 的实现）。
@@ -17,6 +17,15 @@
 // high_concurrency 分组退役：一个 Destructive 步骤把 groups /
 // group_authorization_settings 迁为 personal + 两键策略并按首成员重算超级分组
 // 自身行，needs_review 行阻断（与 migrate-group-policy CLI 共用迁移内核）。
+// revision 30（capability-domain-declaration-retirement，AI账户上游接口能力
+// 设计 §3）是五域上游接口能力声明退役：无 DDL 纯数据步骤（RequiredBeforeStartup），
+// 删除五域账户（含软删除行，凭据键与连接行对 deleted_at 对称）凭据中的
+// supported_endpoint_modes 键与 account_endpoint_modes 五域连接行（清洗内核
+// 在 internal/capabilitydomain）。revision 31（authz-claim-simplification，
+// 2026-11-22 授权治理模型大简化裁决）是授权治理审批/冷却/快照/复核机制退役：
+// revision 28/29/30 未上生产仅 dev、无兼容包袱，当前 schema 已不再定义四张
+// 退役表与退役列（未发布 revision 直接删语句），存量 dev 库由本步骤在单事务
+// 内 DROP 并把 grants/sources/runtime 三个 status 词表收敛为 7 值。
 package main
 
 import (
@@ -886,7 +895,365 @@ func applyUsageShardCatalogRetirement(ctx context.Context, dsn string) (upgradep
 	return upgradepipeline.Detail{"dropped": dropped, "alreadyRetired": false}, nil
 }
 
-// upgradeSteps 返回 17 步骤注册表（revision 升序；引擎再做一次排序校验）。
+// ---------- revision 31：授权治理简化（审批/冷却/快照/复核机制退役） ----------
+//
+// 2026-11-22 用户裁决：授权治理模型大简化，revision 28/29/30 未上生产仅 dev，
+// 无兼容包袱，根治删除。当前 schema（pg_schema_authz_governance.go）已不再
+// 定义退役对象（照 resource_authorization_blocks 撤销先例，未发布 revision
+// 直接删语句不留退役语句）；存量 dev 库中 revision 28 已建的对象由本步骤在
+// 单事务内退役并收敛：
+//  1. DROP TABLE：resource_authorization_group_accounts、
+//     authorization_notifications、resource_authorization_offer_cooldowns、
+//     system_account_authorization_suspensions（四表互不引用，任意序皆安全）。
+//  2. DROP COLUMN：grants 12 列（11 条 revision 28 加列 + 建表基列
+//     limits_json）、sources 10 列、runtime 4 列（3 条 revision 28 加列 +
+//     建表基列 limits_json）、settings 快照 2 列 + enabled（分组授权开关
+//     机制取消）。引用退役列的 idx_resource_authorization_{grants,sources}_
+//     pending_expiry 索引与各退役 CHECK 随列自动删除，退役 CHECK 另有显式
+//     DROP 兜底；两条 limits_json quota_snapshot 部分索引（runtime/grants
+//     team）已在 schema 定义层同批退役。
+//  3. 状态收敛为 7 值词表（pending/active/paused/expired/revoked/returned/
+//     declined）：grants 的 pending_* → pending；sources 的 dormant/
+//     needs_review → pending、superseded → returned（补 ended_at，满足收敛后
+//     的 ended_at CHECK）；runtime 的 needs_review → pending。旧 CHECK（含
+//     会挡收敛路径的 pending_expiry 等退役 CHECK）在 UPDATE 之前显式 DROP，
+//     三个新 status CHECK 在收敛后全量校验重建（等价 VALIDATED 库态）。
+//  4. DELETE 授权来源 quota scope binding 行（额度 limits_json 全链退役，
+//     授权绑定域随之退役；api_key 来源行与 gatewayquota 平台包不动）。
+//
+// DROP 不可回滚；执行前必须完成可恢复备份（发布 runbook 的停写+备份门禁）。
+// 缺失对象是良性 no-op，重复执行只报告已缺席。fresh 库 ensure 即目标形状，
+// Satisfied 即刻为真。存量 dev 库 IF NOT EXISTS 语义下的旧谓词 open 唯一
+// 索引不在本步骤范围：词表收敛后旧谓词仅收窄命中集且永不命中退役状态，
+// 约束语义仍闭合（如需换新谓词随后续停写窗口单独处理）。
+
+var authzClaimRetiredTables = []string{
+	"resource_authorization_group_accounts",
+	"authorization_notifications",
+	"resource_authorization_offer_cooldowns",
+	"system_account_authorization_suspensions",
+}
+
+// authzClaimRetiredColumns 是四表之外的退役列（含 settings.enabled）。
+// table/column 均为包内固定字面量，仅供 SQL 拼接，无注入面。
+var authzClaimRetiredColumns = []struct{ table, column string }{
+	{"resource_authorization_grants", "acceptance_mode"},
+	{"resource_authorization_grants", "accepted_at"},
+	{"resource_authorization_grants", "accepted_by"},
+	{"resource_authorization_grants", "team_approved_at"},
+	{"resource_authorization_grants", "team_approved_by"},
+	{"resource_authorization_grants", "owner_approved_at"},
+	{"resource_authorization_grants", "owner_approved_by"},
+	{"resource_authorization_grants", "pending_expires_at"},
+	{"resource_authorization_grants", "expired_from_status"},
+	{"resource_authorization_grants", "legacy_basis"},
+	{"resource_authorization_grants", "legacy_review_deadline"},
+	{"resource_authorization_sources", "acceptance_mode"},
+	{"resource_authorization_sources", "needs_review_at"},
+	{"resource_authorization_sources", "needs_review_reason"},
+	{"resource_authorization_sources", "needs_review_detail_json"},
+	{"resource_authorization_sources", "accepted_source_revision"},
+	{"resource_authorization_sources", "observed_source_revision"},
+	{"resource_authorization_sources", "accepted_source_revision_version"},
+	{"resource_authorization_sources", "revision_version"},
+	{"resource_authorization_sources", "pending_expires_at"},
+	{"resource_authorization_sources", "expired_from_status"},
+	{"resource_authorizations", "status_reason"},
+	{"resource_authorizations", "status_changed_at"},
+	{"resource_authorizations", "acceptance_mode"},
+	{"group_authorization_settings", "snapshot_revision"},
+	{"group_authorization_settings", "snapshot_mode"},
+	{"group_authorization_settings", "enabled"},
+	// revision 31 补删批（2026-11-22 额度全链退役裁决）：limits_json 是
+	// resource_authorizations / resource_authorization_grants 的建表内联基列
+	//（非 revision 28 加列），schema 定义层已原位删除；存量 dev 库由本步骤
+	// DROP。依赖该列的两条 quota_snapshot 部分索引与授权 scope binding seed
+	// 回填臂同批退役（引用 limits_json 的 CHECK 不存在）。
+	{"resource_authorization_grants", "limits_json"},
+	{"resource_authorizations", "limits_json"},
+}
+
+// authzClaimRetiredChecks 是先于状态收敛显式 DROP 的退役/旧值 CHECK 约束
+//（列 DROP 也会自动带走引用退役列的 CHECK，显式列举保证收敛路径确定）。
+var authzClaimRetiredChecks = []struct{ table, constraint string }{
+	{"resource_authorization_grants", "resource_authorization_grants_status_check"},
+	{"resource_authorization_grants", "resource_authorization_grants_acceptance_mode_check"},
+	{"resource_authorization_grants", "resource_authorization_grants_pending_expiry_check"},
+	{"resource_authorization_sources", "resource_authorization_sources_status_check"},
+	{"resource_authorization_sources", "resource_authorization_sources_dormant_check"},
+	{"resource_authorization_sources", "resource_authorization_sources_accepted_revision_check"},
+	{"resource_authorization_sources", "resource_authorization_sources_pending_expiry_check"},
+	{"resource_authorizations", "resource_authorizations_status_check"},
+	{"group_authorization_settings", "group_authorization_settings_snapshot_mode_check"},
+}
+
+// authzClaimSimplificationSatisfied：四张退役表全部缺席、grants status
+// CHECK 已无旧审批词表（pending_owner_approval）、授权来源 quota scope
+// binding 行清零。Apply 单事务原子性保证判据达成时列/CHECK/数据收敛与
+// 绑定清除已同批完成。
+func authzClaimSimplificationSatisfied(ctx context.Context, dsn string) (bool, error) {
+	for _, table := range authzClaimRetiredTables {
+		exists, err := tableExists(ctx, dsn, "juhe_business", table)
+		if err != nil {
+			return false, err
+		}
+		if exists {
+			return false, nil
+		}
+	}
+	legacy, err := sqlScalar(ctx, dsn,
+		`SELECT count(*) FROM pg_constraint c
+		 JOIN pg_class r ON r.oid = c.conrelid
+		 JOIN pg_namespace n ON n.oid = r.relnamespace
+		 WHERE n.nspname = 'juhe_business' AND r.relname = 'resource_authorization_grants'
+		   AND c.conname = 'resource_authorization_grants_status_check'
+		   AND pg_get_constraintdef(c.oid) LIKE '%pending_owner_approval%'`)
+	if err != nil {
+		return false, err
+	}
+	// 补删批：授权来源 quota scope binding 行清零（api_key 来源行不动）。
+	// fresh 库绑定表未建时按 0 行处理（sqlScalar fresh 语义）。
+	bindings, err := sqlScalar(ctx, dsn,
+		`SELECT count(*) FROM juhe_business.request_quota_hourly_window_scope_bindings
+		 WHERE source_type = 'resource_authorization_grant'`)
+	if err != nil {
+		return false, err
+	}
+	return legacy == 0 && bindings == 0, nil
+}
+
+func applyAuthzClaimSimplification(ctx context.Context, dsn string) (upgradepipeline.Detail, error) {
+	satisfied, err := authzClaimSimplificationSatisfied(ctx, dsn)
+	if err != nil {
+		return nil, err
+	}
+	if satisfied {
+		return upgradepipeline.Detail{"droppedTables": 0, "droppedColumns": 0, "alreadyRetired": true}, nil
+	}
+	db, err := openPG(dsn)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// 表存在性预检计数（DROP IF EXISTS 本身幂等，预检只为 Detail 报告）。
+	droppedTables := 0
+	for _, table := range authzClaimRetiredTables {
+		var exists int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT count(*) FROM information_schema.tables WHERE table_schema = 'juhe_business' AND table_name = $1`,
+			table).Scan(&exists); err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS juhe_business.`+table); err != nil {
+			return upgradepipeline.Detail{"droppedTables": droppedTables, "failedTable": table}, err
+		}
+		droppedTables += exists
+	}
+
+	// 列退役（IF EXISTS 幂等；依赖退役列的索引与 CHECK 由 PG 自动删除）。
+	droppedColumns := 0
+	for _, col := range authzClaimRetiredColumns {
+		var exists int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT count(*) FROM information_schema.columns WHERE table_schema = 'juhe_business' AND table_name = $1 AND column_name = $2`,
+			col.table, col.column).Scan(&exists); err != nil {
+			return upgradepipeline.Detail{"droppedTables": droppedTables, "droppedColumns": droppedColumns}, err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`ALTER TABLE juhe_business.`+col.table+` DROP COLUMN IF EXISTS `+col.column); err != nil {
+			return upgradepipeline.Detail{"droppedTables": droppedTables, "droppedColumns": droppedColumns, "failedColumn": col.table + "." + col.column}, err
+		}
+		droppedColumns += exists
+	}
+
+	// 旧 CHECK 显式退役（IF EXISTS 幂等；在状态收敛前删除，避免旧
+	// pending_expiry 等不变式挡住 pending 归一路径）。
+	droppedChecks := 0
+	for _, check := range authzClaimRetiredChecks {
+		var exists int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT count(*) FROM pg_constraint c
+			 JOIN pg_class r ON r.oid = c.conrelid
+			 JOIN pg_namespace n ON n.oid = r.relnamespace
+			 WHERE n.nspname = 'juhe_business' AND r.relname = $1 AND c.conname = $2`,
+			check.table, check.constraint).Scan(&exists); err != nil {
+			return upgradepipeline.Detail{"droppedTables": droppedTables, "droppedColumns": droppedColumns}, err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`ALTER TABLE juhe_business.`+check.table+` DROP CONSTRAINT IF EXISTS `+check.constraint); err != nil {
+			return upgradepipeline.Detail{"droppedTables": droppedTables, "droppedColumns": droppedColumns, "failedConstraint": check.constraint}, err
+		}
+		droppedChecks += exists
+	}
+
+	// 存量状态收敛为 7 值词表。superseded → returned 时补 ended_at（取
+	// NOT NULL 的 updated_at 兜底），满足收敛后的 ended_at CHECK。
+	converge := func(label, statement string) (int, error) {
+		result, err := tx.ExecContext(ctx, statement)
+		if err != nil {
+			return 0, fmt.Errorf("%s 收敛失败: %w", label, err)
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		return int(affected), nil
+	}
+	grantsPending, err := converge("grants pending",
+		`UPDATE juhe_business.resource_authorization_grants SET status = 'pending'
+		 WHERE status IN ('pending_owner_approval','pending_team_approval','pending_member_acceptance')`)
+	if err != nil {
+		return upgradepipeline.Detail{"droppedTables": droppedTables, "droppedColumns": droppedColumns, "droppedChecks": droppedChecks}, err
+	}
+	sourcesPending, err := converge("sources pending",
+		`UPDATE juhe_business.resource_authorization_sources SET status = 'pending'
+		 WHERE status IN ('dormant','needs_review')`)
+	if err != nil {
+		return upgradepipeline.Detail{"droppedTables": droppedTables, "droppedColumns": droppedColumns, "droppedChecks": droppedChecks}, err
+	}
+	sourcesSuperseded, err := converge("sources superseded",
+		`UPDATE juhe_business.resource_authorization_sources
+		   SET status = 'returned', ended_at = COALESCE(ended_at, updated_at)
+		 WHERE status = 'superseded'`)
+	if err != nil {
+		return upgradepipeline.Detail{"droppedTables": droppedTables, "droppedColumns": droppedColumns, "droppedChecks": droppedChecks}, err
+	}
+	runtimePending, err := converge("runtime pending",
+		`UPDATE juhe_business.resource_authorizations SET status = 'pending' WHERE status = 'needs_review'`)
+	if err != nil {
+		return upgradepipeline.Detail{"droppedTables": droppedTables, "droppedColumns": droppedColumns, "droppedChecks": droppedChecks}, err
+	}
+
+	// 三个 status CHECK 重建为 7 值词表（收敛后数据必然满足，直接全量校验
+	// 建立，库态等价于 schema DO 块 + VALIDATE）。
+	rebuiltChecks := 0
+	for _, check := range []struct{ table, constraint string }{
+		{"resource_authorization_grants", "resource_authorization_grants_status_check"},
+		{"resource_authorization_sources", "resource_authorization_sources_status_check"},
+		{"resource_authorizations", "resource_authorizations_status_check"},
+	} {
+		if _, err := tx.ExecContext(ctx,
+			`ALTER TABLE juhe_business.`+check.table+
+				` ADD CONSTRAINT `+check.constraint+
+				` CHECK (status IN ('pending','active','paused','expired','revoked','returned','declined'))`); err != nil {
+			return upgradepipeline.Detail{
+				"droppedTables": droppedTables, "droppedColumns": droppedColumns,
+				"droppedChecks": droppedChecks, "failedConstraint": check.constraint,
+			}, err
+		}
+		rebuiltChecks++
+	}
+
+	// 补删批：授权来源 quota scope binding 行清除（额度 limits_json 全链
+	// 退役，授权绑定域随之退役；api_key 来源行不动）。
+	bindingResult, err := tx.ExecContext(ctx,
+		`DELETE FROM juhe_business.request_quota_hourly_window_scope_bindings
+		 WHERE source_type = 'resource_authorization_grant'`)
+	if err != nil {
+		return upgradepipeline.Detail{
+			"droppedTables": droppedTables, "droppedColumns": droppedColumns,
+			"droppedChecks": droppedChecks, "failedStatement": "delete quota scope bindings",
+		}, err
+	}
+	deletedBindings, err := bindingResult.RowsAffected()
+	if err != nil {
+		return upgradepipeline.Detail{"droppedTables": droppedTables, "droppedColumns": droppedColumns}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return upgradepipeline.Detail{"droppedTables": droppedTables, "droppedColumns": droppedColumns}, err
+	}
+	fmt.Fprintf(os.Stderr, "revision 31 授权治理简化：DROP 表 %d、列 %d、约束 %d，重建 status CHECK %d；状态收敛 grants %d、sources %d+%d、runtime %d；授权 quota 绑定清除 %d\n",
+		droppedTables, droppedColumns, droppedChecks, rebuiltChecks,
+		grantsPending, sourcesPending, sourcesSuperseded, runtimePending, deletedBindings)
+	return upgradepipeline.Detail{
+		"droppedTables":              droppedTables,
+		"droppedColumns":             droppedColumns,
+		"droppedChecks":              droppedChecks,
+		"statusChecksRebuilt":        rebuiltChecks,
+		"grantsPendingNormalized":    grantsPending,
+		"sourcesPendingNormalized":   sourcesPending,
+		"sourcesSupersededReturned":  sourcesSuperseded,
+		"runtimePendingNormalized":   runtimePending,
+		"quotaScopeBindingsDeleted":  int(deletedBindings),
+		"alreadyRetired":             false,
+	}, nil
+}
+
+// verifyAuthzClaimSimplification：四表缺席 + 三个 status CHECK 存在且词表
+// 不含退役状态 + 全部退役列缺席。
+func verifyAuthzClaimSimplification(ctx context.Context, dsn string) error {
+	satisfied, err := authzClaimSimplificationSatisfied(ctx, dsn)
+	if err != nil {
+		return err
+	}
+	if !satisfied {
+		return errors.New("revision 31 授权治理简化未收敛：退役表仍存在或 grants status CHECK 仍含旧审批词表")
+	}
+	for _, check := range []struct {
+		table      string
+		retiredTok string
+	}{
+		{"resource_authorization_grants", "pending_owner_approval"},
+		{"resource_authorization_sources", "dormant"},
+		{"resource_authorizations", "needs_review"},
+	} {
+		total, err := sqlScalar(ctx, dsn,
+			`SELECT count(*) FROM pg_constraint c
+			 JOIN pg_class r ON r.oid = c.conrelid
+			 JOIN pg_namespace n ON n.oid = r.relnamespace
+			 WHERE n.nspname = 'juhe_business' AND r.relname = $1
+			   AND c.conname = $2`, check.table, check.table+"_status_check")
+		if err != nil {
+			return err
+		}
+		if total != 1 {
+			return fmt.Errorf("revision 31 核验失败：%s 缺少收敛后的 status CHECK", check.table)
+		}
+		bad, err := sqlScalar(ctx, dsn,
+			`SELECT count(*) FROM pg_constraint c
+			 JOIN pg_class r ON r.oid = c.conrelid
+			 JOIN pg_namespace n ON n.oid = r.relnamespace
+			 WHERE n.nspname = 'juhe_business' AND r.relname = $1
+			   AND c.conname = $2
+			   AND pg_get_constraintdef(c.oid) LIKE '%`+check.retiredTok+`%'`,
+			check.table, check.table+"_status_check")
+		if err != nil {
+			return err
+		}
+		if bad != 0 {
+			return fmt.Errorf("revision 31 核验失败：%s status CHECK 仍含退役状态 %s", check.table, check.retiredTok)
+		}
+	}
+	for _, col := range authzClaimRetiredColumns {
+		exists, err := columnExists(ctx, dsn, "juhe_business", col.table, col.column)
+		if err != nil {
+			return err
+		}
+		if exists {
+			return fmt.Errorf("revision 31 核验失败：退役列 %s.%s 仍存在", col.table, col.column)
+		}
+	}
+	// 补删批：授权来源 quota scope binding 行清零（api_key 来源行不动）。
+	bindings, err := sqlScalar(ctx, dsn,
+		`SELECT count(*) FROM juhe_business.request_quota_hourly_window_scope_bindings
+		 WHERE source_type = 'resource_authorization_grant'`)
+	if err != nil {
+		return err
+	}
+	if bindings != 0 {
+		return fmt.Errorf("revision 31 核验失败：仍有 %d 条授权来源 quota scope binding 行", bindings)
+	}
+	return nil
+}
+
+// upgradeSteps 返回 20 步骤注册表（revision 升序；引擎再做一次排序校验）。
 // secret 为空时，凭据类 Check 不允许调用（第 8 步门禁保证到 Apply 阶段必有；
 // dry-run 阶段 Check 若需要 secret 会以错误呈现——预检语义可接受）。
 func upgradeSteps(primaryDSN, secret string) []upgradepipeline.Step {
@@ -924,7 +1291,9 @@ func upgradeSteps(primaryDSN, secret string) []upgradepipeline.Step {
 	// capabilityRecordSealed 是能力域步骤达成判据的**记录臂**：gateway 启动
 	// 门禁要求阶段记录 m2_finalized 存在（verify CLI 的 postflight 只校验域值
 	// 不校验记录——P2 演练实锤的假阳性根源），故记录检查必须独立成臂且与
-	// gateway 门禁同源。
+	// gateway 门禁同源。封存判定只认 stage：ruleVersion 1/2 都是「已封存」
+	// 事实（revision 29 只升级 ruleVersion，不改封存语义），版本分流见
+	// capabilityCheck 与 capabilityV2RecordUpgraded。
 	capabilityRecordSealed := func(ctx context.Context) (bool, error) {
 		value, err := sqlScalar(ctx, primaryDSN,
 			`SELECT count(*) FROM juhe_business.global_settings
@@ -935,15 +1304,79 @@ func upgradeSteps(primaryDSN, secret string) []upgradepipeline.Step {
 		}
 		return value > 0, nil
 	}
+	// capabilityRecordRuleVersionIs1 报告记录是否仍是存量 ruleVersion=1
+	//（revision 29 待升级态）。
+	capabilityRecordRuleVersionIs1 := func(ctx context.Context) (bool, error) {
+		value, err := sqlScalar(ctx, primaryDSN,
+			`SELECT count(*) FROM juhe_business.global_settings
+			 WHERE key = 'account_capability_domain_migration'
+			   AND value_json::jsonb->>'stage' = 'm2_finalized'
+			   AND value_json::jsonb->>'ruleVersion' = '1'`)
+		if err != nil {
+			return false, err
+		}
+		return value > 0, nil
+	}
 	capabilityCheck := func(ctx context.Context) (bool, error) {
 		sealed, err := capabilityRecordSealed(ctx)
 		if err != nil || !sealed {
 			return sealed, err
 		}
+		// 记录仍是 ruleVersion=1（revision 29 待升级态）时，新二进制的严格
+		// 读取（期望 2）必然拒绝，postflight 假失败；数据面迁移早已封存，
+		// revision 4 视为达成，版本升级与重推导归 revision 29 步骤。
+		pendingUpgrade, err := capabilityRecordRuleVersionIs1(ctx)
+		if err != nil {
+			return false, err
+		}
+		if pendingUpgrade {
+			return true, nil
+		}
 		code, _ := callResult(func() int {
 			return accountCapabilityDomainVerifyResult(primaryDSN, secret, "m2-cutover", "postflight")
 		})
 		return code == 0, nil
+	}
+	// capabilityV2Check 是 revision 29 步骤的达成判据：记录已升级 ruleVersion=2
+	// 且数据面对账收敛（失败/混合清单清零、直接涉及行现域 == v2 推导域）。
+	capabilityV2Check := func(ctx context.Context) (bool, error) {
+		upgraded, err := sqlScalar(ctx, primaryDSN,
+			`SELECT count(*) FROM juhe_business.global_settings
+			 WHERE key = 'account_capability_domain_migration'
+			   AND value_json::jsonb->>'stage' = 'm2_finalized'
+			   AND value_json::jsonb->>'ruleVersion' = '2'`)
+		if err != nil {
+			return false, err
+		}
+		if upgraded == 0 {
+			return false, nil
+		}
+		db, err := openPG(primaryDSN)
+		if err != nil {
+			return false, err
+		}
+		defer db.Close()
+		report, verifyErr := capabilitydomain.VerifyRuleVersionV2(ctx, db, capabilitydomain.V2UpgradeOptions{Secret: secret})
+		if verifyErr != nil {
+			return false, verifyErr
+		}
+		return report.Ready(), nil
+	}
+	// capabilityRetirementCheck 是 revision 30 步骤的达成判据：全部五域账户
+	// （含软删除行）凭据无 supported_endpoint_modes 键且
+	// account_endpoint_modes 无五域账户连接行（fresh 库表不存在/为空视为满
+	// 足）。
+	capabilityRetirementCheck := func(ctx context.Context) (bool, error) {
+		db, err := openPG(primaryDSN)
+		if err != nil {
+			return false, err
+		}
+		defer db.Close()
+		report, verifyErr := capabilitydomain.VerifyCapabilityDeclarationRetirement(ctx, db, capabilitydomain.DeclarationRetirementOptions{Secret: secret})
+		if verifyErr != nil {
+			return false, verifyErr
+		}
+		return report.Ready(), nil
 	}
 
 	schedprefCheck := func(ctx context.Context) (bool, error) {
@@ -961,6 +1394,140 @@ func upgradeSteps(primaryDSN, secret string) []upgradepipeline.Step {
 	}
 
 	return []upgradepipeline.Step{
+		{
+			Revision: 30, ID: "capability-domain-declaration-retirement",
+			Title:                 "五域上游接口能力声明退役（凭据键 + 连接行清洗）",
+			Target:                upgradepipeline.TargetPrimary,
+			RequiredBeforeStartup: true,
+			ImplVersion:           1,
+			Satisfied: func(ctx context.Context, _ upgradepipeline.Env) (bool, error) {
+				return capabilityRetirementCheck(ctx)
+			},
+			Apply: func(ctx context.Context, _ upgradepipeline.Env) (upgradepipeline.Detail, error) {
+				db, err := openPG(primaryDSN)
+				if err != nil {
+					return nil, err
+				}
+				defer db.Close()
+				result, err := capabilitydomain.RetireCapabilityDeclarations(ctx, db, capabilitydomain.DeclarationRetirementOptions{Secret: secret})
+				detail := upgradepipeline.Detail{
+					"scannedAccounts":       result.ScannedAccounts,
+					"credentialKeysRemoved": result.CredentialKeysRemoved,
+					"connectionRowsDeleted": result.ConnectionRowsDeleted,
+					"failures":              len(result.Failures),
+				}
+				if err != nil {
+					return detail, err
+				}
+				if !result.Ready() {
+					fmt.Fprintf(os.Stderr, "revision 30 五域声明退役未收敛：失败清单 %d 项\n", len(result.Failures))
+					return detail, nil
+				}
+				fmt.Fprintf(os.Stderr, "revision 30 五域声明退役：扫描 %d 个五域账户、清除凭据键 %d 行、删除连接行 %d 条\n",
+					result.ScannedAccounts, result.CredentialKeysRemoved, result.ConnectionRowsDeleted)
+				return detail, nil
+			},
+			Verify: func(ctx context.Context, _ upgradepipeline.Env) error {
+				db, err := openPG(primaryDSN)
+				if err != nil {
+					return err
+				}
+				defer db.Close()
+				report, err := capabilitydomain.VerifyCapabilityDeclarationRetirement(ctx, db, capabilitydomain.DeclarationRetirementOptions{Secret: secret})
+				if err != nil {
+					return err
+				}
+				if !report.Ready() {
+					return fmt.Errorf("revision 30 五域声明退役核验未通过：失败清单 %d 项、残留凭据键 %d 行、残留连接行 %d 条",
+						len(report.Failures), report.PendingCredentialKeys, report.PendingConnectionRows)
+				}
+				return nil
+			},
+		},
+		{
+			// 2026-11-22 授权治理模型大简化裁决：revision 28/29/30 未上生产仅
+			// dev、无兼容包袱，审批/冷却/快照/复核机制根治退役。Destructive=true：
+			// expand 相被引擎过滤，contract/all 相在单事务内 DROP 四张退役表与
+			// 29 条退役列（含补删批的 runtime/grants limits_json 建表基列）、
+			// 重建三个 7 值 status CHECK、收敛存量状态并 DELETE 授权来源 quota
+			// scope binding 行。Satisfied/Verify 同源（四表缺席 + grants CHECK
+			// 无旧审批词表 + 退役列缺席 + 授权绑定行清零）；fresh 库 ensure 即
+			// 目标形状，Satisfied 即刻为真。DROP 不可回滚，执行前必须完成可
+			// 恢复备份。
+			Revision: 31, ID: "authz-claim-simplification",
+			Title:                 "授权治理简化：审批/冷却/快照/复核机制退役（表与列 DROP + 状态收敛）",
+			Target:                upgradepipeline.TargetPrimary,
+			Destructive:           true,
+			RequiredBeforeStartup: true,
+			ImplVersion:           1,
+			Satisfied: func(ctx context.Context, _ upgradepipeline.Env) (bool, error) {
+				return authzClaimSimplificationSatisfied(ctx, primaryDSN)
+			},
+			Apply: func(ctx context.Context, _ upgradepipeline.Env) (upgradepipeline.Detail, error) {
+				return applyAuthzClaimSimplification(ctx, primaryDSN)
+			},
+			Verify: func(ctx context.Context, _ upgradepipeline.Env) error {
+				return verifyAuthzClaimSimplification(ctx, primaryDSN)
+			},
+		},
+		{
+			Revision: 29, ID: "capability-domain-vector-rerank",
+			Title:                 "AI 账户能力域向量/重排拆分（阶段记录 ruleVersion 2 升级 + 推导 v2 重推导）",
+			Target:                upgradepipeline.TargetPrimary,
+			RequiredBeforeStartup: true,
+			ImplVersion:           1,
+			Satisfied: func(ctx context.Context, _ upgradepipeline.Env) (bool, error) {
+				return capabilityV2Check(ctx)
+			},
+			Apply: func(ctx context.Context, _ upgradepipeline.Env) (upgradepipeline.Detail, error) {
+				db, err := openPG(primaryDSN)
+				if err != nil {
+					return nil, err
+				}
+				defer db.Close()
+				result, err := capabilitydomain.UpgradeRuleVersionV2(ctx, db, capabilitydomain.V2UpgradeOptions{Secret: secret})
+				detail := upgradepipeline.Detail{
+					"recordUpgraded":    result.RecordUpgraded,
+					"accountsTotal":     result.AccountsTotal,
+					"reassignedRows":    result.ReassignedRows,
+					"mixedDeclarations": len(result.MixedDeclarations),
+					"failures":          len(result.Failures),
+				}
+				if len(result.Reassigned) > 0 {
+					detail["reassigned"] = result.Reassigned
+				}
+				if len(result.MixedDeclarations) > 0 {
+					fmt.Fprintf(os.Stderr, "revision 29 能力域向量/重排拆分被阻断：%d 个混合声明账户需人工拆分（明细见 mixedDeclarations，建议按向量/重排域各拆独立账户）\n", len(result.MixedDeclarations))
+					return detail, nil
+				}
+				if err != nil {
+					return detail, err
+				}
+				if !result.Ready() {
+					fmt.Fprintf(os.Stderr, "revision 29 能力域向量/重排拆分未收敛：失败清单 %d 项\n", len(result.Failures))
+					return detail, nil
+				}
+				fmt.Fprintf(os.Stderr, "revision 29 能力域向量/重排拆分：记录升级 %v、扫描 %d 账户、重写 %d 行\n",
+					result.RecordUpgraded, result.AccountsTotal, result.ReassignedRows)
+				return detail, nil
+			},
+			Verify: func(ctx context.Context, _ upgradepipeline.Env) error {
+				db, err := openPG(primaryDSN)
+				if err != nil {
+					return err
+				}
+				defer db.Close()
+				report, err := capabilitydomain.VerifyRuleVersionV2(ctx, db, capabilitydomain.V2UpgradeOptions{Secret: secret})
+				if err != nil {
+					return err
+				}
+				if !report.Ready() {
+					return fmt.Errorf("revision 29 对账未收敛：失败清单 %d 项、混合声明 %d 项、pending %d 行",
+						len(report.Failures), len(report.MixedDeclarations), report.PendingRows)
+				}
+				return nil
+			},
+		},
 		{
 			Revision: 28, ID: "authz-recipient-consent-governance",
 			Title:                 "授权接收方确认与来源治理（legacy 回填、快照、约束/外键收紧）",

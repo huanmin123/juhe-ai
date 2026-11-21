@@ -41,10 +41,12 @@ type ExportProxy struct {
 type ExportConnection struct {
 	ConnectionPresetCode string `json:"connectionPresetCode"`
 	// ProtocolSurfaceCode 纯媒体连接导出 null（§8：纯媒体为 null）。
-	ProtocolSurfaceCode *string  `json:"protocolSurfaceCode"`
-	BaseURL             string   `json:"baseUrl"`
-	EndpointModes       []string `json:"endpointModes"`
-	Enabled             bool     `json:"enabled"`
+	ProtocolSurfaceCode *string `json:"protocolSurfaceCode"`
+	BaseURL             string  `json:"baseUrl"`
+	// EndpointModes 仅对话域连接持有（上游接口能力设计 §3：五域退役后连接行
+	// 无 modes 行）；空集省略键，导入解析对缺键放行、分域校验。
+	EndpointModes []string `json:"endpointModes,omitempty"`
+	Enabled       bool     `json:"enabled"`
 }
 
 // ExportAccount mirrors AccountExportAccount.

@@ -13,7 +13,6 @@ package accounts
 //	POST /model-catalog/refresh              (accounts.routes.ts)
 //	POST /{id}/force-activate                (account-force-activate.routes.ts)
 //	POST /{id}/traffic-migration             (account-traffic-migration.routes.ts)
-//	POST /{id}/return-authorization          (account-authorization-return.routes.ts)
 //	PATCH /{id}/authorized-dispatch          (account-authorized-dispatch.routes.ts)
 //	POST /{id}/group                         (account-group-binding.routes.ts)
 
@@ -56,7 +55,6 @@ func (d *Deps) mountM11Routes(k *kernel.Kernel, prefix string) {
 	k.Register("POST "+prefix+"/my-accounts/{id}/force-activate", d.m11Guarded(d.forceActivate(true), "accounts.force_activate_pending", forceActivateFingerprint, true))
 	// 管理面强制归还入口已移除（设计 §6.5/§13 #22）：管理员移除访问走回收，
 	// 不得伪装成接收方归还。仅保留用户侧收窄入口（单来源可用，多来源 409）。
-	k.Register("POST "+prefix+"/my-accounts/{id}/return-authorization", d.m11Guarded(d.returnAuthorization(true), "accounts.return_authorization", returnAuthorizationFingerprint, true))
 }
 
 // m11Guarded mirrors mountGuarded with a per-family fingerprint.
@@ -82,13 +80,6 @@ func forceActivateFingerprint(r *http.Request, _ string) map[string]any {
 	return map[string]any{
 		"accountId":                    strings.TrimSpace(r.PathValue("id")),
 		"acknowledgedAccountAvailable": kernel.BodyField(r, "acknowledgedAccountAvailable") == true,
-	}
-}
-
-func returnAuthorizationFingerprint(r *http.Request, _ string) map[string]any {
-	return map[string]any{
-		"accountId": strings.TrimSpace(r.PathValue("id")),
-		"grantee":   strings.TrimSpace(r.URL.Query().Get("systemAccountId")),
 	}
 }
 
@@ -614,76 +605,6 @@ func (d *Deps) trafficMigration(selfOnly bool) http.HandlerFunc {
 // wiredTrafficRuntimeMigrator returns the wired port or nil.
 func (s *Store) wiredTrafficRuntimeMigrator() TrafficRuntimeMigrator {
 	return s.trafficRuntimeMigrator
-}
-
-// ---- POST /{id}/return-authorization ----
-
-func (d *Deps) returnAuthorization(selfOnly bool) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		access := d.m11Scope(r, selfOnly)
-		if !scopeQueryOK(r) {
-			kernel.WriteBadRequest(w, "系统账号 ID 不能为空")
-			return
-		}
-		auth := authsys.AuthContextFrom(r)
-		if auth == nil {
-			kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
-			return
-		}
-		if !selfOnly {
-			kernel.WriteJSON(w, http.StatusConflict, map[string]any{
-				"code":    "admin_return_forbidden",
-				"message": "管理员不得代接收方归还授权，请回收授权以移除访问",
-			})
-			return
-		}
-		before, _ := d.Store.findTrafficSummary(r.Context(), r.PathValue("id"), access)
-		err := d.Store.ReturnAuthorizationInstance(r.Context(), r.PathValue("id"), access)
-		if err != nil {
-			if errors.Is(err, errReturnAuthorizationMissing) {
-				kernel.WriteError(w, http.StatusNotFound, err.Error())
-				return
-			}
-			if errors.Is(err, errReturnAuthorizationMultiSource) {
-				kernel.WriteJSON(w, http.StatusConflict, map[string]any{
-					"code":    "return_requires_source_center",
-					"message": err.Error(),
-				})
-				return
-			}
-			kernel.WriteBadRequest(w, pipelineErrorMessage(err, "归还授权账户失败"))
-			return
-		}
-		if d.Sink != nil {
-			resourceName := r.PathValue("id")
-			if before != nil {
-				resourceName = before.Name
-			}
-			d.Sink.Record(authsys.OperationLogEntry{
-				ActorSystemAccountID:          auth.SystemAccountID,
-				ActorUsername:                 auth.Username,
-				ActorDisplayName:              auth.DisplayName,
-				ActorRole:                     auth.Role,
-				OperationScopeSystemAccountID: access.ViewerID,
-				Mode:                          operationMode(access),
-				Module:                        "authorizations",
-				Action:                        "return",
-				OperationKey:                  "accounts.return_authorization",
-				ResourceType:                  "authorization",
-				ResourceID:                    r.PathValue("id"),
-				ResourceName:                  resourceName,
-				Summary:                       "归还授权账户：" + resourceName,
-				Changes: []authsys.OperationLogChange{
-					safeChange("returned", "归还授权账户", false, true),
-				},
-				Viewers: []authsys.OperationLogViewer{
-					{SystemAccountID: access.ViewerID, Reason: "authorization_grantee"},
-				},
-			}, r)
-		}
-		setNoStoreHeaders(w)
-		w.WriteHeader(http.StatusNoContent)
-	}
 }
 
 // ---- PATCH /{id}/authorized-dispatch ----

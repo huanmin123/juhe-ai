@@ -20,17 +20,20 @@ import (
 //     ⊆ 域允许集（BUG-0323 根治口径）：现行默认本就域内的供应商（openai 族/
 //     gemini/anthropic/glm）逐项不变，媒体优先供应商（volcengine/qwen 缺省
 //     video_get）落词表内基础对话对，由测试钉住。
-//   - 严格不变式：账户声明集（credentials JSON 的 supported_endpoint_modes）
-//     必须 ⊆ 所在域允许集，全链路强制——新建/导入/克隆/编辑/批量同一规则，
-//     越界一律拒绝（CapabilityDomainOutlierError），不存在任何跨域保留
-//     状态；声明集裁剪由 maintenance 迁移命令一次性完成。
+//   - 严格不变式（2026-11-21 五域退役后收窄为 chat 域不变式）：账户声明集
+//     （credentials JSON 的 supported_endpoint_modes）必须 ⊆ 所在域允许集，
+//     chat 域全链路强制——新建/导入/克隆/编辑/批量同一规则，越界一律拒绝
+//     （CapabilityDomainOutlierError），不存在任何跨域保留状态。五域
+//     （image/audio/video/embedding/rerank）声明面已退役（设计 §3）：写侧
+//     不校验、不播种、凭据不落键、连接行不写 modes，历史键由 revision 30
+//     清洗与写侧入口剥离收敛。
 
-// 域 lane 集（计划 §域模型设计 + §对话域纯粹化 v8-A）：chat = 平台包
-// 「对话 modes」15 值锚集（v8-A 后不追加 images_json——图像 lane 移出对话
-// 域，新增声明一律隔离在各域之内；2026-11-20 协议补齐批增 embeddings_json /
-// rerank_json 两个文本 lane 协议）；video = 视频任务四值；audio = 语音合成
-// + 长音频任务四值 + 短转写 + 实时会话（v8-A 自对话域移入）；image =
-// images_json。
+// 域 lane 集（计划 §域模型设计 + §对话域纯粹化 v8-A + 向量/重排拆分设计 §3）：
+// chat = 平台包「对话 modes」13 值锚集（v8-A 后不追加 images_json——图像 lane
+// 移出对话域，新增声明一律隔离在各域之内；v2 起 embeddings_json / rerank_json
+// 移出对话锚集归独立两域）；embedding = embeddings_json 单值；rerank =
+// rerank_json 单值；video = 视频任务四值；audio = 语音合成 + 长音频任务四值
+// + 短转写 + 实时会话（v8-A 自对话域移入）；image = images_json。
 var (
 	videoDomainLaneModes = []string{"video_create", "video_get", "video_content", "video_cancel"}
 	audioJobLaneModes    = []string{"audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel"}
@@ -41,12 +44,14 @@ var (
 	imageDomainLaneModes        = []string{"images_json"}
 )
 
-// CapabilityDomainLabels 是四个域的用户可见名称（错误文案用）。
+// CapabilityDomainLabels 是六个域的用户可见名称（错误文案用）。
 var CapabilityDomainLabels = map[string]string{
-	CapabilityDomainChat:  "对话",
-	CapabilityDomainVideo: "视频",
-	CapabilityDomainAudio: "音频",
-	CapabilityDomainImage: "图像",
+	CapabilityDomainChat:      "对话",
+	CapabilityDomainVideo:     "视频",
+	CapabilityDomainAudio:     "音频",
+	CapabilityDomainImage:     "图像",
+	CapabilityDomainEmbedding: "向量",
+	CapabilityDomainRerank:    "重排",
 }
 
 // CapabilityDomainLabel 返回域的用户可见名称；未知域原样返回。
@@ -57,9 +62,9 @@ func CapabilityDomainLabel(domain string) string {
 	return domain
 }
 
-// chatDomainLaneModes 返回对话域 lane 集（平台包 15 值锚集；v8-A 后不追加
-// images_json，图像 lane 声明只走图像域；2026-11-20 协议补齐批增
-// embeddings_json / rerank_json）。
+// chatDomainLaneModes 返回对话域 lane 集（平台包 13 值锚集；v8-A 后不追加
+// images_json，图像 lane 声明只走图像域；v2 起 embeddings_json / rerank_json
+// 归独立两域 lane）。
 func chatDomainLaneModes() []string {
 	return capabilitydomain.ChatModes()
 }
@@ -69,6 +74,8 @@ func domainLaneModes(domain string) []string {
 	switch domain {
 	case CapabilityDomainChat:
 		return chatDomainLaneModes()
+	case CapabilityDomainEmbedding, CapabilityDomainRerank:
+		return capabilitydomain.LaneModesForDomain(capabilitydomain.Domain(domain))
 	case CapabilityDomainVideo:
 		return append([]string{}, videoDomainLaneModes...)
 	case CapabilityDomainAudio:
@@ -130,7 +137,9 @@ const (
 // resolveCapabilityWriteContext 的行判定，导入/批量经同一对函数自动覆盖。
 // xai 行 audio 位待上游契约回填后随计划矩阵更新开通。
 var capabilityDomainMatrix = map[string]map[string]bool{
-	capabilityMatrixOpenAI: {CapabilityDomainChat: true, CapabilityDomainVideo: true, CapabilityDomainAudio: true, CapabilityDomainImage: true},
+	// openai 行 embedding 格 2026-11-21 开通（向量/重排拆分设计 §5：OpenAI 族
+	// 词表含 embeddings_json；rerank 全平台仅 qwen）。
+	capabilityMatrixOpenAI: {CapabilityDomainChat: true, CapabilityDomainVideo: true, CapabilityDomainAudio: true, CapabilityDomainImage: true, CapabilityDomainEmbedding: true},
 	// xai 行图像格 2026-10-31 开通（真实上游取证：用户经 api.shenwenai.com/v1
 	// 中转对 grok-imagine-image 以 OpenAI images 形态实测出图成功；演练场
 	// E2E 驱动，连接注册表 xai_openai_v1 同批补 DomainImage 组合）。
@@ -148,7 +157,10 @@ var capabilityDomainMatrix = map[string]map[string]bool{
 	// usage）；Agent Plan 专属端点 /api/plan/v3/images/generations 实测可用，
 	// 出站 URL 由链上层按 base_url 版本根直拼承接）。
 	capabilityMatrixVolcengine: {CapabilityDomainChat: true, CapabilityDomainVideo: true, CapabilityDomainAudio: true, CapabilityDomainImage: true},
-	capabilityMatrixQwen:       {CapabilityDomainChat: true, CapabilityDomainVideo: true, CapabilityDomainAudio: true, CapabilityDomainImage: false},
+	// qwen 行 embedding/rerank 格 2026-11-21 开通（向量/重排拆分设计 §5：
+	// qwenDashScopeVocabulary 含 embeddings_json 与 rerank_json，rerank 行
+	// 全平台唯一）。
+	capabilityMatrixQwen: {CapabilityDomainChat: true, CapabilityDomainVideo: true, CapabilityDomainAudio: true, CapabilityDomainImage: false, CapabilityDomainEmbedding: true, CapabilityDomainRerank: true},
 }
 
 // capabilityDomainMatrixAllows 查矩阵门：行未列出（未知上下文）默认拒绝，
@@ -297,13 +309,15 @@ func AllowedEndpointModes(domain, providerCode, accountType string, profile Prot
 // DefaultEndpointModesForDomain 返回新建账户 modes 缺省时按域落下的默认集：
 // chat 域=现行默认与域 lane 集、词表求交（BUG-0323 根治：缺省恒 ⊆ 域允许集；
 // 现行默认本就域内的供应商逐项不变，媒体优先供应商缺省不含对话值时落词表内
-// 基础对话对）；video=四值组；audio=audio_speech
-// （无 audio_speech 词表的供应商退为长音频四值，如 qwen）；image=
-// images_json——经同一矩阵门与写侧词表求交（与 AllowedEndpointModes 单收敛
-// 点），空集视为该供应商不支持该域。v8-A：音频域默认集维持现状语义，不含
-// 新移入的 audio_transcription_json / realtime_session（默认集不收，显式
-// 勾选承担，契约 §媒体域表单完整性升级 v8-B 联动明文），纯转写账户显式选
-// audio_transcription_json。
+// 基础对话对）；embedding/rerank 域=域 lane 单值 ∩ 词表（向量/重排拆分设计
+// §3/§8.2：两域 lane 均单值，新建 ⊆ 允许集（D6），与媒体域 images_json /
+// video_create 先例同构；chat 对不在两域 lane 内）；
+// video=四值组；audio=audio_speech（无 audio_speech 词表的供应商退为长音频
+// 四值，如 qwen）；image=images_json——经同一矩阵门与写侧词表求交（与
+// AllowedEndpointModes 单收敛点），空集视为该供应商不支持该域。v8-A：音频域
+// 默认集维持现状语义，不含新移入的 audio_transcription_json /
+// realtime_session（默认集不收，显式勾选承担，契约 §媒体域表单完整性升级
+// v8-B 联动明文），纯转写账户显式选 audio_transcription_json。
 func DefaultEndpointModesForDomain(domain, providerCode, accountType string, profile ProtocolPredicate) []string {
 	row, vocabulary := resolveCapabilityWriteContext(providerCode, accountType, profile)
 	if len(vocabulary) == 0 {
@@ -322,6 +336,11 @@ func DefaultEndpointModesForDomain(domain, providerCode, accountType string, pro
 		// video_get）：落词表内基础对话对，保证 chat 域缺省恒 ⊆ 允许集
 		// （BUG-0323 根治）。
 		return intersectLaneModes([]string{"chat_json", "chat_sse"}, vocabulary)
+	case CapabilityDomainEmbedding, CapabilityDomainRerank:
+		// 向量/重排拆分设计 §3：两域 lane 均为单值，默认集=域 lane ∩ 词表
+		// （新建 ⊆ 允许集，D6；与媒体域 images_json/video_create 先例同构）。
+		// chat 对不在两域 lane 内，落它会被 write.go 的越界门拒绝。
+		return intersectLaneModes(domainLaneModes(domain), vocabulary)
 	case CapabilityDomainVideo:
 		return intersectLaneModes(videoDomainLaneModes, vocabulary)
 	case CapabilityDomainAudio:
@@ -335,10 +354,22 @@ func DefaultEndpointModesForDomain(domain, providerCode, accountType string, pro
 	return []string{}
 }
 
+// EndpointModesDeclarationRetired 报告能力域的「上游接口能力」声明面是否已
+// 退役（AI账户上游接口能力设计 §3，2026-11-21 用户裁决）：仅 chat 域账户
+// 持有声明、校验与派发过滤；image/audio/video/embedding/rerank 五域写侧
+// 不校验、不播种默认集、凭据不落 supported_endpoint_modes 键、连接行不写
+// account_endpoint_modes、克隆不透传。空串按 chat（列 DEFAULT 'chat' 同义）
+// 处理，返回 false。判定委托共享包 capabilitydomain.DeclarationRetired
+// （maintenance 迁移核验同源，五域清单单一权威）。
+func EndpointModesDeclarationRetired(domain string) bool {
+	return capabilitydomain.DeclarationRetired(capabilitydomain.Domain(domain))
+}
+
 // DefaultHealthCheckEndpointModeForDomain 是新建账户
-// health_check_endpoint_mode 的按域默认落值（媒体账户生命周期定案表）：
-// chat=chat_sse（流式优先，AI账户检查模型与人工测试设计 2026-10-19 定案；
-// 原 chat_json）、image=images_json、audio=audio_speech、video=video_create。
+// health_check_endpoint_mode 的按域默认落值（媒体账户生命周期定案表 + 向量/
+// 重排拆分设计 §7）：chat=chat_sse（流式优先，AI账户检查模型与人工测试设计
+// 2026-10-19 定案；原 chat_json）、image=images_json、audio=audio_speech、
+// video=video_create、embedding=embeddings_json、rerank=rerank_json。
 // 仅入参未显式提供时使用。
 func DefaultHealthCheckEndpointModeForDomain(domain string) string {
 	switch domain {
@@ -348,6 +379,10 @@ func DefaultHealthCheckEndpointModeForDomain(domain string) string {
 		return "audio_speech"
 	case CapabilityDomainImage:
 		return "images_json"
+	case CapabilityDomainEmbedding:
+		return "embeddings_json"
+	case CapabilityDomainRerank:
+		return "rerank_json"
 	}
 	return "chat_sse"
 }

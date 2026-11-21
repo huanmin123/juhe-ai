@@ -166,28 +166,29 @@
           <span v-if="record.releaseDate">发布时间 {{ record.releaseDate }}</span>
           <span v-if="isManagementView && record.systemAccountId">归属 {{ record.systemAccountId }}</span>
         </div>
-        <section v-if="modelPriceTable(record).rows.length" class="model-drawer-section">
-          <h4 class="model-drawer-section-title">计费价格 <span class="model-drawer-section-unit">USD / 1M tokens</span></h4>
-          <table class="model-drawer-table">
+        <section v-if="drawerPriceTable && (drawerPriceTable.rows.length || drawerPriceTable.note)" class="model-drawer-section">
+          <h4 class="model-drawer-section-title">计费价格 <span v-if="drawerPriceTable.rows.length" class="model-drawer-section-unit">{{ drawerPriceTable.unitLabel }}</span></h4>
+          <table v-if="drawerPriceTable.rows.length" class="model-drawer-table">
             <thead>
               <tr>
-                <th scope="col" class="model-drawer-table-label">价格项</th>
-                <th v-for="column in modelPriceTable(record).columns" :key="column.key" scope="col" class="model-drawer-table-value">{{ column.label }}</th>
+                <th scope="col" class="model-drawer-table-label">{{ drawerPriceTable.itemLabel }}</th>
+                <th v-for="column in drawerPriceTable.columns" :key="column.key" scope="col" class="model-drawer-table-value">{{ column.label }}</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="row in modelPriceTable(record).rows" :key="row.key">
+              <tr v-for="row in drawerPriceTable.rows" :key="row.key">
                 <td class="model-drawer-table-label">{{ row.label }}</td>
-                <td v-for="column in modelPriceTable(record).columns" :key="column.key" class="model-drawer-table-value">
-                  <strong v-if="row.cells[column.key]">{{ formatPriceTableCell(row.cells[column.key]!) }}</strong>
+                <td v-for="column in drawerPriceTable.columns" :key="column.key" class="model-drawer-table-value">
+                  <strong v-if="row.cells[column.key]">{{ formatPriceTableCell(row.cells[column.key]!, drawerPriceTable.unitLabel) }}</strong>
                   <template v-else>-</template>
                 </td>
               </tr>
             </tbody>
           </table>
-          <p v-if="modelPriceTable(record).hasOffpeak" class="model-drawer-table-note">
+          <p v-if="drawerPriceTable.hasOffpeak" class="model-drawer-table-note">
             高峰时段为工作日 09:00–12:00、14:00–18:00（北京时间）；时段计费未启用，当前所有请求按高峰价结算。
           </p>
+          <p v-if="drawerPriceTable.note" class="model-drawer-table-note">{{ drawerPriceTable.note }}</p>
         </section>
         <section v-if="modelInfoItems(record).length || hasModelAccessInfo(record)" class="model-drawer-section">
           <h4 class="model-drawer-section-title">基础信息</h4>
@@ -314,6 +315,7 @@ const selectedVendor = ref('all')
 const page = ref(1)
 const pageSize = ref(24)
 const record = ref<ProviderModelPricing | null>(null)
+const drawerPriceTable = computed(() => record.value ? modelPriceTable(record.value) : undefined)
 const systemAccountFilter = ref('')
 const systemAccountFilterSelection = ref<PrincipalSelection>()
 const formModalOpen = ref(false)

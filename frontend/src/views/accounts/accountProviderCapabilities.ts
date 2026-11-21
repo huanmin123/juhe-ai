@@ -5,6 +5,7 @@ import type {
   ProviderDefinition,
   ProviderProtocolProfileDefinition
 } from '@/types/domain'
+import type { AccountCapabilityDomain } from './accountCapabilityDomains'
 import {
   ANTHROPIC_MESSAGE_TOKEN_COUNTING_FAMILY,
   ANTHROPIC_MESSAGES_FAMILY,
@@ -23,7 +24,6 @@ import {
   OPENAI_AUDIO_TRANSCRIPTION_FAMILY,
   isGptVendorCode,
   isGeminiProviderCode,
-  isGlmProviderCode,
   isMinimaxProviderCode,
   isVolcengineProviderCode,
   isQwenProviderCode,
@@ -85,7 +85,10 @@ export const openAIEndpointModes: AccountSupportedEndpointMode[] = [
   'audio_job_cancel',
   'realtime_session',
   // 2026-11-20 向量协议补齐批：OpenAI 兼容 /v1/embeddings（后端
-  // OpenAIEndpointModeValues 同批收录）；显式开启、不进默认集。
+  // OpenAIEndpointModeValues 同批收录）。2026-11-21 向量/重排独立域拆分后，该
+  // mode 只属于 embedding 域 lane：词表保留（openAIVocabulary 含它，gpt 词表
+  // 求交依据），是否可勾选由 endpointModesForProfile 按域参数化决定（仅
+  // embedding 域且 gpt 承载，§5 矩阵），chat 域不再出现。
   'embeddings_json',
   ...chatEndpointModes,
   ...responsesEndpointModes
@@ -103,10 +106,10 @@ export const allAccountEndpointModes: AccountSupportedEndpointMode[] = [
   ...openAIEndpointModes,
   ...anthropicAccountEndpointModes,
   ...geminiAccountEndpointModes,
-  // rerank_json 是独立文本 lane，不属于 OpenAI 兼容词表：仅 qwen DashScope
-  // 原生 text-rerank 承载（对外 Cohere/Jina 形态），由 provider 分支显式追加；
-  // 收进全局词表用于能力域锚集合与 normalize/validate 的白名单，避免 qwen
-  // 已勾选的 rerank 在保存时被静默丢弃。
+  // rerank_json 属 rerank 域单值 lane（2026-11-21 拆分），不属于 OpenAI 兼容词表：
+  // 仅 qwen DashScope 原生 text-rerank 承载（对外 Cohere/Jina 形态），由 provider
+  // 分支按域显式追加；收进全局词表用于 normalize/validate 的白名单，避免 rerank
+  // 域账户已勾选的 rerank 在保存时被静默丢弃。
   'rerank_json'
 ]
 
@@ -287,15 +290,14 @@ export function defaultEndpointModesForAccount(input: {
     // 媒体模式同语义；volcengine/qwen 档案（对话批）补 chat_completions
     // family，但其 chat 对不进默认集（对齐后端 DefaultOpenAIEndpointModes
     // 的 video_get 默认——两家无零费用健康检查面，chat 探针真实计费且档案
-    // DefaultHealthCheckModel 仍为媒体模型），chat 可显式勾选。
+    // DefaultHealthCheckModel 仍为媒体模型），chat 可显式勾选。embeddings_json /
+    // rerank_json 已随向量/重排独立域拆分（2026-11-21）退出 chat 域：缺省的
+    // 域参数按 chat 收敛，词表推导不再含两 mode，无需在此过滤。
     const modes = endpointModesForProfile(input.profile ?? input.provider)
       .filter((mode) => mode !== 'images_json' && mode !== 'audio_speech' && mode !== 'audio_transcription_json'
         && mode !== 'video_create' && mode !== 'video_get' && mode !== 'video_content' && mode !== 'video_cancel'
         && mode !== 'audio_job_create' && mode !== 'audio_job_get' && mode !== 'audio_job_content' && mode !== 'audio_job_cancel'
-        && mode !== 'realtime_session'
-        // 2026-11-20 向量/重排协议补齐批：两协议与媒体模式同语义，只能显式
-        // 开启，不进新账户默认集（默认集仍为 chat/responses 推导结果）。
-        && mode !== 'embeddings_json' && mode !== 'rerank_json')
+        && mode !== 'realtime_session')
     const code = input.provider?.code ?? input.profile?.providerCode ?? ''
     if (isVolcengineProviderCode(code) || isQwenProviderCode(code)) {
       return modes.filter((mode) => mode !== 'chat_json' && mode !== 'chat_sse')
@@ -313,9 +315,16 @@ export function profileSupportsCodexResponsesChatBridge(profile?: AccountProvide
     || profileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID
 }
 
+/**
+ * 档案可声明 mode 词表（与后端 connector registry 词表 + driver 收窄镜像）。
+ * `capabilityDomain` 参数按能力域收敛向量/重排两 mode（2026-11-21 拆分，§5 矩阵）：
+ * embeddings_json 只进 embedding 域（qwen + gpt 词表承载）、rerank_json 只进
+ * rerank 域（仅 qwen）；缺省按 chat 收敛（两 mode 不出现，chat 域 lane 已不含它们）。
+ */
 export function endpointModesForProfile(
   profile?: AccountProviderProfileLike,
-  accountType?: AccountType
+  accountType?: AccountType,
+  capabilityDomain?: AccountCapabilityDomain
 ): AccountSupportedEndpointMode[] {
   const protocolKind = accountProviderProtocolKind(profile)
   // 与后端 openAIFamilyVocabulary(accountType) 对齐：OpenAI/OAuth 账户只允许
@@ -418,9 +427,12 @@ export function endpointModesForProfile(
       }
       // 2026-11-20 向量/重排协议补齐批：百炼 text-embedding-v4 经
       // /compatible-mode/v1/embeddings、gte-rerank-v2 经 DashScope 原生
-      // text-rerank 面（对外 Cohere/Jina 兼容 /v1/rerank），均显式可选、
-      // 不进默认集。
-      modes.push('embeddings_json', 'rerank_json')
+      // text-rerank 面（对外 Cohere/Jina 兼容 /v1/rerank）。2026-11-21 拆分后
+      // 两 mode 各归独立域 lane：embedding 域进 embeddings_json、rerank 域进
+      // rerank_json（均不进域默认集，域默认=单值 lane 求交结果），chat 域不再
+      // 出现（域参数缺省即 chat）。
+      if (capabilityDomain === 'embedding') modes.push('embeddings_json')
+      if (capabilityDomain === 'rerank') modes.push('rerank_json')
       return modes
     }
     const familyModes = endpointModesForFamilies(
@@ -442,9 +454,10 @@ export function endpointModesForProfile(
     }
     // images_json 与 M1 音频模式、M2 视频模式是 openai 族的显式可选能力：
     // 允许勾选（媒体 lane 派发依赖），不进默认集（defaultEndpointModesForAccount
-    // 过滤）。embeddings_json 只在供应商写侧词表包含它时追加：glm 的 OpenAI
-    // 档案词表只有 chat/video/audio（后端 glmOpenAIVocabulary 无 embeddings），
-    // 不能把该选项展示成可保存。
+    // 过滤）。embeddings_json 属 embedding 域单值 lane（2026-11-21 拆分）：仅
+    // embedding 域且 gpt 词表承载（§5 矩阵，qwen 在自家分支处理）；glm / xai /
+    // deepseek / gemini OpenAI Chat 均不做向量域（glm 收窄词表无 embeddings、
+    // 其余按矩阵否决），chat 域不再出现该选项。
     const selectable: AccountSupportedEndpointMode[] = [
       ...familyModes,
       'images_json',
@@ -460,7 +473,7 @@ export function endpointModesForProfile(
       'audio_job_cancel',
       'realtime_session'
     ]
-    if (!isGlmProviderCode(profile?.providerCode ?? profile?.code)) {
+    if (capabilityDomain === 'embedding' && isGptVendorCode(profile?.providerCode ?? profile?.code)) {
       selectable.push('embeddings_json')
     }
     return [...new Set(selectable)]

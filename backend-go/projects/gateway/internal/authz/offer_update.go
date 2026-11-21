@@ -1,5 +1,5 @@
-// Owner PATCH contract: remark/limits and expiry shortening only; extension
-// has its own explicit endpoint (design §5.5/§6.1).
+// Owner PATCH contract: remark and expiry shortening only; extension has its
+// own explicit endpoint.
 package authz
 
 import (
@@ -9,8 +9,6 @@ import (
 
 type UpdateOfferInput struct {
 	Remark       *string
-	LimitsJSON   *string
-	LimitsSet    bool
 	ExpiresAt    *string
 	ExpiresAtSet bool
 }
@@ -29,7 +27,7 @@ func (s *Store) UpdateOffer(ctx context.Context, actorID, grantID string, input 
 		return failf("授权不存在")
 	}
 	if grant.Status != StatusActive && grant.Status != StatusPaused {
-		return failCode("state_conflict", "只有生效或暂停中的授权可以修改额度与备注")
+		return failCode("state_conflict", "只有生效或暂停中的授权可以修改备注与到期时间")
 	}
 	nowTime := parseTimeOrNow(now)
 	nextExpires := grant.ExpiresAt
@@ -56,53 +54,18 @@ func (s *Store) UpdateOffer(ctx context.Context, actorID, grantID string, input 
 			nextExpires = *normalized
 		}
 	}
-	limits := grant.LimitsJSON
-	if input.LimitsSet {
-		if input.LimitsJSON == nil || strings.TrimSpace(*input.LimitsJSON) == "" {
-			limits = ""
-		} else {
-			normalized, err := normalizeAuthorizationLimitsJSON(*input.LimitsJSON)
-			if err != nil {
-				return err
-			}
-			if normalized == nil {
-				limits = ""
-			} else {
-				limits = *normalized
-			}
-		}
-		if limits != grant.LimitsJSON {
-			// 暂停发起授权期间不得通过额度 PATCH 绕过冻结；缩短到期时间与
-			// 备注不经过这里，仍允许。
-			if err := s.ensureNotSuspended(ctx, tx, grant.OwnerID); err != nil {
-				return err
-			}
-		}
-	}
 	remark := grant.Remark
 	if input.Remark != nil {
 		remark = strings.TrimSpace(*input.Remark)
 	}
 	if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorization_grants")+`
-		SET remark = ?, limits_json = NULLIF(?, ''), expires_at = NULLIF(?, ''), updated_at = ?
+		SET remark = NULLIF(?, ''), expires_at = NULLIF(?, ''), updated_at = ?
 		WHERE id = ? AND status IN ('active','paused')`),
-		nullIfEmpty(remark), limits, nextExpires, now, grant.ID); err != nil {
+		remark, nextExpires, now, grant.ID); err != nil {
 		return err
 	}
 	if err := s.recomputeGrantRuntimes(ctx, tx, grant.ID, actorID, now); err != nil {
 		return err
-	}
-	grant.Remark = remark
-	grant.LimitsJSON = limits
-	grant.ExpiresAt = nextExpires
-	if err := s.syncRuntimeQuotaBindings(ctx, tx, grant, now); err != nil {
-		return err
-	}
-	for _, target := range s.grantRuntimeGrantees(ctx, tx, grant.ID) {
-		if err := s.insertNotification(ctx, tx, target, "offer_updated", grant.ID, "", nil,
-			"updated:"+grant.ID+":"+target+":"+now, now); err != nil {
-			return err
-		}
 	}
 	if err := tx.Commit(); err != nil {
 		return err

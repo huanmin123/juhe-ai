@@ -17,6 +17,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sort"
 	"strings"
@@ -40,7 +41,11 @@ type AuthorizedDispatchInput struct {
 	Priority               *int
 	SuperPriorityEnabled   *bool
 	FallbackEnabled        *bool
-	ClearFailureState      bool
+	// ConcurrencyLimit/RPMLimit 是接收方可下调的实例限值；上限为源账户的同
+	// 名限值（源为 0/空表示不限制），超过即被拒绝。
+	ConcurrencyLimit  *int
+	RPMLimit          *int
+	ClearFailureState bool
 }
 
 // parseAuthorizedDispatchBody mirrors authorizedAccountDispatchSchema.strict()
@@ -50,7 +55,8 @@ func parseAuthorizedDispatchBody(body map[string]any) (AuthorizedDispatchInput, 
 	input := AuthorizedDispatchInput{}
 	for key := range body {
 		switch key {
-		case "expectedConfigRevision", "status", "priority", "superPriorityEnabled", "fallbackEnabled", "clearFailureState":
+		case "expectedConfigRevision", "status", "priority", "superPriorityEnabled", "fallbackEnabled",
+			"concurrencyLimit", "rpmLimit", "clearFailureState":
 		default:
 			return AuthorizedDispatchInput{}, "授权账户调度参数无效"
 		}
@@ -89,6 +95,22 @@ func parseAuthorizedDispatchBody(body map[string]any) (AuthorizedDispatchInput, 
 		}
 		input.FallbackEnabled = &enabled
 	}
+	if value, exists := body["concurrencyLimit"]; exists && value != nil {
+		number, ok := value.(float64)
+		if !ok || number != float64(int(number)) || number < 0 {
+			return AuthorizedDispatchInput{}, "授权账户调度参数无效"
+		}
+		limit := int(number)
+		input.ConcurrencyLimit = &limit
+	}
+	if value, exists := body["rpmLimit"]; exists && value != nil {
+		number, ok := value.(float64)
+		if !ok || number != float64(int(number)) || number < 0 {
+			return AuthorizedDispatchInput{}, "授权账户调度参数无效"
+		}
+		limit := int(number)
+		input.RPMLimit = &limit
+	}
 	if value, exists := body["clearFailureState"]; exists && value != nil {
 		enabled, ok := value.(bool)
 		if !ok {
@@ -97,7 +119,8 @@ func parseAuthorizedDispatchBody(body map[string]any) (AuthorizedDispatchInput, 
 		input.ClearFailureState = enabled
 	}
 	changedKeys := 0
-	for _, key := range []string{"status", "priority", "superPriorityEnabled", "fallbackEnabled", "clearFailureState"} {
+	for _, key := range []string{"status", "priority", "superPriorityEnabled", "fallbackEnabled",
+		"concurrencyLimit", "rpmLimit", "clearFailureState"} {
 		if _, exists := body[key]; exists {
 			changedKeys++
 		}
@@ -127,6 +150,8 @@ type AuthorizedDispatchPatch struct {
 	Priority             *int    `json:"priority,omitempty"`
 	SuperPriorityEnabled *bool   `json:"superPriorityEnabled,omitempty"`
 	FallbackEnabled      *bool   `json:"fallbackEnabled,omitempty"`
+	ConcurrencyLimit     *int    `json:"concurrencyLimit,omitempty"`
+	RPMLimit             *int    `json:"rpmLimit,omitempty"`
 	FailureStateCleared  bool    `json:"failureStateCleared,omitempty"`
 }
 
@@ -159,6 +184,8 @@ type authorizedDispatchRow struct {
 	name                               string
 	status                             string
 	schedulable                        int
+	concurrencyLimit                   int
+	rpmLimit                           int
 	accountExpiresAt                   sql.NullString
 	cooldownUntil                      sql.NullString
 	lastErrorCode                      sql.NullString
@@ -182,6 +209,8 @@ type authorizedDispatchRow struct {
 	sourceAccountExpiresAt             sql.NullString
 	sourceCooldownUntil                sql.NullString
 	sourceSchedulable                  sql.NullInt64
+	sourceConcurrencyLimit             sql.NullInt64
+	sourceRPMLimit                     sql.NullInt64
 }
 
 // authorizedDispatchBinding is the loadAuthorizedAccountBindingForUpdate row.
@@ -277,7 +306,8 @@ func (s *Store) UpdateAuthorizedDispatch(ctx context.Context, accountID string, 
 func (s *Store) loadAuthorizedDispatchRow(ctx context.Context, q queryer, accountID, grantee string) (*authorizedDispatchRow, error) {
 	var row authorizedDispatchRow
 	err := q.QueryRowContext(ctx, s.bind(`SELECT accounts.id, accounts.config_revision, accounts.system_account_id,
-			accounts.name, accounts.status, accounts.schedulable, accounts.account_expires_at,
+			accounts.name, accounts.status, accounts.schedulable,
+				COALESCE(accounts.concurrency_limit, 0), COALESCE(accounts.rpm_limit, 0), accounts.account_expires_at,
 			accounts.cooldown_until, accounts.last_error_code, accounts.last_error_message,
 			accounts.last_error_trace_id, accounts.cooldown_retest_failure_count,
 			accounts.cooldown_retest_observation_started_at, accounts.cooldown_retest_generation,
@@ -290,7 +320,9 @@ func (s *Store) loadAuthorizedDispatchRow(ctx context.Context, q queryer, accoun
 			source_accounts.last_error_message AS source_last_error_message,
 			source_accounts.account_expires_at AS source_account_expires_at,
 			source_accounts.cooldown_until AS source_cooldown_until,
-			source_accounts.schedulable AS source_schedulable
+			source_accounts.schedulable AS source_schedulable,
+			source_accounts.concurrency_limit AS source_concurrency_limit,
+			source_accounts.rpm_limit AS source_rpm_limit
 		FROM `+s.table("accounts")+` accounts
 		LEFT JOIN `+s.table("resource_authorizations")+` authorizations
 			ON authorizations.id = accounts.authorization_instance_authorization_id
@@ -303,7 +335,7 @@ func (s *Store) loadAuthorizedDispatchRow(ctx context.Context, q queryer, accoun
 		FOR UPDATE OF accounts
 		LIMIT 1`), accountID, grantee).Scan(
 		&row.id, &row.configRevision, &row.systemAccountID,
-		&row.name, &row.status, &row.schedulable, &row.accountExpiresAt,
+		&row.name, &row.status, &row.schedulable, &row.concurrencyLimit, &row.rpmLimit, &row.accountExpiresAt,
 		&row.cooldownUntil, &row.lastErrorCode, &row.lastErrorMessage,
 		&row.lastErrorTraceID, &row.cooldownRetestFailureCount,
 		&row.cooldownRetestObservationStartedAt, &row.cooldownRetestGeneration,
@@ -313,7 +345,8 @@ func (s *Store) loadAuthorizedDispatchRow(ctx context.Context, q queryer, accoun
 		&row.authorizationStatus, &row.authorizationExpiresAt,
 		&row.sourceID, &row.sourceStatus,
 		&row.sourceLastErrorCode, &row.sourceLastErrorMessage,
-		&row.sourceAccountExpiresAt, &row.sourceCooldownUntil, &row.sourceSchedulable)
+		&row.sourceAccountExpiresAt, &row.sourceCooldownUntil, &row.sourceSchedulable,
+		&row.sourceConcurrencyLimit, &row.sourceRPMLimit)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -459,7 +492,21 @@ func (s *Store) patchAuthorizedDispatchTx(ctx context.Context, tx *sql.Tx, row *
 	hasPriority := input.Priority != nil
 	hasSuper := input.SuperPriorityEnabled != nil
 	hasFallback := input.FallbackEnabled != nil
+	hasConcurrency := input.ConcurrencyLimit != nil
+	hasRPM := input.RPMLimit != nil
 	clearFailure := input.ClearFailureState
+	// 限频不能配置超过父（源账户）：父限值为 0/空表示不限制，非 0 时实例值
+	// 必须不超过父值。
+	if hasConcurrency {
+		if err := validateInstanceLimitAgainstSource(*input.ConcurrencyLimit, row.sourceConcurrencyLimit, "并发数"); err != nil {
+			return nil, err
+		}
+	}
+	if hasRPM {
+		if err := validateInstanceLimitAgainstSource(*input.RPMLimit, row.sourceRPMLimit, "每分钟请求数"); err != nil {
+			return nil, err
+		}
+	}
 
 	if (hasStatus || clearFailure) && row.status == "pending_test" {
 		return nil, errors.New("待检查账户需等待后台健康检查通过后才能参与调度")
@@ -538,6 +585,30 @@ func (s *Store) patchAuthorizedDispatchTx(ctx context.Context, tx *sql.Tx, row *
 		addChange("fallbackEnabled", binding.localFallback, nextFallback)
 		if binding.localFallback != nextFallback {
 			patch.FallbackEnabled = &nextFallback
+		}
+	}
+	instanceConcurrency := 0
+	if hasConcurrency {
+		instanceConcurrency = *input.ConcurrencyLimit
+		if row.concurrencyLimit != instanceConcurrency {
+			accountSets["concurrency_limit"] = instanceConcurrency
+		}
+		addChange("concurrencyLimit", row.concurrencyLimit, instanceConcurrency)
+		if row.concurrencyLimit != instanceConcurrency {
+			value := instanceConcurrency
+			patch.ConcurrencyLimit = &value
+		}
+	}
+	instanceRPM := 0
+	if hasRPM {
+		instanceRPM = *input.RPMLimit
+		if row.rpmLimit != instanceRPM {
+			accountSets["rpm_limit"] = instanceRPM
+		}
+		addChange("rpmLimit", row.rpmLimit, instanceRPM)
+		if row.rpmLimit != instanceRPM {
+			value := instanceRPM
+			patch.RPMLimit = &value
 		}
 	}
 	failureStateChanged := false
@@ -697,4 +768,16 @@ func deepEqualAny(left, right any) bool {
 		return false
 	}
 	return string(leftRaw) == string(rightRaw)
+}
+
+// validateInstanceLimitAgainstSource rejects an instance limit above the
+// source account's cap; a source cap of 0 (unset) means unlimited.
+func validateInstanceLimitAgainstSource(value int, sourceCap sql.NullInt64, label string) error {
+	if !sourceCap.Valid || sourceCap.Int64 <= 0 {
+		return nil
+	}
+	if int64(value) > sourceCap.Int64 {
+		return fmt.Errorf("%s不能超过源账户上限 %d", label, sourceCap.Int64)
+	}
+	return nil
 }

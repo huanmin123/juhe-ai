@@ -89,7 +89,7 @@
         <template v-else-if="column.key === 'chatMode'">
           <span class="scheduling-preference-domain-summary">
             <span>对话：{{ schedulingPreferenceChatModeText(record.chatMode) }}</span>
-            <span class="scheduling-preference-domain-empty">｜视频：无｜音频：无｜图像：无</span>
+            <span class="scheduling-preference-domain-empty">｜向量：无｜重排：无｜视频：无｜音频：无｜图像：无</span>
           </span>
         </template>
         <template v-else-if="column.key === 'builtIn'">
@@ -116,7 +116,7 @@
             <div class="mobile-list-card-tags">
               <span class="scheduling-preference-domain-summary">
                 <span>对话：{{ schedulingPreferenceChatModeText(record.chatMode) }}</span>
-                <span class="scheduling-preference-domain-empty">｜视频：无｜音频：无｜图像：无</span>
+                <span class="scheduling-preference-domain-empty">｜向量：无｜重排：无｜视频：无｜音频：无｜图像：无</span>
               </span>
             </div>
           </div>
@@ -235,6 +235,10 @@
             </a-form-item>
           </div>
         </template>
+        <div class="modal-section-title">向量域</div>
+        <div class="scheduling-preference-domain-placeholder">该域暂无调度偏好</div>
+        <div class="modal-section-title">重排域</div>
+        <div class="scheduling-preference-domain-placeholder">该域暂无调度偏好</div>
         <div class="modal-section-title">视频域</div>
         <div class="scheduling-preference-domain-placeholder">该域暂无调度偏好</div>
         <div class="modal-section-title">音频域</div>
@@ -357,7 +361,7 @@ const chatModeFilterOptions = [
 const columns = computed<Array<Record<string, unknown>>>(() => {
   const baseColumns: Array<Record<string, unknown>> = [
     { title: '名称', key: 'name', width: 240 },
-    { title: '四域概览', key: 'chatMode', width: 300 },
+    { title: '六域概览', key: 'chatMode', width: 360 },
     { title: '内置', key: 'builtIn', width: 90 },
     { title: '绑定 API Key', key: 'boundApiKeyCount', width: 130 },
     { title: '操作', key: 'actions', width: 104, fixed: 'right' }

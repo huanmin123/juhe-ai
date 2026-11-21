@@ -176,8 +176,27 @@ import (
 // 631→718：2026-11-21 授权接收方确认与来源治理批（revision 28）——
 // juhe_business +87（40 ADD COLUMN、5 CREATE TABLE、23 CREATE INDEX、
 // 13 DO、6 DROP INDEX；明细见 per-schema 注释）。
+// 718→719：2026-11-21 向量/重排独立能力域批（revision 29）——juhe_business
+// +1（account-capability-domain-vector-rerank-pg-check：capability_domain
+// CHECK 四值→六值的幂等约束替换 DO 块；建表内联与存量守卫 ALTER 原位扩到
+// 六值，不新增语句；明细见 per-schema 注释）。
+// 719→716：2026-11-21 授权屏蔽功能退役批——juhe_business -3（撤销
+// resource_authorization_blocks 建表与 2 条部分索引；撤销前后 revision 28/29
+// 均未发布，直接删除不留退役语句；明细见 per-schema 注释）。
+// 716→669：2026-11-22 revision 31 授权治理简化批（授权治理模型大简化裁决）——
+// juhe_business -47（4 表 + 26 条 revision 28 加列 + settings.enabled 原生列 +
+// 10 条索引 + 6 个退役 CHECK DO 块 + 1 条 enabled ALTER DEFAULT 退役；撤销
+// 前后 revision 28/29/30 均未发布，直接删除不留退役语句；3 个 status CHECK
+// DO 块与 4 条 open 唯一索引为原位改写 7 值词表、不另计语句；存量 dev 库由
+// revision 31 authz-claim-simplification 步骤 DROP 收敛；明细见 per-schema
+// 注释）。
+// 669→667：2026-11-22 revision 31 补删批（额度 limits_json 全链退役裁决）——
+// juhe_business -2（runtime/grants 两条 limits_json quota_snapshot 部分索引；
+// runtime/grants 两处 limits_json 建表内联基列与配额脏标记函数 CASE 收敛为
+// 原位改写不另计语句，两个授权 scope binding seed CTE 为种子常量不计本
+// golden；存量 dev 库两列由 revision 31 步骤 DROP、授权绑定行由步骤 DELETE）。
 // Regenerate them when either source changes.
-const goldenPostgresSchemaStatementCount = 718
+const goldenPostgresSchemaStatementCount = 667
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
@@ -235,7 +254,22 @@ var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
 	// 23 条幂等索引含旧 active-only 唯一索引的 DROP 后重建；
 	// 13 个 DO 块：用户名/团队名唯一索引切换、grant 接收状态 CHECK、
 	// 快照模式 CHECK、通知类型 CHECK 等；6 条旧唯一索引 DROP INDEX IF EXISTS）。
-	"juhe_business": 431,
+	// 432→429：2026-11-21 授权屏蔽退役批 -3（resource_authorization_blocks
+	// 建表 + 2 索引撤销）
+	// 431→432：2026-11-21 revision 29 向量/重排独立能力域 +1
+	//（account-capability-domain-vector-rerank-pg-check 约束替换 DO 块）。
+	// 432→382：2026-11-22 revision 31 授权治理简化批 -47（4 张退役表建表 +
+	// 8 条表相关索引 + grants/sources pending_expiry 2 条索引 + 26 条
+	// revision 28 加列 + group_authorization_settings.enabled 原生列（建表
+	// DDL 原位删除不另计语句）+ 1 条 enabled ALTER DEFAULT + 6 个退役 CHECK
+	// DO 块；3 个 status CHECK DO 块与 4 条 open 唯一索引原位改写 7 值词表
+	// 不另计语句；撤销前后 revision 28/29/30 均未发布，直接删除不留退役
+	// 语句，存量 dev 库由 revision 31 步骤 DROP 收敛）。
+	// 382→380：2026-11-22 revision 31 补删批 -2（runtime/grants 两条
+	// limits_json quota_snapshot 部分索引；两处 limits_json 建表内联基列与
+	// 配额脏标记函数 CASE 收敛为原位改写不另计语句，两个授权 scope binding
+	// seed CTE 为种子常量不计本 golden）。
+	"juhe_business": 380,
 	// 52→0：my-chat 会话面退役批（演练场设计 §8）——juhe_chat 组 52 条整组
 	// 移除，schema 不再保留。
 	"juhe_dataset": 7,
@@ -329,9 +363,9 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 			case strings.Contains(upper, "DROP COLUMN IF EXISTS"):
 				droppedColumns++
 			case strings.Contains(upper, "ALTER COLUMN") && strings.Contains(upper, "SET DEFAULT"):
-				// SET DEFAULT 本身可重复执行；revision 28 用它将
-				// group_authorization_settings.enabled 的默认值收敛为 0
-				//（非 legacy 分组缺 settings 时 fail-closed）。
+				// SET DEFAULT 本身可重复执行；唯一用例（revision 28 的
+				// group_authorization_settings.enabled 默认值收敛）已随
+				// revision 31 授权治理简化批撤销，当前 0 条。
 				alterDefaults++
 			default:
 				t.Fatalf("statement %d (%s) is an unguarded ALTER TABLE: %.120s", i, statement.Source, trimmed)
@@ -394,17 +428,25 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 	// 106→107：2026-11-19 revision 26 媒体统一计费 +1
 	// （models.media_pricing_json 幂等 ALTER）。
 	// 107→147：2026-11-21 revision 28 授权接收方确认与来源治理 +40
-	// （见上方 per-schema 注释）。
-	if alterColumns != 147 {
-		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 147", alterColumns)
+	// （见上方 per-schema 注释）。147→121：2026-11-22 revision 31 授权治理
+	// 简化批 -26（grants 11 + sources 10 + runtime 3 + settings 快照 2；
+	// settings.enabled 为建表原生列、随建表 DDL 删除，不占本计数）。
+	// revision 31 补删批（limits_json 全链退役）的 runtime/grants 两处
+	// limits_json 亦为建表内联基列原位删除，不占本计数。
+	if alterColumns != 121 {
+		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 121", alterColumns)
 	}
 	// B08（2026-10-30）撤除 12 条幂等收列语句后为 0；保留计数断言以防新增
 	// DROP COLUMN 绕过 golden 评审。
 	if droppedColumns != 0 {
 		t.Fatalf("ALTER TABLE DROP COLUMN count = %d, want 0 (B08 removed all 12 idempotent DROP COLUMN statements on 2026-10-30)", droppedColumns)
 	}
-	if alterDefaults != 1 {
-		t.Fatalf("ALTER TABLE ALTER COLUMN SET DEFAULT count = %d, want 1 (revision 28 fail-closed enabled default)", alterDefaults)
+	// revision 28 的 enabled fail-closed DEFAULT 收敛语句已随 2026-11-22
+	// revision 31 授权治理简化批撤销（settings.enabled 列退役，存量库由
+	// revision 31 步骤 DROP）；当前 0 条。保留计数断言以防新增 SET DEFAULT
+	// 绕过 golden 评审。
+	if alterDefaults != 0 {
+		t.Fatalf("ALTER TABLE ALTER COLUMN SET DEFAULT count = %d, want 0 (revision 31 retired the revision 28 enabled default)", alterDefaults)
 	}
 	// 6→5：juhe_chat 组的 DO 块随 my-chat 会话面退役（演练场设计 §8）。
 	// 5→6：2026-11-05 九家真实厂商收口新增 accounts vendor/driver CHECK 幂等
@@ -419,8 +461,15 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 	// resource_authorization_sources 接收/复核/周期状态 CHECK、
 	// group_authorization_settings.snapshot_mode CHECK、
 	// authorization_notifications.type CHECK 等，均为具名约束幂等补挂）。
-	if doBlocks != 22 {
-		t.Fatalf("DO block count = %d, want 22", doBlocks)
+	// 22→23：2026-11-21 revision 29 向量/重排独立能力域新增
+	// account-capability-domain-vector-rerank-pg-check（capability_domain
+	// CHECK 四值→六值的幂等约束替换 DO 块）。23→17：2026-11-22 revision 31
+	// 授权治理简化批 -6（grants acceptance_mode/pending_expiry、sources
+	// dormant/accepted_revision/pending_expiry、settings snapshot_mode 六个
+	// 退役 CHECK DO 块删除；三个 status CHECK DO 块原位改写 7 值词表不改
+	// 计数，存量 dev 库旧约束由 revision 31 步骤重建）。
+	if doBlocks != 17 {
+		t.Fatalf("DO block count = %d, want 17", doBlocks)
 	}
 	if extensions != 1 {
 		t.Fatalf("CREATE EXTENSION count = %d, want 1", extensions)

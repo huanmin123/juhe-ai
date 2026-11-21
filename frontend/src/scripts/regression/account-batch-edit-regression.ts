@@ -260,6 +260,13 @@ assert.match(modalSource, /batchEditContext\(/, '批量编辑应提供字段级�
 assert.match(modalSource, /loadedModelContextFields/, '批量编辑必须记录已经按需加载的模型上下文字段')
 assert.doesNotMatch(formSource, /account\.credentials/, '批量编辑表单不得依赖完整 credentials')
 assert.match(modalSource, /label="上游接口能力"/, '批量编辑必须使用上游接口能力标签')
+// 2026-11-21 五域退役（AI账户上游接口能力设计 §3）：声明集覆盖仅对话域渲染，
+// 非对话域（连接测试口径域）不出现该字段。
+assert.match(
+  modalSource,
+  /v-if="!connectionTestDomain"[\s\S]{0,160}v-model:checked="form\.enabled\.supportedEndpointModes"/,
+  '五域（连接测试口径域）批量编辑不得渲染上游接口能力覆盖字段'
+)
 assert.match(modalSource, /覆盖账户真实上游支持的接口形态/, '批量编辑说明必须表达真实上游能力')
 assert.doesNotMatch(modalSource, /接口能力限制|可承接的请求形态/, '批量编辑不得继续展示旧能力文案')
 assert.equal(accountBatchEditFieldLabels.supportedEndpointModes, '上游接口能力', '批量字段摘要必须使用上游接口能力')

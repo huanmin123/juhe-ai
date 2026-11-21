@@ -65,26 +65,36 @@ func accountSupportsImageModel(account TransportAccount, model string) bool {
 	return transportAccountSupportsModel(account, model)
 }
 
-// accountSupportsMediaModel 判定账户视图可路由目录媒体模型（来源：
-// internal/chat/tool_bindings.go accountSupportsMediaModel，退役复制；差异
-// 口径：媒体路由判定按账户启用的端点模式——视频要求 video_create、语音要求
-// audio_speech，与 /v1 媒体链的候选能力门口径一致，不限 api_key 账户类型）。
-func accountSupportsMediaModel(account TransportAccount, model, requiredEndpointMode string) bool {
-	if !containsString(account.SupportedEndpointModes, requiredEndpointMode) {
+// accountSupportsMediaModel 判定账户视图可路由目录媒体模型（五域退役修订：
+// 路由判定按账户能力域——视频要求 video 域、语音要求 audio 域，与 /v1 媒体
+// 链的候选域闸门口径一致，不限 api_key 账户类型；五域账户声明投影恒空后
+// 「账户可路由」不再读端点模式）× 账户模型清单（含映射）可路由。
+func accountSupportsMediaModel(account TransportAccount, model, requiredCapabilityDomain string) bool {
+	if transportAccountCapabilityDomain(account) != requiredCapabilityDomain {
 		return false
 	}
 	return transportAccountSupportsModel(account, model)
 }
 
-// accountSupportsChatModel 判定账户可派发 chat 模型：连接面含 chat lane 端点
-// 模式之一（chat_json/chat_sse，/v1/chat/completions 派发的路由依据）× 账户
-// 模型清单（含映射）可路由（与 accountSupportsMediaModel 同构，模式维度为
-// 「任一 chat lane 模式」）。
+// accountSupportsChatModel 判定账户可派发 chat 模型：账户能力域为 chat（空值
+// 按 chat 归一，与网关域闸门同口径）× 账户模型清单（含映射）可路由（五域
+// 退役修订：chat 账户选择按域，不再按 chat lane 端点模式）。
 func accountSupportsChatModel(account TransportAccount, model string) bool {
-	if !containsString(account.SupportedEndpointModes, "chat_json") && !containsString(account.SupportedEndpointModes, "chat_sse") {
+	if transportAccountCapabilityDomain(account) != "chat" {
 		return false
 	}
 	return transportAccountSupportsModel(account, model)
+}
+
+// transportAccountCapabilityDomain 归一传输视图的能力域（空值 / 词表外值落
+// chat，与 gatewaydispatch.AccountCapabilityDomain 同口径）。
+func transportAccountCapabilityDomain(account TransportAccount) string {
+	switch strings.ToLower(strings.TrimSpace(account.CapabilityDomain)) {
+	case "video", "audio", "image", "embedding", "rerank":
+		return strings.ToLower(strings.TrimSpace(account.CapabilityDomain))
+	default:
+		return "chat"
+	}
 }
 
 // transportAccountSupportsModel 是模型清单/映射路由的共用判定（来源：
@@ -151,14 +161,15 @@ type ModelOption struct {
 
 // classifyCatalogModels 按设计 §3.2 对目录行分类，四类统一「目录声明 × 账户
 // 实际可派发」复核（跑不通的组合不进候选，2026-10-31 E2E 裁决：纯目录 chat
-// 分类会让视频账户列出不可能跑通的 chat 模型）：
+// 分类会让视频账户列出不可能跑通的 chat 模型）。五域退役修订：账户侧判定
+// 按能力域（chat/image/video/audio），不再按端点模式（五域账户声明投影恒空）：
 //   - chat：目录协议含 chat_completions/messages/generate_content 之一 × 账户
-//     连接面含 chat lane 端点模式（chat_json/chat_sse，/v1/chat/completions
-//     派发的路由依据）× 账户模型清单（含映射）可路由；functionCalling = 任一
+//     能力域为 chat × 账户模型清单（含映射）可路由；functionCalling = 任一
 //     协议行声明 function_calling（chat supportsTool 同口径）。
-//   - image：家族白名单（gpt-image-2 / grok-imagine 系）× api_key 账户可路由。
-//   - video：供应商白名单 × 目录声明 video 协议 × 端点模式 video_create 可路由。
-//   - audio：目录声明 audio_speech 协议 × 端点模式 audio_speech 可路由。
+//   - image：家族白名单（gpt-image-2 / grok-imagine 系）× 账户能力域 image ×
+//     api_key 账户可路由。
+//   - video：供应商白名单 × 目录声明 video 协议 × 账户能力域 video 可路由。
+//   - audio：目录声明 audio_speech 协议 × 账户能力域 audio 可路由。
 //
 // transportView 为空（账户不在任何启用分组快照中）时无路由依据，四类均不产出。
 func classifyCatalogModels(providerCode string, catalog []CatalogItem, transportView *TransportAccount) []ModelOption {
@@ -192,25 +203,24 @@ func classifyCatalogModels(providerCode string, catalog []CatalogItem, transport
 			})
 		}
 		// image：家族白名单内的模型才可能入列（目录行仅用于确认路由，白名单
-		// 是候选面，与旧 chat 生图候选同口径）× 连接面 images_json 端点模式
-		// （/v1/images/* 派发路由依据，2026-10-31 E2E 收口：chat 域 grok 账户
-		// 无该模式时生图派发必 503，不进候选）。
+		// 是候选面，与旧 chat 生图候选同口径）× 账户能力域为 image（五域退役
+		// 修订：图像账户选择按域，不再按 images_json 端点模式）。
 		for _, imageModel := range playgroundSearchImageModelFamily(providerCode) {
 			if imageModel != model {
 				continue
 			}
-			if containsString(transportView.SupportedEndpointModes, "images_json") && accountSupportsImageModel(*transportView, model) {
+			if transportAccountCapabilityDomain(*transportView) == "image" && accountSupportsImageModel(*transportView, model) {
 				add(ModelOption{ModelID: model, Kind: KindImage})
 			}
 		}
-		// video/audio：供应商白名单内 × 目录协议声明 × 端点模式可路由。
+		// video/audio：供应商白名单内 × 目录协议声明 × 账户能力域可路由。
 		if !playgroundMediaProviderAllowed(providerCode) {
 			continue
 		}
-		if containsString(item.SupportedAPIProtocols, "video") && accountSupportsMediaModel(*transportView, model, "video_create") {
+		if containsString(item.SupportedAPIProtocols, "video") && accountSupportsMediaModel(*transportView, model, "video") {
 			add(ModelOption{ModelID: model, Kind: KindVideo})
 		}
-		if containsString(item.SupportedAPIProtocols, "audio_speech") && accountSupportsMediaModel(*transportView, model, "audio_speech") {
+		if containsString(item.SupportedAPIProtocols, "audio_speech") && accountSupportsMediaModel(*transportView, model, "audio") {
 			add(ModelOption{ModelID: model, Kind: KindAudio})
 		}
 	}

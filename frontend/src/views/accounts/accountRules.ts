@@ -1,7 +1,5 @@
 import type { AccountListItem, ResourcePermissions } from '@/types/domain'
 import { serverDateTimeTimestamp } from '@/shared/formatters'
-import { quotaLimitSummaryText } from '../shared/requestQuotaFormatters'
-import { hasQuotaLimits } from '../shared/requestQuotaForm'
 import type { AccountMenuItem } from './accountActionTypes'
 import {
   canManageNativeOAuthAccount,
@@ -29,19 +27,17 @@ export function authorizedAccountOwnerBadgeText(account: AccountListItem): strin
 export function authorizedAccountTooltip(account: AccountListItem): string {
   const ownerName = account.ownerSystemAccountName || '其他用户'
   const expiresText = account.authorizationExpiresAt ? formatDateTime(account.authorizationExpiresAt) : '长期有效'
-  const limitsText = quotaLimitSummaryText(account.authorizationLimits)
   const lines = [
     `授权自 ${ownerName}。`,
     `授权来源：${authorizedAccountSourceText(account)}`,
-    `授权到期：${expiresText}`,
-    `授权限额：${limitsText}`
+    `授权到期：${expiresText}`
   ]
   return lines.join('\n')
 }
 
 export function authorizedAccountSourceTone(account: AccountListItem): AuthorizedAccountSourceTone {
   if (hasAuthorizedAccountSourceBlocker(account)) return 'danger'
-  if (isAuthorizationExpiringSoon(account) || hasQuotaLimits(account.authorizationLimits)) return 'warning'
+  if (isAuthorizationExpiringSoon(account)) return 'warning'
   return 'normal'
 }
 
@@ -60,7 +56,6 @@ function hasAuthorizedAccountSourceBlocker(account: AccountListItem): boolean {
   return Boolean(
     account.permissions?.canUse === false
     || !account.boundGroupId
-    || account.authorizationQuotaExceeded
     || isAuthorizationExpired(account)
     || isAuthorizationPaused(account)
     || isAuthorizationBindingUnavailable(account)
@@ -96,12 +91,6 @@ export function canDeleteAccount(account: AccountListItem): boolean {
 
 export function canBatchDeleteAccount(account: AccountListItem): boolean {
   return canDeleteAccount(account)
-}
-
-export function canReturnAuthorizedAccount(account: AccountListItem): boolean {
-  if (!isAuthorizedAccount(account)) return false
-  if (!account.accountAuthorizationId) return false
-  return account.permissions?.canReturnAuthorization === true
 }
 
 export function canCloneAccount(account: AccountListItem): boolean {
@@ -189,7 +178,6 @@ export function authorizedAccountUnavailableText(account: AccountListItem): stri
   if (isAuthorizationExpired(account)) return '授权已到期，当前账户不能调用'
   if (isAuthorizationPaused(account)) return '授权已暂停，当前账户不能调用'
   if (isAuthorizationBindingUnavailable(account)) return '当前分组绑定的授权已失效，请重新绑定分组或联系授权人'
-  if (account.authorizationQuotaExceeded) return '授权额度已用完，当前账户不能调用'
   if (account.status === 'disabled') return '账户已停用，当前不可用'
   if (account.status === 'pending_test') return '账户正在等待后台健康检查，检查通过前不会参与调度；人工测试不改变账户状态'
   if (account.status === 'error') return '授权账户状态异常，当前不可用'

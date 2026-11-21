@@ -431,7 +431,6 @@ func (s *Store) usageDetailSummary(ctx context.Context, id string, access access
 	}
 	page, pageSize = normalizeResourceAuthorizationUsagePageOptions(page, pageSize)
 	summary := grant.summary()
-	summary.Limits = decodeAuthorizationLimits(grantLimitsText(grant.LimitsJSON))
 	detail := &UsageDetail{
 		Summary:                      summary,
 		Usage:                        UsageSummary{},

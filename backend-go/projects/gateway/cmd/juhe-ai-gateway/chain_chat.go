@@ -201,6 +201,7 @@ func chatTransportAccountsFromSecrets(accounts []gatewayruntimecache.OpenAIAccou
 			Type:                   account.Type,
 			ProviderCode:           account.VendorCode,
 			SupportedEndpointModes: account.SupportedEndpointModes,
+			CapabilityDomain:       account.CapabilityDomain,
 			SupportedModels:        account.SupportedModels,
 			ModelMappings:          mappings,
 		})

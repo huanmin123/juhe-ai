@@ -128,16 +128,14 @@ func TestReadRecordMissingAndCorrupt(t *testing.T) {
 		t.Fatalf("无记录应 ok=false nil err: present=%v err=%v", present, err)
 	}
 	cases := []string{
-		`{"stage":"m3_running","ruleVersion":1,"updatedAt":"2026-10-12T08:00:00Z"}`,
-		`{"stage":"m1_running","ruleVersion":2,"updatedAt":"2026-10-12T08:00:00Z"}`,
+		`{"stage":"m3_running","ruleVersion":2,"updatedAt":"2026-10-12T08:00:00Z"}`,
+		`{"stage":"m1_running","ruleVersion":3,"updatedAt":"2026-10-12T08:00:00Z"}`,
+		// v2 起严格读取拒绝存量 ruleVersion=1 记录（升级通道见
+		// UpgradeRecordRuleVersion，revision 29 步骤消费）。
+		`{"stage":"m2_finalized","ruleVersion":1,"updatedAt":"2026-10-12T08:00:00Z"}`,
 		`not-json`,
 	}
 	for _, valueJSON := range cases {
-		if _, _, err := ReadRecord(ctx, db); err == nil {
-			continue
-		} else {
-			_ = err
-		}
 		if _, err := db.Exec(`DELETE FROM "juhe_business"."global_settings"`); err != nil {
 			t.Fatal(err)
 		}
@@ -148,12 +146,12 @@ func TestReadRecordMissingAndCorrupt(t *testing.T) {
 			t.Fatalf("损坏记录 %q 必须原样报错", valueJSON)
 		}
 	}
-	// 合法记录读取回放。
+	// 合法记录读取回放（ruleVersion=2 为 v2 起唯一合法值）。
 	if _, err := db.Exec(`DELETE FROM "juhe_business"."global_settings"`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO "juhe_business"."global_settings" (key, value_json, updated_at) VALUES ($1, $2, '2026-10-12T08:00:00Z')`,
-		MigrationSettingKey, `{"stage":"m2_finalized","ruleVersion":1,"updatedAt":"2026-10-12T08:00:00Z"}`); err != nil {
+		MigrationSettingKey, `{"stage":"m2_finalized","ruleVersion":2,"updatedAt":"2026-10-12T08:00:00Z"}`); err != nil {
 		t.Fatal(err)
 	}
 	record, present, err := ReadRecord(ctx, db)
@@ -162,5 +160,34 @@ func TestReadRecordMissingAndCorrupt(t *testing.T) {
 	}
 	if record.Stage != StageM2Finalized {
 		t.Fatalf("stage = %q, want m2_finalized", record.Stage)
+	}
+}
+
+// TestUpgradeRecordRuleVersion 覆盖 revision 29 记录升级通道：ruleVersion=1
+// 且已封存的记录写回 ruleVersion=2（stage 不变）；未封存、版本非 1、损坏
+// JSON 一律拒绝。
+func TestUpgradeRecordRuleVersion(t *testing.T) {
+	now := time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
+	upgraded, err := UpgradeRecordRuleVersion(`{"stage":"m2_finalized","ruleVersion":1,"updatedAt":"2026-10-12T08:00:00Z"}`, now)
+	if err != nil {
+		t.Fatalf("ruleVersion=1 已封存记录应可升级: %v", err)
+	}
+	record, err := ParseRecord(upgraded)
+	if err != nil {
+		t.Fatalf("升级后记录必须通过严格 ParseRecord: %v", err)
+	}
+	if record.Stage != StageM2Finalized || record.RuleVersion != RuleVersion || record.UpdatedAt != now.UTC().Format(time.RFC3339) {
+		t.Fatalf("升级后记录 = %+v", record)
+	}
+	rejects := []string{
+		`{"stage":"m2_running","ruleVersion":1,"updatedAt":"2026-10-12T08:00:00Z"}`,
+		`{"stage":"m2_finalized","ruleVersion":2,"updatedAt":"2026-10-12T08:00:00Z"}`,
+		`{"stage":"m2_finalized","ruleVersion":1,"updatedAt":"not-rfc3339"}`,
+		`not-json`,
+	}
+	for _, valueJSON := range rejects {
+		if _, err := UpgradeRecordRuleVersion(valueJSON, now); err == nil {
+			t.Fatalf("升级通道必须拒绝 %q", valueJSON)
+		}
 	}
 }

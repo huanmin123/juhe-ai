@@ -60,6 +60,11 @@ export function buildAccountDraftTestPayload(input: AccountDraftTestPayloadInput
   const connectionPresetCode = connectionPresetCodeForProfile(input.form.providerProtocolProfileId)
   return {
     providerCode: payload.providerCode,
+    // capabilityDomain 是草稿能力域通道（五域退役修订，设计 §3/§5）：后端
+    // 草稿链按入参域走写面退役臂（凭据剥声明键、不播种默认集）并判定测试
+    // 方式——缺失会被按 chat 缺省误播默认集，五域草稿恒 400；chat 域透传
+    // 等值，行为不变。saved 草稿后端以账户行域覆写为权威。
+    capabilityDomain: input.form.capabilityDomain,
     // providerProtocolProfileId 已停发（B4 两表退役批）：后端草稿链按
     // vendor 语义推导协议上下文，入参为接受但忽略；协议档案维度在前端
     // 仅经 buildAccountDraftTestSummary 的本地投影保留。

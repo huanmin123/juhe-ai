@@ -1,4 +1,5 @@
 import type { ProviderDefinition } from '@/types/domain'
+import { capabilityDomainSupportsDeclaration, type AccountCapabilityDomain } from './accountCapabilityDomains'
 import {
   ANTHROPIC_MESSAGES_FAMILY,
   GEMINI_GENERATE_CONTENT_FAMILY,
@@ -28,6 +29,12 @@ export type AccountModelMappingProviderProfile = ProviderDefinition | ProviderDe
 export type AccountModelMappingProtocolContext = {
   providerProfile?: AccountModelMappingProviderProfile
   supportedEndpointModes?: AccountFormModel['supportedEndpointModes']
+  /**
+   * 账户能力域：五域（2026-11-21 声明集退役）映射不做「目标族能力门」——
+   * 声明集已不存在，结构门（协议等价 pair + 档案协议形状）仍然生效；缺省按
+   * chat 处理（沿用声明集门）。
+   */
+  capabilityDomain?: AccountCapabilityDomain
 }
 
 type ProtocolProfileKind = 'openai' | 'anthropic' | 'gemini'
@@ -109,6 +116,8 @@ export function accountModelMappingTargetForSource(
 
 // 协议选项过滤（profile + 账户 endpoint modes）：结构门（协议档案支持的协议等价
 // pair）与目标族能力门（账户至少启用一种对应上游接口形态）都满足才出现。
+// 五域（capabilityDomain 非 chat）声明集已退役，目标族能力门跳过（AI账户上游
+// 接口能力设计 §6.2：五域映射不再按声明校验）。
 export function isAccountModelMappingProtocolOptionAllowed(
   option: AccountModelMappingProtocolOption,
   context: AccountModelMappingProtocolContext
@@ -117,7 +126,10 @@ export function isAccountModelMappingProtocolOptionAllowed(
     sourceEndpointFamily: option.source,
     upstreamEndpointFamily: option.upstream,
     context
-  }) && hasAccountModelMappingUpstreamEndpointFamilyCapability(option.upstream, context.supportedEndpointModes)
+  }) && (
+    !capabilityDomainSupportsDeclaration(context.capabilityDomain)
+    || hasAccountModelMappingUpstreamEndpointFamilyCapability(option.upstream, context.supportedEndpointModes)
+  )
 }
 
 // 默认协议按账户支持模式选择：优先 Chat，其次 Responses / Messages / Gemini
@@ -142,6 +154,8 @@ export function accountModelMappingProtocolValidationMessage(
 ): string | undefined {
   const structuralValidation = accountModelMappingProtocolStructureValidationMessage(input)
   if (structuralValidation || input.enabled === false) return structuralValidation
+  // 五域声明集退役：目标族能力门不再按声明集判定（结构门已在上一步生效）。
+  if (!capabilityDomainSupportsDeclaration(input.context.capabilityDomain)) return undefined
   if (hasAccountModelMappingUpstreamEndpointFamilyCapability(
     input.upstreamEndpointFamily,
     input.context.supportedEndpointModes

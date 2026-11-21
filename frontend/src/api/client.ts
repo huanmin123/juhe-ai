@@ -2,9 +2,7 @@ import { accountsApi, myAccountsApi } from './domains/accounts'
 import { announcementsApi } from './domains/announcements'
 import { apiKeysApi, myApiKeysApi } from './domains/apiKeys'
 import { authApi } from './domains/auth'
-import { authorizationsApi, myAuthorizationsApi } from './domains/authorizations'
 import { adminAuthorizationCenterApi, myAuthorizationCenterApi } from './domains/authorizationGovernance'
-import { authorizationOptionsApi, myAuthorizationOptionsApi } from './domains/authorizationOptions'
 import { externalIntegrationSourcesApi } from './domains/externalIntegrationSources'
 import { groupsApi, myGroupsApi } from './domains/groups'
 import { geminiOAuthApi, myGeminiOAuthApi } from './domains/geminiOAuth'
@@ -33,9 +31,7 @@ export type * from './contracts'
 export const api = {
   auth: authApi,
   systemAccounts: systemAccountsApi,
-  authorizationOptions: authorizationOptionsApi,
   announcements: announcementsApi,
-  myAuthorizationOptions: myAuthorizationOptionsApi,
   providers: providersApi,
   responseInspectionPolicies: responseInspectionPoliciesApi,
   accounts: accountsApi,
@@ -44,8 +40,6 @@ export const api = {
   myGroups: myGroupsApi,
   systemTeams: systemTeamsApi,
   myTeams: myTeamsApi,
-  authorizations: authorizationsApi,
-  myAuthorizations: myAuthorizationsApi,
   authorizationCenter: adminAuthorizationCenterApi,
   myAuthorizationCenter: myAuthorizationCenterApi,
   apiKeys: apiKeysApi,

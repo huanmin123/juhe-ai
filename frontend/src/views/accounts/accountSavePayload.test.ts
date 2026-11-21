@@ -451,6 +451,76 @@ describe('connections 编辑差量（T94：仅 Base URL/请求形态变化时进
   })
 })
 
+// 2026-11-21 五域退役（AI账户上游接口能力设计 §3）：非对话域 payload 不携带
+// 凭据 supported_endpoint_modes 与 connections[].endpointModes；声明校验跳过。
+describe('validateAccountSaveForm / buildAccountSavePayload 五域退役', () => {
+  function fiveDomainForm(): AccountFormModel {
+    const form = defaultAccountForm('gpt', 'api_key', FALLBACK_PROVIDERS)
+    form.capabilityDomain = 'video'
+    form.name = '五域退役单测账户'
+    form.groupId = 'group-five-domain'
+    form.apiKey = 'sk-five-domain'
+    form.apiKeys = ['sk-five-domain']
+    form.baseUrl = 'https://api.openai.com/v1'
+    form.supportedModels = ['doubao-seedance']
+    form.healthCheckModel = 'doubao-seedance'
+    // 表单残留声明集（理论上装载链已清空）：payload 必须剥离。
+    form.supportedEndpointModes = ['chat_json', 'chat_sse']
+    return form
+  }
+
+  it('创建 payload：凭据与连接载荷均不携带声明集键', () => {
+    const payload = buildAccountSavePayload({
+      accounts: [],
+      form: fiveDomainForm(),
+      errorPolicyRules: [],
+      responseInspectionRules: []
+    })
+    expect(payload.capabilityDomain).toBe('video')
+    expect(payload.credentials).not.toHaveProperty('supported_endpoint_modes')
+    expect(payload.connections?.[0]).not.toHaveProperty('endpointModes')
+  })
+
+  it('编辑差量：Base URL 变化时连接差量进入 PATCH 但不含 endpointModes，凭据差量不含声明集', () => {
+    const form = fiveDomainForm()
+    const baseline = buildAccountSavePayload({
+      accounts: [],
+      form,
+      errorPolicyRules: [],
+      responseInspectionRules: []
+    })
+    const changedForm = fiveDomainForm()
+    changedForm.supportedEndpointModes = ['chat_json']
+    changedForm.baseUrl = 'https://changed.example.com/v1'
+    const current = buildAccountSavePayload({
+      accounts: [],
+      form: changedForm,
+      errorPolicyRules: [],
+      responseInspectionRules: []
+    })
+    const delta = buildAccountAdvancedUpdatePatch(current, baseline, 6)
+    expect(delta?.connections).toEqual([{
+      connectionPresetCode: 'gpt_openai_v1',
+      baseUrl: 'https://changed.example.com/v1',
+      enabled: true
+    }])
+    expect(delta?.credentialsPatch?.base_url).toBe('https://changed.example.com/v1')
+    expect(delta?.credentialsPatch).not.toHaveProperty('supported_endpoint_modes')
+  })
+
+  it('校验跳过：五域残留空声明集不再触发「至少选择一项上游接口能力」', () => {
+    const form = fiveDomainForm()
+    form.supportedEndpointModes = []
+    expect(validateAccountSaveForm({
+      form,
+      hasAuthSession: false,
+      errorPolicyRules: [],
+      responseInspectionRules: [],
+      providers: FALLBACK_PROVIDERS
+    })).toBeUndefined()
+  })
+})
+
 // T102：编辑态供应商身份由连接 preset 反查派生，派生仍为空属 fail-closed——
 // 刷新不可解，文案必须可操作；创建态保留选择引导原文案。
 describe('validateAccountSaveForm 编辑态 fail-closed 文案（T102）', () => {

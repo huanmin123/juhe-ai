@@ -123,29 +123,35 @@ type AccountTestTask struct {
 // draft_account_encrypted payload; the jobs-side executor decrypts it with
 // the shared secret).
 type TestDraftSnapshot struct {
-	ID                        string                      `json:"id"`
-	StateTargetAccountID      *string                     `json:"stateTargetAccountId,omitempty"`
-	OwnerSystemAccountID      string                      `json:"ownerSystemAccountId"`
-	GroupID                   string                      `json:"groupId"`
-	GroupName                 *string                     `json:"groupName,omitempty"`
-	ProviderCode              string                      `json:"providerCode"`
-	ProviderProtocolProfileID *string                     `json:"providerProtocolProfileId,omitempty"`
-	ConnectionPresetCode      *string                     `json:"connectionPresetCode,omitempty"`
-	ProtocolCode              *string                     `json:"protocolCode,omitempty"`
-	ProtocolVersion           *string                     `json:"protocolVersion,omitempty"`
-	Name                      string                      `json:"name"`
-	Type                      string                      `json:"type"`
-	Credentials               map[string]any              `json:"credentials"`
-	ConcurrencyLimit          int                         `json:"concurrencyLimit"`
-	Priority                  int                         `json:"priority"`
-	SuperPriorityEnabled      bool                        `json:"superPriorityEnabled"`
-	FallbackEnabled           bool                        `json:"fallbackEnabled"`
-	ClientCompatibility       string                      `json:"clientCompatibility"`
-	SupportedModels           []string                    `json:"supportedModels,omitempty"`
-	HealthCheckModel          string                      `json:"healthCheckModel"`
-	HealthCheckEndpointMode   string                      `json:"healthCheckEndpointMode"`
-	ModelMappings             []accountscore.ModelMapping `json:"modelMappings,omitempty"`
-	ProxyProfileID            *string                     `json:"proxyProfileId,omitempty"`
+	ID                        string         `json:"id"`
+	StateTargetAccountID      *string        `json:"stateTargetAccountId,omitempty"`
+	OwnerSystemAccountID      string         `json:"ownerSystemAccountId"`
+	GroupID                   string         `json:"groupId"`
+	GroupName                 *string        `json:"groupName,omitempty"`
+	ProviderCode              string         `json:"providerCode"`
+	ProviderProtocolProfileID *string        `json:"providerProtocolProfileId,omitempty"`
+	ConnectionPresetCode      *string        `json:"connectionPresetCode,omitempty"`
+	ProtocolCode              *string        `json:"protocolCode,omitempty"`
+	ProtocolVersion           *string        `json:"protocolVersion,omitempty"`
+	Name                      string         `json:"name"`
+	Type                      string         `json:"type"`
+	Credentials               map[string]any `json:"credentials"`
+	ConcurrencyLimit          int            `json:"concurrencyLimit"`
+	Priority                  int            `json:"priority"`
+	SuperPriorityEnabled      bool           `json:"superPriorityEnabled"`
+	FallbackEnabled           bool           `json:"fallbackEnabled"`
+	ClientCompatibility       string         `json:"clientCompatibility"`
+	SupportedModels           []string       `json:"supportedModels,omitempty"`
+	HealthCheckModel          string         `json:"healthCheckModel"`
+	HealthCheckEndpointMode   string         `json:"healthCheckEndpointMode"`
+	// CapabilityDomain 是草稿能力域（五域退役修订，AI账户上游接口能力设计
+	// §3/§5）：prepare 链按入参域（saved 草稿按账户行域）写入；testKind 派生
+	// 优先消费该键——五域凭据不落声明键，从 modes 反推恒 chat 是断链根因。
+	// 旧快照无此键（omitempty），消费侧回落 modes 反推既有语义；worker 执行
+	// 投影（shared manualtest DraftSnapshot）宽松解析忽略未知字段。
+	CapabilityDomain string                      `json:"capabilityDomain,omitempty"`
+	ModelMappings    []accountscore.ModelMapping `json:"modelMappings,omitempty"`
+	ProxyProfileID   *string                     `json:"proxyProfileId,omitempty"`
 	// ProxyPoolID 是草稿的代理池绑定来源（代理池设计 §6.1/§8.3 草稿测试）：
 	// prepare 段已临时选定成员写入 ProxyProfileID（不写租约）；本字段仅随
 	// 信封携带用于诊断，执行链（shared manualtest）解析 ProxyProfileID 出站。

@@ -4,6 +4,7 @@ import {
   normalizedAccountApiKeyWeights
 } from './accountCredentials'
 import { normalizeFormTagNames } from './accountEditFormPayload'
+import { capabilityDomainSupportsDeclaration } from './accountCapabilityDomains'
 import { connectionPresetCodeForProfile } from '@/shared/providerProtocol'
 import {
   buildAccountUpdatePayload,
@@ -40,11 +41,15 @@ export function buildAccountBasicEditSnapshot(
   // T94：基础编辑与创建链同构携带连接集合，改 Base URL / 请求形态时连接域
   // （account_connections，网关实际拨号事实源）随 credentialsPatch 一并同步。
   // 连接 preset 独立于健康检查三件套求值：三件套可整体省略，连接始终存在。
+  // 五域退役（AI账户上游接口能力设计 §3）：连接行不写 account_endpoint_modes，
+  // 载荷不携带 endpointModes 键。
   const connections = connectionPresetCodeForProfile(form.providerProtocolProfileId) && form.baseUrl.trim()
     ? [{
         connectionPresetCode: connectionPresetCodeForProfile(form.providerProtocolProfileId)!,
         baseUrl: form.baseUrl.trim(),
-        endpointModes: [...form.supportedEndpointModes],
+        ...(capabilityDomainSupportsDeclaration(form.capabilityDomain)
+          ? { endpointModes: [...form.supportedEndpointModes] }
+          : {}),
         enabled: true
       }]
     : undefined
@@ -158,9 +163,11 @@ function buildBasicEditCredentials(
   form: AccountFormModel,
   currentCredentials: Record<string, unknown>
 ): Record<string, unknown> {
-  const credentials: Record<string, unknown> = {
-    supported_endpoint_modes: normalizedTextList(form.supportedEndpointModes).sort()
-  }
+  // 五域退役（AI账户上游接口能力设计 §3）：非对话域基础编辑不写声明集键，
+  // credentialsPatch 与五域基线（同样无键）差量恒为空。
+  const credentials: Record<string, unknown> = capabilityDomainSupportsDeclaration(form.capabilityDomain)
+    ? { supported_endpoint_modes: normalizedTextList(form.supportedEndpointModes).sort() }
+    : {}
   if (form.type === 'api_key') {
     const apiKeys = normalizedAccountApiKeys(form)
     credentials.base_url = form.baseUrl.trim()

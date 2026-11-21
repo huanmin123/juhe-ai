@@ -226,10 +226,10 @@ assert.match(plazaViewSource, /modelCapabilityTags\(/, '卡面能力标签必须
 assert.match(plazaViewSource, /modelCardSpecs\(/, '卡面规格行必须经 modelCardSpecs 统一投影')
 assert.match(plazaViewSource, /modelCardPriceMeta\(/, '卡面价格标题必须经 modelCardPriceMeta 统一投影')
 // 抽屉「计费价格」一张表 + 「基础信息」网格（§6.2/§6.3，对齐 portal 形态）：
-// 模板字面调用 modelPriceTable(record) / modelInfoItems(record)（不得包 computed 别名，否则断言失效）。
-assert.match(plazaViewSource, /modelPriceTable\(record\)/, '详情抽屉「计费价格」必须按一张价格表渲染当前模型')
+assert.match(plazaViewSource, /modelPriceTable\(record\.value\)/, '详情抽屉「计费价格」必须从当前模型计算')
 assert.match(plazaViewSource, /modelInfoItems\(record\)/, '非价格分组必须经「基础信息」网格渲染')
-assert.match(plazaViewSource, /<table class="model-drawer-table">/, '计费价格必须渲染为表格')
+assert.match(plazaViewSource, /<table v-if="drawerPriceTable\.rows\.length" class="model-drawer-table">/, '计费价格必须渲染为同一张表')
+assert.match(plazaViewSource, /\{\{ drawerPriceTable\.unitLabel \}\}/, '抽屉价格单位必须按当前价格表展示')
 assert.match(plazaViewSource, /table-layout: fixed/, '价格表必须 fixed 布局锚定列宽')
 assert.match(plazaViewSource, /width: 38%/, '价格表首列必须锚定 38% 宽，禁止被数值列挤压塌陷成竖排单字')
 // 列语义对齐官方「正常价 / 高峰价」：单列模型「正常价」，DeepSeek 两列「正常价 | 高峰价」。

@@ -206,3 +206,66 @@ func audioJobGetEndpointMode(path string) string {
 	}
 	return EndpointModeAudioJobGet
 }
+
+// ---------------------------------------------------------------------------
+// 五域退役修订：请求能力域派生（AI 账户上游接口能力设计 §4）。
+// 候选域闸门按「账户 capability_domain = 请求域」圈定；本节只派生请求侧
+// 域值，不改变既有 RequestSupportedEndpointMode 的导出语义。
+// ---------------------------------------------------------------------------
+
+// 六值能力域词表（accounts.capability_domain，与共享 capabilitydomain 包
+// Domain 六值一致；本包不引入该依赖，以词表字面量镜像并测试钉值）。
+const (
+	CapabilityDomainChat      = "chat"
+	CapabilityDomainVideo     = "video"
+	CapabilityDomainAudio     = "audio"
+	CapabilityDomainImage     = "image"
+	CapabilityDomainEmbedding = "embedding"
+	CapabilityDomainRerank    = "rerank"
+)
+
+// CapabilityDomainForEndpointMode 把 27 值 endpoint mode 词表映射到六值能力域
+// （五域退役设计 §4 的请求域派生规则）：
+//   - chat/responses/messages/generate_content/interactions 族 + count_tokens /
+//     message_token_counting / embed_content → chat（对话域 lane 13 值锚集）；
+//   - embeddings_json → embedding、rerank_json → rerank；
+//   - images_json → image；
+//   - audio_speech / audio_transcription_json / audio_job_* / realtime_session → audio；
+//   - video_create/get/content/cancel → video。
+//
+// 词表外 / 空值返回空串（请求形态无法派生域，调用方不得过滤）。
+func CapabilityDomainForEndpointMode(mode string) string {
+	switch mode {
+	case EndpointModeChatJSON, EndpointModeChatSSE,
+		EndpointModeResponsesJSON, EndpointModeResponsesSSE,
+		EndpointModeMessagesJSON, EndpointModeMessagesSSE,
+		EndpointModeGenerateContentJSON, EndpointModeGenerateContentSSE,
+		EndpointModeInteractionsJSON, EndpointModeInteractionsSSE,
+		EndpointModeCountTokens, EndpointModeMessageTokenCounting, EndpointModeEmbedContent:
+		return CapabilityDomainChat
+	case EndpointModeEmbeddingsJSON:
+		return CapabilityDomainEmbedding
+	case EndpointModeRerankJSON:
+		return CapabilityDomainRerank
+	case EndpointModeImagesJSON:
+		return CapabilityDomainImage
+	case EndpointModeAudioSpeech, EndpointModeAudioTranscriptionJSON,
+		EndpointModeAudioJobCreate, EndpointModeAudioJobGet,
+		EndpointModeAudioJobContent, EndpointModeAudioJobCancel,
+		EndpointModeRealtimeSession:
+		return CapabilityDomainAudio
+	case EndpointModeVideoCreate, EndpointModeVideoGet,
+		EndpointModeVideoContent, EndpointModeVideoCancel:
+		return CapabilityDomainVideo
+	default:
+		return ""
+	}
+}
+
+// RequestCapabilityDomain 返回当前请求形态的六值能力域；空串表示请求形态
+// 无法派生域（未闸门形态，如 /models、空族），消费方必须保持放行、不做域
+// 过滤。派生锚定 RequestSupportedEndpointMode 的请求→mode 结果，与 /v1 入口
+// 识别同一归一路径。
+func RequestCapabilityDomain(req *GatewayRequest) string {
+	return CapabilityDomainForEndpointMode(RequestSupportedEndpointMode(req))
+}

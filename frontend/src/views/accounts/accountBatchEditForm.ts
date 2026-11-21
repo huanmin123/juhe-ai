@@ -29,6 +29,7 @@ import {
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
 import { accountModelMappingProtocolValidationMessage } from './accountModelMappingProtocolMatrix'
 import type { AccountModelMappingProviderProfile } from './accountModelMappingProtocolMatrix'
+import type { AccountCapabilityDomain } from './accountCapabilityDomains'
 import { joinProxyCompositeValue, splitProxyCompositeValue } from '@/shared/proxyLabelCache'
 import { accountHealthCheckEndpointModeOptions } from './accountHealthCheckEndpointMode'
 import {
@@ -98,6 +99,8 @@ export interface AccountBatchEditModelMappingOptions {
   /** 上游候选（批量取所选账户支持模型交集）就绪标志。 */
   mappingUpstreamModelOptionsReady?: boolean
   providerProfile?: AccountModelMappingProviderProfile
+  /** 账户能力域：五域映射不做声明集目标族能力校验（结构校验保留）。 */
+  capabilityDomain?: AccountCapabilityDomain
 }
 
 export const accountBatchEditFieldLabels: Record<AccountBatchEditFieldKey, string> = {
@@ -364,7 +367,11 @@ function validateBatchAccountModelMappings(
         sourceEndpointFamily: mapping.sourceEndpointFamily,
         upstreamEndpointFamily: mapping.upstreamEndpointFamily,
         enabled: mapping.enabled,
-        context: { providerProfile: account, supportedEndpointModes }
+        context: {
+          providerProfile: account,
+          supportedEndpointModes,
+          capabilityDomain: modelMappingOptions.capabilityDomain
+        }
       })
       if (message) return message
     }

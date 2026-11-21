@@ -56,9 +56,9 @@ const manualSavePayload = buildAccountSavePayload({
 assert.equal(manualSavePayload.backgroundProbeEnabled, false, '手动模式创建 payload 必须携带关闭值')
 assert.equal(buildAccountUpdatePayload(manualSavePayload).backgroundProbeEnabled, false, '手动模式编辑 payload 必须保留关闭值')
 
-// 2026-11-21 统一账户表单：后台自动探测总开关对图像/音频/视频统一适用，
-// 四个能力域的创建/编辑载荷都必须携带该键。
-for (const domain of ['audio', 'video', 'image'] as const) {
+// 2026-11-21 统一账户表单：后台自动探测总开关对非对话域统一适用（媒体域 +
+// 向量/重排域），六能力域的创建/编辑载荷都必须携带该键。
+for (const domain of ['audio', 'video', 'image', 'embedding', 'rerank'] as const) {
   const mediaForm = defaultAccountForm('qwen', 'api_key')
   mediaForm.capabilityDomain = domain
   mediaForm.name = '媒体域载荷回归'
@@ -156,7 +156,7 @@ assert.equal(
 assert.equal(accountStatusText(accountFixture({ status: 'temporary_unavailable' })), '临时不可调用', '缺省开关的临时不可调用账户保持现有文案')
 assert.equal(accountStatusText(accountFixture({ status: 'active' })), '可调度', '缺省开关的正常账户保持「可调度」文案')
 // 2026-11-21 统一账户表单：手动模式二态映射与「手动」标签对全部能力域生效。
-for (const domain of ['audio', 'video', 'image'] as const) {
+for (const domain of ['audio', 'video', 'image', 'embedding', 'rerank'] as const) {
   const mediaAccount = accountFixture({ status: 'active', backgroundProbeEnabled: false, capabilityDomain: domain })
   assert.equal(accountStatusText(mediaAccount), '正常', `${domain} 域手动账户必须套用手动模式二态映射`)
   assert.equal(accountManualModeTag(mediaAccount)?.label, '手动', `${domain} 域手动账户必须显示「手动」标签`)
@@ -199,7 +199,7 @@ const manualTag = accountManualModeTag(manualAccountFixture({ status: 'active' }
 assert.equal(manualTag?.color, 'default', '手动标签必须使用灰色 default')
 assert.equal(manualTag?.label, '手动', '手动标签文案必须为「手动」')
 assert.equal(accountManualModeTag(accountFixture({ status: 'active' })), undefined, '开启探测的账户不得显示手动标签')
-for (const domain of ['audio', 'video', 'image'] as const) {
+for (const domain of ['audio', 'video', 'image', 'embedding', 'rerank'] as const) {
   assert.equal(
     accountManualModeTag(accountFixture({ status: 'active', backgroundProbeEnabled: false, capabilityDomain: domain }))?.label,
     '手动',

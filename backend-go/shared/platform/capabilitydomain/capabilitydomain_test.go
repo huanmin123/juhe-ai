@@ -56,6 +56,18 @@ func TestDeriveDomainTable(t *testing.T) {
 		{"长音频任务组完整", []string{"audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel"}, DomainAudio},
 		{"纯图像", []string{"images_json"}, DomainImage},
 		{"图像+音频（无视频无对话）", []string{"images_json", "audio_speech"}, DomainAudio},
+
+		// v2（向量/重排拆分设计 §4）：纯单值向量/重排声明落独立域；一切混合
+		// 组合（与对话锚、媒体值或彼此同存）照 v1 落 chat，不自动拆域。
+		{"纯向量", []string{"embeddings_json"}, DomainEmbedding},
+		{"纯重排", []string{"rerank_json"}, DomainRerank},
+		{"向量+重排同存（混合，落 chat）", []string{"embeddings_json", "rerank_json"}, DomainChat},
+		{"向量+对话锚（混合，落 chat）", []string{"embeddings_json", "chat_json"}, DomainChat},
+		{"重排+对话锚（混合，落 chat）", []string{"rerank_json", "responses_json", "responses_sse"}, DomainChat},
+		{"向量+图像（混合，照 v1 落 chat 不落 image）", []string{"embeddings_json", "images_json"}, DomainChat},
+		{"重排+视频（混合，照 v1 落 chat 不落 video）", []string{"rerank_json", "video_create"}, DomainChat},
+		{"向量+音频（混合，照 v1 落 chat 不落 audio，前端镜像钉值）", []string{"embeddings_json", "audio_speech"}, DomainChat},
+		{"三向混合（向量+重排+对话锚，落 chat）", []string{"embeddings_json", "rerank_json", "chat_sse"}, DomainChat},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -74,6 +86,54 @@ func TestDeriveDomainOrderPinsVideoOverAudio(t *testing.T) {
 	}
 	if got := DeriveDomain([]string{"images_json", "video_create"}); got != DomainVideo {
 		t.Fatalf("DeriveDomain(image+video) = %q, want video (规则 ② 先于 ④)", got)
+	}
+}
+
+// TestLaneModesForDomain 钉住 v2 六域 lane 集（向量/重排拆分设计 §3）：
+// chat 13 值、embedding/rerank 各 1 值、媒体域不变。
+func TestLaneModesForDomain(t *testing.T) {
+	if chat := LaneModesForDomain(DomainChat); len(chat) != 13 {
+		t.Fatalf("chat lane = %d 值, want 13", len(chat))
+	}
+	if embedding := LaneModesForDomain(DomainEmbedding); len(embedding) != 1 || embedding[0] != "embeddings_json" {
+		t.Fatalf("embedding lane = %v, want [embeddings_json]", embedding)
+	}
+	if rerank := LaneModesForDomain(DomainRerank); len(rerank) != 1 || rerank[0] != "rerank_json" {
+		t.Fatalf("rerank lane = %v, want [rerank_json]", rerank)
+	}
+	if LaneModesForDomain(Domain("unknown")) != nil {
+		t.Fatal("未知域 lane 应返回 nil")
+	}
+}
+
+// TestTestKindForAccount 钉住 v2 新域恒连接测试（拆分设计 §7）。
+func TestTestKindForAccount(t *testing.T) {
+	for _, domain := range []string{string(DomainEmbedding), string(DomainRerank)} {
+		if got := TestKindForAccount(domain, []string{"embeddings_json"}); got != TestKindConnection {
+			t.Fatalf("TestKindForAccount(%s) = %q, want connection", domain, got)
+		}
+	}
+	if got := TestKindForAccount(string(DomainChat), []string{"embeddings_json"}); got != TestKindConnection {
+		t.Fatalf("chat 域非生成形态 = %q, want connection", got)
+	}
+	if got := TestKindForAccount(string(DomainChat), []string{"chat_json"}); got != TestKindModel {
+		t.Fatalf("chat 域生成形态 = %q, want model", got)
+	}
+}
+
+// TestDeclarationRetired 钉住五域声明退役判定（上游接口能力设计 §3）：
+// 仅 image/audio/video/embedding/rerank 退役，chat 与未知值/空串（列
+// DEFAULT 'chat' 同义）不退役。
+func TestDeclarationRetired(t *testing.T) {
+	for _, domain := range []Domain{DomainImage, DomainAudio, DomainVideo, DomainEmbedding, DomainRerank} {
+		if !DeclarationRetired(domain) {
+			t.Fatalf("DeclarationRetired(%s) = false, want true", domain)
+		}
+	}
+	for _, domain := range []Domain{DomainChat, "", Domain("unknown")} {
+		if DeclarationRetired(domain) {
+			t.Fatalf("DeclarationRetired(%q) = true, want false", domain)
+		}
 	}
 }
 
@@ -174,17 +234,17 @@ func TestParseEndpointModesTable(t *testing.T) {
 }
 
 // TestKnownModesClosure 断言已知词表与对话锚集合的闭合关系：已知 27 值 =
-// 对话 15 + 媒体 12（v8-A 只移动成员，并集不变；2026-11-20 协议补齐批向
-// 对话锚集追加 embeddings_json / rerank_json 两值，并集同步 25→27），
-// 对话集合与媒体集合不相交；对话域纯粹化移动的三项归属同时钉住。
+// 对话 13 + 向量/重排 2 + 媒体 12（v2 向量/重排拆分把 embeddings_json /
+// rerank_json 自对话锚集移入独立命中集，并集不变），对话、向量/重排与媒体
+// 集合两两不相交；对话域纯粹化移动的三项归属同时钉住。
 func TestKnownModesClosure(t *testing.T) {
 	chat := ChatModes()
 	known := KnownModes()
-	if len(chat) != 15 {
-		t.Fatalf("对话 modes 锚集合必须为 15 值（v8-A 移出三项 + 协议补齐批两项），实际 %d", len(chat))
+	if len(chat) != 13 {
+		t.Fatalf("对话 modes 锚集合必须为 13 值（v8-A 移出三项 + v2 移出向量/重排两项），实际 %d", len(chat))
 	}
 	if len(known) != 27 {
-		t.Fatalf("已知词表必须为 27 值（对话 15 + 媒体 12），实际 %d", len(known))
+		t.Fatalf("已知词表必须为 27 值（对话 13 + 向量/重排 2 + 媒体 12），实际 %d", len(known))
 	}
 	chatSet := map[string]bool{}
 	for _, mode := range chat {
@@ -196,16 +256,29 @@ func TestKnownModesClosure(t *testing.T) {
 			overlap++
 		}
 	}
-	// known 内落在对话锚集合的值应恰为 15（媒体 12 值不在对话集合内）。
-	if overlap != 15 {
-		t.Fatalf("known ∩ chat 应为 15 值，实际 %d", overlap)
+	// known 内落在对话锚集合的值应恰为 13（向量/重排 2 值与媒体 12 值不在
+	// 对话集合内）。
+	if overlap != 13 {
+		t.Fatalf("known ∩ chat 应为 13 值，实际 %d", overlap)
 	}
 	for _, mode := range mediaModes {
 		if chatSet[mode] {
 			t.Fatalf("媒体值 %q 不得出现在对话锚集合内", mode)
 		}
 	}
-	for _, mode := range append(chat, mediaModes...) {
+	// v2 归属钉住：向量/重排两值移出对话锚集，各归独立命中集。
+	for _, mode := range []string{"embeddings_json", "rerank_json"} {
+		if chatSet[mode] {
+			t.Fatalf("v2 后 %q 不得再出现在对话锚集合", mode)
+		}
+	}
+	if len(embeddingModes) != 1 || embeddingModes[0] != "embeddings_json" {
+		t.Fatalf("embeddings_json 命中集归属不得变化：%v", embeddingModes)
+	}
+	if len(rerankModes) != 1 || rerankModes[0] != "rerank_json" {
+		t.Fatalf("rerank_json 命中集归属不得变化：%v", rerankModes)
+	}
+	for _, mode := range append(chat, append(embeddingModes, append(rerankModes, mediaModes...)...)...) {
 		if !knownModeSet[mode] {
 			t.Fatalf("词表值 %q 未登记进 knownModeSet", mode)
 		}

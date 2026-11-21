@@ -118,14 +118,12 @@ export function accountStatusColor(account: AccountListItem) {
     if (isAuthorizationPaused(account)) return 'orange'
     if (isAuthorizationExpired(account) || isAuthorizationBindingUnavailable(account)) return 'red'
     if (isAccountPackageExpiredStatus(account)) return 'red'
-    if (isAuthorizedAccount(account) && account.authorizationQuotaExceeded) return 'red'
     return accountManualModeStatusColor(account.status)
   }
   if (shouldDisplayEffectiveAvailabilityAsStatus(account)) return account.effectiveAvailability.color
   if (isAuthorizationPaused(account)) return 'orange'
   if (isAuthorizationExpired(account) || isAuthorizationBindingUnavailable(account)) return 'red'
   if (isAccountPackageExpiredStatus(account)) return 'red'
-  if (isAuthorizedAccount(account) && account.authorizationQuotaExceeded) return 'red'
   const circuitStatus = activeCircuitStatus(account)
   if (circuitStatus === 'avoided') return 'gold'
   if (circuitStatus === 'verifying' || circuitStatus === 'recovering') return 'blue'
@@ -152,7 +150,6 @@ export function accountStatusText(account: AccountListItem) {
     if (isAuthorizationExpired(account)) return '授权到期'
     if (isAuthorizationBindingUnavailable(account)) return '授权已失效'
     if (isAccountPackageExpiredStatus(account)) return '账户到期'
-    if (isAuthorizedAccount(account) && account.authorizationQuotaExceeded) return '授权额度已用完'
     return accountManualModeStatusText(account.status)
   }
   if (isAccountInstanceEffectiveAvailability(account) && isDirectAccountStatus(account.effectiveAvailability.status)) {
@@ -163,7 +160,6 @@ export function accountStatusText(account: AccountListItem) {
   if (isAuthorizationExpired(account)) return '授权到期'
   if (isAuthorizationBindingUnavailable(account)) return '授权已失效'
   if (isAccountPackageExpiredStatus(account)) return '账户到期'
-  if (isAuthorizedAccount(account) && account.authorizationQuotaExceeded) return '授权额度已用完'
   const circuitStatus = activeCircuitStatus(account)
   if (circuitStatus === 'avoided') return '熔断避让'
   if (circuitStatus === 'verifying') return '熔断验证'

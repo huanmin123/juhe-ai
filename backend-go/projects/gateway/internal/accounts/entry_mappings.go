@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/pricing"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/providers"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/mediapricing"
@@ -315,8 +316,10 @@ func (s *Store) entryModelEndpointModes(ctx context.Context, q queryer, modelID 
 }
 
 // resolveEntryMappingTargets 执行一条映射的双解析 + §5.3 联动校验，返回
-// (connection_id, model_id)。
-func (s *Store) resolveEntryMappingTargets(ctx context.Context, q queryer, accountID, vendor, owner string, mapping ModelMapping) (string, string, error) {
+// (connection_id, model_id)。capabilityDomain 用于五域退役分路（2026-11-21
+// 五域退役设计 §3）：五域连接行不写 account_endpoint_modes，声明型联动校验
+// （连接 modes ∩ 模型 modes 交集）对五域跳过；chat 域语义不变。
+func (s *Store) resolveEntryMappingTargets(ctx context.Context, q queryer, accountID, vendor, owner, capabilityDomain string, mapping ModelMapping) (string, string, error) {
 	connectionID, err := s.resolveEntryConnectionID(ctx, q, accountID, mapping.TargetConnectionPresetCode)
 	if err != nil {
 		return "", "", err
@@ -324,6 +327,9 @@ func (s *Store) resolveEntryMappingTargets(ctx context.Context, q queryer, accou
 	modelID, err := s.resolveEntryModelID(ctx, q, vendor, owner, mapping.UpstreamModel)
 	if err != nil {
 		return "", "", err
+	}
+	if accountscore.EndpointModesDeclarationRetired(capabilityDomain) {
+		return connectionID, modelID, nil
 	}
 	connectionModes, err := s.entryConnectionEndpointModes(ctx, q, connectionID)
 	if err != nil {

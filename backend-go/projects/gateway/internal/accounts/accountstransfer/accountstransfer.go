@@ -44,8 +44,9 @@ type Deps struct {
 	// AssertModelMappingsInProviderCatalog mirrors
 	// Store.assertAccountModelMappingsInProviderCatalog
 	// (model_catalog_validation.go；协议矩阵门 + models 表 target 身份解析，
-	// predicate 以行内协议列喂参).
-	AssertModelMappingsInProviderCatalog func(ctx context.Context, q accountscore.Queryer, providerCode, systemAccountID string, predicate accountscore.ProtocolPredicate, mappings []accountscore.ModelMapping, supportedEndpointModes []string) error
+	// predicate 以行内协议列喂参；capabilityDomain 供五域退役分路——五域跳过
+	// 上游 endpoint-mode 声明能力格门，2026-11-21 五域退役设计 §3).
+	AssertModelMappingsInProviderCatalog func(ctx context.Context, q accountscore.Queryer, providerCode, systemAccountID string, predicate accountscore.ProtocolPredicate, mappings []accountscore.ModelMapping, supportedEndpointModes []string, capabilityDomain string) error
 	// NormalizeCredentialsForWrite mirrors NormalizeAccountCredentialsForWrite
 	// (credentials_normalize.go stays a facade surface per 设计 v2). 请求覆盖
 	// 两字段的值域校验（token 形状 + 协议族全集）在其内部执行，批量域不再有

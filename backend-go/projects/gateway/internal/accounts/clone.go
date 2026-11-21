@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 )
 
@@ -393,7 +394,7 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 		Notes:                     nullPtrString(row.notes),
 		Type:                      row.accountType,
 		Status:                    row.status,
-		CredentialOptions:         projectCloneCredentialOptions(row.oauthType, credentials),
+		CredentialOptions:         projectCloneCredentialOptions(row.capabilityDomain, row.oauthType, credentials),
 		ConcurrencyLimit:          row.concurrencyLimit,
 		RPMLimit:                  row.rpmLimit,
 		Priority:                  row.priority,
@@ -428,7 +429,10 @@ func (s *Store) readCloneContextOnce(ctx context.Context, id string, access Acce
 // accounts.oauth_type 列（#B4 ⑪，judgmentGoogleOAuthType，B01 收口不回落凭据
 // 键，缺列即数据不完整）；「refresh 删键」切片删掉封套键后克隆预填仍按列取值
 // （丢值会让克隆体 google_oauth 组合门五元组缺 oauth_type → 400）。
-func projectCloneCredentialOptions(oauthTypeColumn string, credentials Credentials) CloneCredentialOptions {
+// capabilityDomain 用于五域退役分路（2026-11-21 五域退役设计 §3）：五域克隆
+// 不透传 supported_endpoint_modes（凭据现值键不进克隆预填，历史残留键一并
+// 忽略）；chat 保留凭据现值透传。
+func projectCloneCredentialOptions(capabilityDomain, oauthTypeColumn string, credentials Credentials) CloneCredentialOptions {
 	out := CloneCredentialOptions{}
 	if count := cloneCredentialAPIKeyCount(credentials); count > 0 {
 		out.APIKeyCount = &count
@@ -452,8 +456,10 @@ func projectCloneCredentialOptions(oauthTypeColumn string, credentials Credentia
 		out.APIKeyWeights = weights
 	}
 	out.BaseURL = credentialTextPointer(credentials, "base_url")
-	if modes := storedEndpointModes(credentials["supported_endpoint_modes"]); len(modes) > 0 {
-		out.SupportedEndpointModes = modes
+	if !accountscore.EndpointModesDeclarationRetired(capabilityDomain) {
+		if modes := storedEndpointModes(credentials["supported_endpoint_modes"]); len(modes) > 0 {
+			out.SupportedEndpointModes = modes
+		}
 	}
 	out.ClientID = credentialTextPointer(credentials, "client_id")
 	out.QuotaProjectID = credentialTextPointer(credentials, "quota_project_id")

@@ -50,6 +50,8 @@ func addImageCandidate(deps *Deps) {
 	catalog := deps.ProviderCatalog.(*staticCatalog)
 	catalog.byProvider["gpt"] = append(catalog.byProvider["gpt"], CatalogItem{Model: "gpt-image-2", SupportedAPIProtocols: []string{"image_generation"}})
 	transportView := deps.TransportAccounts.(*staticTransport)
+	// 五域退役修订：图像候选按域路由（image 域账户才列生图模型）。
+	transportView.views["acc_1"][0].CapabilityDomain = "image"
 	transportView.views["acc_1"][0].SupportedEndpointModes = append(transportView.views["acc_1"][0].SupportedEndpointModes, "images_json")
 }
 
@@ -127,6 +129,8 @@ func TestSpeechArtifactReplacedOnRegenerate(t *testing.T) {
 	catalog := deps.ProviderCatalog.(*staticCatalog)
 	catalog.byProvider["gpt"] = append(catalog.byProvider["gpt"], CatalogItem{Model: "speech-2.8-hd", SupportedAPIProtocols: []string{"audio_speech"}})
 	transportView := deps.TransportAccounts.(*staticTransport)
+	// 五域退役修订：语音候选按域路由。
+	transportView.views["acc_1"][0].CapabilityDomain = "audio"
 	transportView.views["acc_1"][0].SupportedEndpointModes = []string{"chat_sse", "audio_speech"}
 	dispatch := deps.Dispatch.(*mockDispatch)
 	dispatch.script = []scriptedResponse{
@@ -176,6 +180,8 @@ func TestVideosTaskRefSingleEntry(t *testing.T) {
 	catalog := deps.ProviderCatalog.(*staticCatalog)
 	catalog.byProvider["gpt"] = append(catalog.byProvider["gpt"], CatalogItem{Model: "grok-imagine-video-1.5", SupportedAPIProtocols: []string{"video"}})
 	transportView := deps.TransportAccounts.(*staticTransport)
+	// 五域退役修订：视频候选按域路由。
+	transportView.views["acc_1"][0].CapabilityDomain = "video"
 	transportView.views["acc_1"][0].SupportedEndpointModes = []string{"chat_sse", "video_create"}
 	dispatch := deps.Dispatch.(*mockDispatch)
 	dispatch.script = []scriptedResponse{
@@ -241,7 +247,9 @@ func TestArtifactsListingShape(t *testing.T) {
 	if len(images) != 1 {
 		t.Fatalf("生图产物数 = %d", len(images))
 	}
-	// generateImages 会整表重置回放脚本，语音/视频按步各自布脚本。
+	// generateImages 会整表重置回放脚本，语音/视频按步各自布脚本。五域退役
+	// 后候选按域路由，单账户逐段服务多域产物，每步前翻能力域。
+	transportView.views["acc_1"][0].CapabilityDomain = "audio"
 	dispatch.script = []scriptedResponse{{Header: http.Header{"Content-Type": []string{"audio/wav"}}, Body: wavBytes}}
 	recorder := doJSON(mux, "POST", "/__aisys__/api/playground/speech", mustJSON(map[string]any{
 		"accountId": "acc_1", "modelId": "speech-2.8-hd", "input": "演练场语音", "format": "wav",
@@ -249,6 +257,7 @@ func TestArtifactsListingShape(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("语音状态码 = %d（body %s）", recorder.Code, recorder.Body.String())
 	}
+	transportView.views["acc_1"][0].CapabilityDomain = "video"
 	dispatch.script = []scriptedResponse{{Body: []byte(`{"task_id":"job_v1","status":"queued"}`)}}
 	recorder = doJSON(mux, "POST", "/__aisys__/api/playground/videos", mustJSON(map[string]any{
 		"accountId": "acc_1", "modelId": "grok-imagine-video-1.5", "prompt": "一只猫在跳舞",
@@ -333,7 +342,9 @@ func TestArtifactContentOwnershipAndInvalidID(t *testing.T) {
 	deps.Register(muxRegisterer{mux}, "/__aisys__/api/playground")
 
 	images := generateImages(t, mux, dispatch, `{"data":[{"b64_json":"`+base64Of(pngOnePixel)+`"}]}`)
-	// generateImages 会整表重置回放脚本，语音/视频按步各自布脚本。
+	// generateImages 会整表重置回放脚本，语音/视频按步各自布脚本。五域退役
+	// 后候选按域路由，单账户逐段服务多域产物，每步前翻能力域。
+	transportView.views["acc_1"][0].CapabilityDomain = "audio"
 	dispatch.script = []scriptedResponse{{Header: http.Header{"Content-Type": []string{"audio/wav"}}, Body: wavBytes}}
 	recorder := doJSON(mux, "POST", "/__aisys__/api/playground/speech", mustJSON(map[string]any{
 		"accountId": "acc_1", "modelId": "speech-2.8-hd", "input": "演练场语音", "format": "wav",
@@ -349,6 +360,7 @@ func TestArtifactContentOwnershipAndInvalidID(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &speechOut); err != nil {
 		t.Fatalf("语音响应解析失败: %v", err)
 	}
+	transportView.views["acc_1"][0].CapabilityDomain = "video"
 	dispatch.script = []scriptedResponse{{Body: []byte(`{"task_id":"job_v1","status":"queued"}`)}}
 	recorder = doJSON(mux, "POST", "/__aisys__/api/playground/videos", mustJSON(map[string]any{
 		"accountId": "acc_1", "modelId": "grok-imagine-video-1.5", "prompt": "一只猫在跳舞",

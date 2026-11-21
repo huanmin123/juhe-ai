@@ -127,6 +127,33 @@ describe('buildAccountDraftTestPayload 连接测试规格', () => {
   })
 })
 
+describe('buildAccountDraftTestPayload 能力域通道', () => {
+  it('五域表单：透传 capabilityDomain 且无声明集/检查模型时不抛错（连接测试草稿）', () => {
+    const form = apiKeyDraftForm(['sk-image-draft'])
+    form.capabilityDomain = 'image'
+    form.supportedEndpointModes = []
+    form.healthCheckModel = ''
+    const payload = buildAccountDraftTestPayload({
+      accounts: [],
+      errorPolicyRules: [],
+      responseInspectionRules: [],
+      form
+    })
+    expect(payload.capabilityDomain).toBe('image')
+    expect(payload.healthCheckModel).toBeUndefined()
+  })
+
+  it('chat 表单：capabilityDomain 等值透传，行为不变', () => {
+    const payload = buildAccountDraftTestPayload({
+      accounts: [],
+      errorPolicyRules: [],
+      responseInspectionRules: [],
+      form: apiKeyDraftForm(['sk-chat-draft'])
+    })
+    expect(payload.capabilityDomain).toBe('chat')
+  })
+})
+
 describe('validateAccountDraftTestForm OAuth 测试凭据', () => {
   it('已存 token 为真实明文：不再要求填写 Token', () => {
     const message = validateAccountDraftTestForm({

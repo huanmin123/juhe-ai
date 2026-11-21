@@ -1,7 +1,8 @@
 // Package capabilitydomain 实现 AI 账户能力域拆分（PLAN-20261011T141004000Z）
 // 的共享域模型与阶段记录面：
 //   - 域枚举与「对话 modes」锚集合（前后端镜像，计划 §推导规则）；
-//   - ruleVersion=1 推导规则（按序命中即停）；
+//   - ruleVersion=2 推导规则（按序命中即停；v2 由《AI账户能力域向量重排拆分
+//     设计》§4 定案：embedding / rerank 独立落库域，chat 锚集 15→13）；
 //   - 凭据声明（解密后 credentials JSON 的 supported_endpoint_modes）边界解析：
 //     缺省/空数组/null/非数组/未知模式不猜域，计入失败清单；
 //   - 业务库 global_settings 专用 key account_capability_domain_migration 的
@@ -24,16 +25,31 @@ import "fmt"
 type Domain string
 
 const (
-	DomainChat  Domain = "chat"
-	DomainVideo Domain = "video"
-	DomainAudio Domain = "audio"
-	DomainImage Domain = "image"
+	DomainChat      Domain = "chat"
+	DomainVideo     Domain = "video"
+	DomainAudio     Domain = "audio"
+	DomainImage     Domain = "image"
+	DomainEmbedding Domain = "embedding"
+	DomainRerank    Domain = "rerank"
 )
 
-// Valid 判定域值是否在四值词表内。
+// Valid 判定域值是否在六值词表内。
 func (d Domain) Valid() bool {
 	switch d {
-	case DomainChat, DomainVideo, DomainAudio, DomainImage:
+	case DomainChat, DomainVideo, DomainAudio, DomainImage, DomainEmbedding, DomainRerank:
+		return true
+	}
+	return false
+}
+
+// DeclarationRetired 报告某能力域的「上游接口能力」声明面是否已退役
+// （2026-11-21 五域退役，AI账户上游接口能力设计 §3）：五域账户凭据不再持有
+// supported_endpoint_modes 键、连接行不再落 modes，域值以 capability_domain
+// 列为权威；chat 域声明链路保留现状。迁移/升级核验用它把「五域 + 凭据缺键」
+// 识别为合法退役终态，不再按 modes_missing 判失败。
+func DeclarationRetired(d Domain) bool {
+	switch d {
+	case DomainImage, DomainAudio, DomainVideo, DomainEmbedding, DomainRerank:
 		return true
 	}
 	return false
@@ -41,17 +57,20 @@ func (d Domain) Valid() bool {
 
 // RuleVersion 是推导规则的固定版本（PLAN §阶段记录与重跑边界）：阶段记录
 // 与本版本不一致的行视为记录损坏，拒绝执行。v8-A 对话域纯粹化只移动规则
-// ①-⑤ 的命中集成员、不改版本号：存量域已物化落库、不重推导（契约明文），
-// 语义差异仅影响导入/批量新建户，由计划 §对话域纯粹化记录该裁量。
-const RuleVersion = 1
+// 命中集成员、不改版本号：存量域已物化落库、不重推导（契约明文）。v2 由
+// 《AI账户能力域向量重排拆分设计》§4 定案（2026-11-21 用户裁决）提升为 2：
+// embedding / rerank 升为独立落库域、chat 锚集移出 embeddings_json /
+// rerank_json 两值；存量 ruleVersion=1 记录由 revision 29 升级步骤经
+// UpgradeRecordRuleVersion（stage.go）升级，严格 ReadRecord 不接受旧值。
+const RuleVersion = 2
 
-// chatModes 是「对话 modes」锚集合（v8-A 对话域纯粹化后 13 值 + 2026-11-20
-// 协议补齐批 2 值 = 15 值；计划 §推导规则 + §对话域纯粹化；前端
-// accountCapabilityDomains.ts 与网关词表镜像，本包不 import 两侧实现，以计划
-// 文本为唯一事实源）。v8-A 把 audio_transcription_json 与 realtime_session
-// 移出对话域（归音频域）；images_json 本就不在锚集（v8-A 后对话域不再追加，
-// 图像 lane 一律归图像域）。embeddings_json / rerank_json 是文本域的输入型
-// 协议（OpenAI Embeddings 与 Cohere/Jina 重排），归对话域。
+// chatModes 是「对话 modes」锚集合（v8-A 对话域纯粹化后 13 值；计划 §推导
+// 规则 + §对话域纯粹化；前端 accountCapabilityDomains.ts 与网关词表镜像，
+// 本包不 import 两侧实现，以设计文本为唯一事实源）。v8-A 把
+// audio_transcription_json 与 realtime_session 移出对话域（归音频域）；
+// images_json 本就不在锚集（v8-A 后对话域不再追加，图像 lane 一律归图像域）。
+// v2（向量/重排拆分设计 §3）：embeddings_json / rerank_json 移出对话锚集，
+// 归独立 embedding / rerank 域。
 var chatModes = []string{
 	"chat_json",
 	"chat_sse",
@@ -66,9 +85,13 @@ var chatModes = []string{
 	"count_tokens",
 	"embed_content",
 	"message_token_counting",
-	"embeddings_json",
-	"rerank_json",
 }
+
+// embeddingModes / rerankModes 是 v2 新增两域的推导命中集（各 1 值；设计 §4）。
+var (
+	embeddingModes = []string{"embeddings_json"}
+	rerankModes    = []string{"rerank_json"}
+)
 
 // 账户测试方式（2026-11-21 定案）：只有真实对话生成形态需要模型测试；
 // 媒体域以及只声明 embeddings/rerank/embed_content/count_tokens 等非生成
@@ -111,11 +134,13 @@ func TestKindForEndpointModes(modes []string) string {
 	return TestKindConnection
 }
 
-// TestKindForAccount 先看能力域：媒体域恒连接测试；chat 域再按生成形态判定，
-// 避免 embeddings/rerank-only 账户被误判为模型测试。
+// TestKindForAccount 先看能力域：媒体域与 v2 新增的 embedding/rerank 域恒
+// 连接测试（向量/重排拆分设计 §7：不进 J1、无人工测试请求模板）；chat 域再按
+// 生成形态判定，避免 embeddings/rerank-only 账户被误判为模型测试。
 func TestKindForAccount(domain string, modes []string) string {
 	switch domain {
-	case string(DomainImage), string(DomainAudio), string(DomainVideo):
+	case string(DomainImage), string(DomainAudio), string(DomainVideo),
+		string(DomainEmbedding), string(DomainRerank):
 		return TestKindConnection
 	}
 	return TestKindForEndpointModes(modes)
@@ -128,10 +153,11 @@ func IsModelTestEndpointMode(mode string) bool {
 
 // mediaModes 是媒体侧全部 lane 值：图像 lane、语音合成、视频任务四值、
 // 长音频任务四值与 v8-A 自对话域移入的短转写/实时会话。KnownModes =
-// chatModes ∪ mediaModes，与网关四档案族词表并集闭合
-// （chainOpenAIEndpointModeValues / chainAnthropicEndpointModes /
+// chatModes ∪ embeddingModes ∪ rerankModes ∪ mediaModes，与网关四档案族词表
+// 并集闭合（chainOpenAIEndpointModeValues / chainAnthropicEndpointModes /
 // chainGeminiDefaultModes / chainHybridEndpointModes 的并集恰为这 27 值；
-// v8-A 只在对话/媒体两侧间移动成员，2026-11-20 协议补齐批只在对话侧追加）。
+// v8-A 只在对话/媒体两侧间移动成员，2026-11-20 协议补齐批追加两值、v2 起
+// 归独立 embedding/rerank 命中集，并集不变）。
 var mediaModes = []string{
 	"images_json",
 	"audio_speech",
@@ -167,8 +193,14 @@ var (
 // knownModeSet 是全部已知 endpoint mode 值；声明中出现集合外的字符串即为
 // 未知模式，纳入失败清单（不能用通配符把未知 video_* 自动视为合法能力）。
 var knownModeSet = func() map[string]bool {
-	set := make(map[string]bool, len(chatModes)+len(mediaModes))
+	set := make(map[string]bool, len(chatModes)+len(embeddingModes)+len(rerankModes)+len(mediaModes))
 	for _, mode := range chatModes {
+		set[mode] = true
+	}
+	for _, mode := range embeddingModes {
+		set[mode] = true
+	}
+	for _, mode := range rerankModes {
 		set[mode] = true
 	}
 	for _, mode := range mediaModes {
@@ -182,26 +214,50 @@ func ChatModes() []string {
 	return append([]string{}, chatModes...)
 }
 
-// KnownModes 返回全部已知 endpoint mode 值的副本（对话 15 + 媒体 12，
-// 并集恒为 27 值）。
+// KnownModes 返回全部已知 endpoint mode 值的副本（对话 13 + 向量/重排 2 +
+// 媒体 12，并集恒为 27 值）。
 func KnownModes() []string {
-	return append(append([]string{}, chatModes...), mediaModes...)
+	known := append(append([]string{}, chatModes...), embeddingModes...)
+	known = append(known, rerankModes...)
+	return append(known, mediaModes...)
 }
 
-// DeriveDomain 按 ruleVersion=1 对已验证声明集推导域（按序命中即停）：
-//  1. 含对话 modes → chat（规则 ②③④ 均要求不含对话 modes）；
-//  2. 不含对话 modes 且含任一 video_create/get/content/cancel → video；
-//  3. 不含对话 modes 且含 audio_speech、audio_transcription_json、
-//     realtime_session 或任一 audio_job_* → audio（v8-A：短转写与实时会话
-//     自对话域移入音频域命中集）；
-//  4. 不含对话 modes 且含 images_json → image；
-//  5. 其余 → chat（对话域零命中；声明集中落域 lane 之外的值由迁移命令裁剪
+// DeriveDomain 按 ruleVersion=2 对已验证声明集推导域（按序命中即停；
+// v2 规则见《AI账户能力域向量重排拆分设计》§4）：
+//  1. 不含 13 值对话生成锚与 12 值媒体触发值、含 embeddings_json 且不含
+//     rerank_json → embedding；
+//  2. 同上前提、含 rerank_json 且不含 embeddings_json → rerank；
+//  3. 其余照 ruleVersion=1：含对话生成锚或 embeddings_json / rerank_json
+//     任一 → chat（混合声明保护：向量/重排与对话生成形态、媒体值或彼此
+//     同账户声明时不自动拆域、照 v1 落 chat，由 revision 29 升级步骤的
+//     失败清单机制识别人工处理，本函数不静默丢能力）；
+//  4. 不含上述任一值且含任一 video_create/get/content/cancel → video；
+//  5. 同前提含 audio_speech、audio_transcription_json、realtime_session
+//     或任一 audio_job_* → audio（v8-A：短转写与实时会话自对话域移入音频
+//     域命中集）；
+//  6. 同前提含 images_json → image；
+//  7. 其余 → chat（对话域零命中；声明集中落域 lane 之外的值由迁移命令裁剪
 //     至域内）。
 //
+// v2 与 v1 的输出差异仅限规则 ①②：纯单值向量/重排声明落独立域；其余全部
+// 输入（含一切混合组合）输出与 v1 完全一致。
+//
 // 输入必须已通过 ParseEndpointModes 的 ModesOK 校验（元素全部在词表内）；
-// 授权实例继承（规则 ①）在迁移器层按源账户域落列，不进本函数。
+// 授权实例继承（实例域取源账户推导结果）在迁移器层落列，不进本函数。
 func DeriveDomain(modes []string) Domain {
-	if !containsAny(modes, chatModes) {
+	if !containsAny(modes, chatModes) && !containsAny(modes, mediaModes) {
+		hasEmbedding := containsAny(modes, embeddingModes)
+		hasRerank := containsAny(modes, rerankModes)
+		if hasEmbedding && !hasRerank {
+			return DomainEmbedding
+		}
+		if hasRerank && !hasEmbedding {
+			return DomainRerank
+		}
+	}
+	// v1 主体：对话锚判定保留 embeddings_json / rerank_json（v1 命中集成员，
+	// 混合声明照 v1 落 chat）。
+	if !containsAny(modes, chatModes) && !containsAny(modes, embeddingModes) && !containsAny(modes, rerankModes) {
 		if containsAny(modes, videoModes) {
 			return DomainVideo
 		}
@@ -215,14 +271,23 @@ func DeriveDomain(modes []string) Domain {
 	return DomainChat
 }
 
-// LaneModesForDomain 返回域 lane 集的副本（chat=对话 15 值锚集、video=视频
-// 四值、audio=语音合成+长音频四值+短转写+实时会话、image=images_json）；
-// 未知域返回 nil。迁移命令用它把声明集裁剪至落域 lane 内，网关侧允许集另经
-// 供应商矩阵与写侧词表求交（在 accountscore，本包不复制那份语义）。
+// LaneModesForDomain 返回域 lane 集的副本（chat=对话 13 值锚集、embedding=
+// embeddings_json、rerank=rerank_json、video=视频四值、audio=语音合成+长音频
+// 四值+短转写+实时会话、image=images_json；向量/重排拆分设计 §3）；未知域
+// 返回 nil。2026-11-21 五域退役批（《AI账户上游接口能力设计》§3/§5）起口径
+// 分域：chat lane 仍是 chat 域声明校验/声明裁剪（迁移命令）与导入推域的锚
+// 集；五域 lane 是域探测形态集——供健康检查默认形态与连通性探测规格选型，
+// 不再作为五域账户声明校验依据（五域账户不声明 supported_endpoint_modes，
+// revision 30 清洗存量）。网关侧 chat 允许集另经供应商矩阵与写侧词表求交
+// （在 accountscore，本包不复制那份语义）。
 func LaneModesForDomain(d Domain) []string {
 	switch d {
 	case DomainChat:
 		return ChatModes()
+	case DomainEmbedding:
+		return append([]string{}, embeddingModes...)
+	case DomainRerank:
+		return append([]string{}, rerankModes...)
 	case DomainVideo:
 		return append([]string{}, videoModes...)
 	case DomainAudio:
@@ -312,6 +377,10 @@ const (
 	FailureModesUnknown         FailureKind = "modes_unknown_value"
 	FailureInstanceNoSource     FailureKind = "instance_source_missing"
 	FailureInstanceSourceFailed FailureKind = "instance_source_failed"
+	// FailureMixedVectorRerank 是 v2（向量/重排拆分设计 §4）的混合声明分类：
+	// 向量/重排 mode 与对话生成形态、媒体触发值或彼此同账户声明，不自动拆域、
+	// 不裁剪丢能力，进失败清单人工处理（建议拆成独立账户）。
+	FailureMixedVectorRerank FailureKind = "mixed_vector_rerank_declaration"
 )
 
 // Failure 是失败清单的一行：账户 ID、分类与脱敏细节。报告不输出凭据、

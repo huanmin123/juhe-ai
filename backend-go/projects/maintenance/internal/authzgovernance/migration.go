@@ -1385,6 +1385,20 @@ func tightenForeignKeys(ctx context.Context, tx *sql.Tx) ([]string, error) {
 // pipeline. It returns true only when the data migration and constraint/FK
 // tightening have converged.
 func Satisfied(ctx context.Context, db *sql.DB, secret string) (bool, error) {
+	// 简化退役短路（revision 31「authz-claim-simplification」）：四张退役治理
+	// 表缺席说明库已是直发+领取形态——revision 28 的数据迁移与复核语义已被
+	// revision 31 整体取代（dev-only 历史，无生产兼容包袱）。全新 adopt 库
+	// ensure 出的 schema 天然命中本短路；退役对象仍在的存量库继续走原检查。
+	var retired int
+	err := db.QueryRowContext(ctx, `SELECT count(*) FROM pg_class c
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = 'juhe_business' AND c.relname = 'resource_authorization_offer_cooldowns'`).Scan(&retired)
+	if err != nil {
+		return false, err
+	}
+	if retired == 0 {
+		return true, nil
+	}
 	var pending int
 	checks := []string{
 		`SELECT count(*) FROM juhe_business.resource_authorization_sources WHERE grant_id IS NULL`,

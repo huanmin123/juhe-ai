@@ -176,8 +176,7 @@ func (s *Store) revokeAccountAuthorizationsForDeletedResource(ctx context.Contex
 		SET status = 'revoked',
 			ended_at = COALESCE(ended_at, ?),
 			ended_reason = COALESCE(ended_reason, 'source_deleted'),
-			pending_expires_at = NULL,
-			revoked_by = COALESCE(revoked_by, ?),
+						revoked_by = COALESCE(revoked_by, ?),
 			revoked_at = COALESCE(revoked_at, ?),
 			updated_at = ?
 		WHERE resource_type = 'account'
@@ -198,13 +197,12 @@ func (s *Store) revokeAccountAuthorizationsForDeletedResource(ctx context.Contex
 			revoked_at = ?,
 			updated_at = ?
 		WHERE authorization_id IN (`+idsClause+`)
-			AND status IN ('pending', 'active', 'dormant', 'needs_review')`),
+			AND status IN ('pending', 'active')`),
 		append([]any{deletedAt, actor, deletedAt, deletedAt}, authArgs...)...); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("resource_authorizations")+`
 		SET status = 'revoked',
-			status_reason = 'source_deleted', status_changed_at = ?,
 			effective_source_type = NULL,
 			effective_source_team_id = NULL,
 			revoked_by = COALESCE(revoked_by, ?),

@@ -437,6 +437,7 @@ func geminiCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection {
 		priceEntry("input", "输入", item.InputUsdPer1M, "usd_per_1m_tokens"),
 		priceEntry("output", "输出", item.OutputUsdPer1M, "usd_per_1m_tokens"),
 		priceEntry("cache_read", "缓存读", item.CachedInputUsdPer1M, "usd_per_1m_tokens"),
+		priceEntry("cache_write", "缓存写入", item.CacheWriteUsdPer1M, "usd_per_1m_tokens"),
 		priceEntry("cache_storage", "缓存存储", item.CacheStorageUsdPer1MPerHour, "usd_per_1m_token_hour"),
 		priceEntry("image_input", "图片输入", item.ImageInputUsdPer1M, "usd_per_1m_tokens"),
 		priceEntry("image_output", "图片输出", item.ImageOutputUsdPer1M, "usd_per_1m_tokens"),
@@ -565,7 +566,7 @@ func qwenCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection {
 // genericMediaCatalogDisplay 按 item.Mode 场景化输出（列表按场景不同），
 // 价格只在 ModelCatalogItem 有真实通道时落 section（宁缺勿假）：
 //   - chat（含 mode 未标注的 custom 行兜底）：Token 计费（输入/缓存读/
-//     缓存写入/输出/音频输入）+ 思考能力 + 容量；
+//     缓存写入/输出/图片输入/音频输入输出）+ 思考能力 + 容量；
 //   - image / image_generation：Token 计费 + 图片生成（每张，走
 //     OutputUsdPerImage 通道）+ 思考能力 + 容量；
 //   - audio（audio_speech / audio_transcription 协议行）、video、embedding：
@@ -589,7 +590,9 @@ func genericMediaCatalogDisplay(item *ModelCatalogItem) []catalogDisplaySection 
 			priceEntry("cache_read", "缓存读", item.CachedInputUsdPer1M, "usd_per_1m_tokens"),
 			priceEntry("cache_write", "缓存写入", item.CacheWriteUsdPer1M, "usd_per_1m_tokens"),
 			priceEntry("output", "输出", item.OutputUsdPer1M, "usd_per_1m_tokens"),
+			priceEntry("image_input", "图片输入", item.ImageInputUsdPer1M, "usd_per_1m_tokens"),
 			priceEntry("audio_input", "音频输入", item.AudioInputUsdPer1M, "usd_per_1m_tokens"),
+			priceEntry("audio_output", "音频输出", item.AudioOutputUsdPer1M, "usd_per_1m_tokens"),
 		}))
 	if mode == "image" || mode == "image_generation" {
 		sections = appendSection(sections, imageUnitSection(item))
@@ -740,6 +743,7 @@ func longContextTokenEntries(item *ModelCatalogItem, cacheReadLabel string) []ca
 	return []catalogDisplayItem{
 		priceEntry("long_context_input", prefix+"输入", multipliedPrice(item.InputUsdPer1M, item.LongContextInputCostMultiplier), "usd_per_1m_tokens"),
 		priceEntry("long_context_cache_read", prefix+cacheReadLabel, multipliedPrice(item.CachedInputUsdPer1M, item.LongContextInputCostMultiplier), "usd_per_1m_tokens"),
+		priceEntry("long_context_cache_write", prefix+"缓存写入", multipliedPrice(item.CacheWriteUsdPer1M, item.LongContextInputCostMultiplier), "usd_per_1m_tokens"),
 		priceEntry("long_context_output", prefix+"输出", multipliedPrice(item.OutputUsdPer1M, item.LongContextOutputCostMultiplier), "usd_per_1m_tokens"),
 	}
 }

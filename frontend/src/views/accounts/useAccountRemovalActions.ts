@@ -26,30 +26,10 @@ export function useAccountRemovalActions(options: UseAccountRemovalActionsOption
     void options.loadData({ quiet: true })
   }
 
-  async function returnAuthorizationAccount(id: string): Promise<void> {
-    const account = options.accountById.value.get(id)
-    if (!account || account.accessType !== 'authorized') {
-      message.warning('只有授权账户可以归还')
-      return
-    }
-    try {
-      if (options.isManagementView.value) {
-        message.warning('管理视图不支持代归还授权账户，请在授权中心处理')
-        return
-      }
-      await api.myAccounts.returnAuthorization(id)
-      await removeLoadedRemovedAccount(id)
-      message.success('授权账户已归还')
-    } catch (error) {
-      console.error(error)
-      message.error(options.extractApiErrorMessage(error, '归还授权账户失败'))
-    }
-  }
-
   async function removeAccount(id: string): Promise<void> {
     const account = options.accountById.value.get(id)
     if (account?.accessType === 'authorized') {
-      message.warning('授权账户请使用归还操作')
+      message.warning('授权账户不支持删除，授权到期或被收回后自动移除')
       return
     }
     try {
@@ -100,7 +80,6 @@ export function useAccountRemovalActions(options: UseAccountRemovalActionsOption
 
   return {
     batchDeleteSelected,
-    removeAccount,
-    returnAuthorizationAccount
+    removeAccount
   }
 }

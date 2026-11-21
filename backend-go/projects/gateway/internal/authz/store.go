@@ -27,7 +27,10 @@ const (
 	MaxMemberBatchSize      = 20
 )
 
-// Terminal statuses shared by grants and runtime rows.
+// Statuses shared by grants, sources and runtime rows. The simplified
+// send-and-claim model keeps exactly seven values; confirmation checkpoints
+// (owner/team/member approval), the material-review states (needs_review,
+// dormant) and the legacy superseded value no longer exist.
 const (
 	StatusActive   = "active"
 	StatusPaused   = "paused"
@@ -36,12 +39,6 @@ const (
 	StatusReturned = "returned"
 	StatusPending  = "pending"
 	StatusDeclined = "declined"
-	StatusDormant  = "dormant"
-
-	StatusPendingOwnerApproval    = "pending_owner_approval"
-	StatusPendingTeamApproval     = "pending_team_approval"
-	StatusPendingMemberAcceptance = "pending_member_acceptance"
-	StatusNeedsReview             = "needs_review"
 )
 
 // Conflict mirrors the Node optimistic-concurrency 409.
@@ -207,7 +204,6 @@ type grantRow struct {
 	Status        string
 	Remark        sql.NullString
 	ExpiresAt     sql.NullString
-	LimitsJSON    sql.NullString
 	CreatedBy     sql.NullString
 	RevokedBy     sql.NullString
 	RevokedAt     sql.NullString
@@ -217,13 +213,13 @@ type grantRow struct {
 
 const grantColumns = `g.id, g.resource_type, g.resource_id, g.resource_owner_system_account_id,
 	g.grantee_type, g.grantee_system_account_id, g.grantee_team_id, g.status,
-	g.remark, g.expires_at, g.limits_json, g.created_by, g.revoked_by, g.revoked_at, g.created_at, g.updated_at`
+	g.remark, g.expires_at, g.created_by, g.revoked_by, g.revoked_at, g.created_at, g.updated_at`
 
 func (s *Store) scanGrant(scanner interface{ Scan(...any) error }) (grantRow, error) {
 	var row grantRow
 	err := scanner.Scan(&row.ID, &row.ResourceType, &row.ResourceID, &row.OwnerID,
 		&row.GranteeType, &row.GranteeUserID, &row.GranteeTeamID, &row.Status,
-		&row.Remark, &row.ExpiresAt, &row.LimitsJSON, &row.CreatedBy, &row.RevokedBy, &row.RevokedAt,
+		&row.Remark, &row.ExpiresAt, &row.CreatedBy, &row.RevokedBy, &row.RevokedAt,
 		&row.CreatedAt, &row.UpdatedAt)
 	return row, err
 }
@@ -340,10 +336,7 @@ func keywordUpperBound(prefix string) string {
 	return string(runes)
 }
 
-// Summary is the list/detail item shape. Limits carries the normalized limits
-// echo on the create outcome and the detail reads (BUG-0175 D-126: list rows
-// already serialize limits through the ListItem projection; the detail
-// surfaces follow findSummaryWithLimits the same way).
+// Summary is the list/detail item shape.
 type Summary struct {
 	ID            string  `json:"id"`
 	ResourceType  string  `json:"resourceType"`
@@ -355,7 +348,6 @@ type Summary struct {
 	Status        string  `json:"status"`
 	Remark        *string `json:"remark,omitempty"`
 	ExpiresAt     *string `json:"expiresAt,omitempty"`
-	Limits        any     `json:"limits,omitempty"`
 	CreatedAt     string  `json:"createdAt"`
 	UpdatedAt     string  `json:"updatedAt"`
 	// Usage mirrors the Node ResourceAuthorizationSummary.usage key
@@ -478,33 +470,19 @@ func (s *Store) queryGrantRowsPage(ctx context.Context, filters Filters, page, p
 	return items, total, hasMore, nil
 }
 
-// Find mirrors findResourceAuthorizationAsync (status forced to all). The
-// detail read fills the normalized limits echo (empty limits render as null)
-// exactly like the mutation reads behind it (BUG-0175 D-126 授权面字段缺失).
+// Find mirrors findResourceAuthorizationAsync (status forced to all).
 func (s *Store) Find(ctx context.Context, id string) (*Summary, error) {
-	summary, limits, err := s.findSummaryWithLimits(ctx, id)
-	if summary != nil {
-		summary.Limits = limits
-	}
-	return summary, err
-}
-
-// findSummaryWithLimits resolves a grant summary plus its normalized limits
-// echo (Node resourceAuthorizationMutationResult :900-910: empty limits render
-// as null). Create reuses it for the mutation echo; Find shares it so the
-// admin and my-* detail reads keep the same limits parity.
-func (s *Store) findSummaryWithLimits(ctx context.Context, id string) (*Summary, any, error) {
 	ctx = ensureCtx(ctx)
 	row := s.db.QueryRowContext(ctx, s.bind(`SELECT `+grantColumns+` FROM `+s.table("resource_authorization_grants")+` g WHERE g.id = ?`), id)
 	grant, err := s.scanGrant(row)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil, nil
+		return nil, nil
 	}
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	summary := grant.summary()
-	return &summary, decodeAuthorizationLimits(grantLimitsText(grant.LimitsJSON)), nil
+	return &summary, nil
 }
 
 // GetGrantForMutation loads a grant with the version for mutation checks.

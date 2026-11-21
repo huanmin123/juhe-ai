@@ -60,7 +60,8 @@ func (r bindingRow) summary() GroupBinding {
 
 // bindingRowColumns mirrors routeStrategyGroupBindingRowsSqlForClient: the
 // authorization joins feed both the group_enabled authorized branch (owner OR
-// active grant with COALESCE(settings.enabled, 1)) and the weight/priority
+// active grant whose claim row exists in group_authorization_settings) and
+// the weight/priority
 // integrity guards in appendRouteStrategyBindingRows. The `expires_at > ?`
 // placeholder binds the caller-supplied now (first argument).
 func (s *Store) bindingRowColumns() string {
@@ -75,8 +76,7 @@ func (s *Store) bindingRowColumns() string {
 		WHEN groups.id IS NULL THEN 0
 		WHEN groups.system_account_id = route_strategy_groups.system_account_id THEN groups.enabled
 		WHEN group_authorization.id IS NOT NULL THEN CASE WHEN groups.enabled = 1
-			AND COALESCE(group_authorization_settings.enabled, 0) = 1
-			AND COALESCE(group_authorization_settings.snapshot_revision, '') <> '' THEN 1 ELSE 0 END
+			AND group_authorization_settings.authorization_id IS NOT NULL THEN 1 ELSE 0 END
 		ELSE 0
 	END AS group_enabled`
 }
@@ -328,8 +328,7 @@ func (s *Store) bindableGroupsQuery(placeholders []string, lockRows bool) string
 			END AS can_bind,
 			CASE WHEN groups.system_account_id = ? THEN groups.enabled
 				WHEN group_authorization.id IS NOT NULL THEN CASE WHEN groups.enabled = 1
-			AND COALESCE(group_authorization_settings.enabled, 0) = 1
-			AND COALESCE(group_authorization_settings.snapshot_revision, '') <> '' THEN 1 ELSE 0 END
+			AND group_authorization_settings.authorization_id IS NOT NULL THEN 1 ELSE 0 END
 				ELSE 0
 			END AS enabled
 		FROM ` + s.table("groups") + ` groups

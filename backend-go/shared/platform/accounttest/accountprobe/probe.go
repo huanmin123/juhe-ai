@@ -28,6 +28,13 @@ var DiagnosticRetryTimeouts = []time.Duration{20 * time.Second, 30 * time.Second
 // [120_000]（images_json 单次长预算，不晋级）。
 var ImageDiagnosticRetryTimeouts = []time.Duration{120 * time.Second}
 
+// ConnectivityRetryTimeouts 是连接测试专用分级超时（2026-11-22 用户裁决）：
+// 连接测试只是 API Key 级可达性验证，10s 级应有结果，三级容错 [10s, 20s, 30s]
+// 单 Key 最坏 60s；晋级语义与对话诊断一致（仅「真实上游尝试后超时」晋级下一级），
+// 不使用 images_json 单次长预算档。人工连接测试与后台 account-connectivity-health
+// 同链路同预算。
+var ConnectivityRetryTimeouts = []time.Duration{10 * time.Second, 20 * time.Second, 30 * time.Second}
+
 // CandidateSource 由仓储层实现：为一次探针解析账户与分组内候选凭据。
 type CandidateSource interface {
 	// LoadProbeView 返回探针所需的完整视图；账户/候选缺失时返回 (nil, nil)。
@@ -72,6 +79,12 @@ type View struct {
 	// 规格查找（contracts.ConnectivityProbeForPreset）。保存账户与草稿测试
 	// 都必须显式透传；缺失时连接测试 fail closed。
 	ConnectionPresetCode string
+	// CapabilityDomain 是账户能力域六值投影（accounts.capability_domain，授权
+	// 实例按来源账户 COALESCE 语义）。五域退役修订（AI 账户上游接口能力设计
+	// §5）：五域账户连接测试按域默认形态集（capabilitydomain.LaneModesForDomain）
+	// 圈定探测输入，五域端点模式声明退役（投影恒空）后不再依赖 modes；空值 /
+	// chat 域走既有声明集 → health 列回落链。
+	CapabilityDomain string
 	// ConnectivityOnly 标记本次诊断是连接测试：不解析模型映射、不要求对话
 	// 形态、只按注册表规格验证凭证与上游可达性。
 	ConnectivityOnly bool
@@ -267,10 +280,12 @@ func (s *Service) ManualConnectivityDiagnostics(ctx context.Context, view *View,
 }
 
 // withScheduleForView 返回按视图端点形态取分级超时的派生服务
-// （images_json 单次 120s，其余保持服务默认序列；连接测试不使用生图长预算）。
+// （images_json 单次 120s，连接测试专用 [10s,20s,30s]，其余保持服务默认序列）。
 func (s *Service) withScheduleForView(view *View) *Service {
 	if view != nil && view.ConnectivityOnly {
-		return s
+		staged := *s
+		staged.retryTimeouts = ConnectivityRetryTimeouts
+		return &staged
 	}
 	mode, err := resolveEndpointMode(view, EndpointMode(strings.TrimSpace(view.HealthCheckEndpointMode)))
 	if err == nil && mode == ModeImagesJSON {

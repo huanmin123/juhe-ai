@@ -1,12 +1,18 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  customModelPriceFields,
+  defaultProtocolsForModelCategory,
   formatCardSpec,
   formatModelServiceTier,
+  formatPriceTableCell,
   formatSpec,
   modelCapabilityTags,
   modelCardPriceMeta,
   modelCardSpecs,
+  getModelCategory,
+  modelCategoryLabels,
+  modelCategoryOrder,
   modelInfoItems,
   modelPriceSlots,
   modelPriceTable,
@@ -290,6 +296,86 @@ describe('modelPriceTable / modelInfoItems（抽屉「计费价格」一张表 +
     expect(modelPriceTable(empty).rows).toEqual([])
     expect(modelInfoItems(empty)).toEqual([])
   })
+
+  it('图片展开全部分辨率，用模板价覆盖旧每张价格', () => {
+    const item = providerModel({
+      mode: 'image_generation',
+      hasMediaPricing: true,
+      mediaPricing: { version: 1, unit: 'image', baseUsd: 0.01714, baseTier: '1k', tierMultipliers: { '4k': 3, '1k': 1, '2k': 1.6 } },
+      catalogDisplay: [
+        { key: 'image_generation', label: '图片生成', items: [{ key: 'output_image', label: '每张', format: 'usd_per_image', value: 0.01 }] }
+      ]
+    })
+    const table = modelPriceTable(item)
+    expect(table.itemLabel).toBe('计费档位')
+    expect(table.unitLabel).toBe('USD')
+    expect(table.rows.map((row) => [row.label, row.cells.normal?.value])).toEqual([
+      ['1K', '$0.01714 / 张'],
+      ['2K', '$0.027424 / 张'],
+      ['4K', '$0.05142 / 张']
+    ])
+  })
+
+  it('视频五档按分辨率排序，卡片最多展示前三档', () => {
+    const item = providerModel({
+      mode: 'video',
+      hasMediaPricing: true,
+      mediaPricing: {
+        version: 1, unit: 'second', baseUsd: 0.1414, baseTier: '720p',
+        tierMultipliers: { '1080p': 2, '1440p': 3, '2160p': 5, '480p': 0.5, '720p': 1 }
+      }
+    })
+    expect(modelPriceTable(item).rows.map((row) => row.cells.normal?.value)).toEqual([
+      '$0.0707 / 秒', '$0.1414 / 秒', '$0.2828 / 秒', '$0.4242 / 秒', '$0.707 / 秒'
+    ])
+    expect(modelPriceSlots(item).map((slot) => slot.label)).toEqual(['480p', '720p', '1080p'])
+  })
+
+  it('音频秒价最多六位小数，极小正价有下限提示，按次支持零价', () => {
+    const legacy = [{ key: 'token_pricing', label: 'Token 计费', items: [pricingEntry('input', '输入', 1)] }]
+    const audio = providerModel({
+      mode: 'audio',
+      hasMediaPricing: true,
+      mediaPricing: { version: 1, unit: 'second', baseUsd: 0.000031746032, baseTier: '', tierMultipliers: {} },
+      catalogDisplay: legacy
+    })
+    expect(modelPriceTable(audio).rows.map((row) => row.cells.normal?.value)).toEqual(['$0.000032 / 秒'])
+    const tinyAudio = { ...audio, mediaPricing: { ...audio.mediaPricing!, baseUsd: 0.00000003125 } }
+    expect(modelPriceTable(tinyAudio).rows.map((row) => row.cells.normal?.value)).toEqual(['<$0.000001 / 秒'])
+    const perCall = providerModel({
+      mode: 'video',
+      hasMediaPricing: true,
+      mediaPricing: { version: 1, unit: 'call', baseUsd: 0, baseTier: '', tierMultipliers: {} }
+    })
+    expect(modelPriceTable(perCall).rows.map((row) => row.cells.normal?.value)).toEqual(['$0 / 次'])
+    const invalid = providerModel({ catalogDisplay: legacy, mediaPricingInvalid: true, inputUsdPer1M: 1 })
+    expect(modelPriceTable(invalid)).toMatchObject({ rows: [], note: '价格配置无效' })
+    expect(modelPriceSlots(invalid)).toEqual([])
+  })
+
+  it('详情 Token 价和旧媒体价均最多六位小数', () => {
+    expect(formatPriceTableCell(pricingEntry('input', '输入', 0.11428571), 'USD / 1M tokens')).toBe('$0.114286')
+    expect(formatPriceTableCell({ key: 'asr_per_second', label: '识别', format: 'text', value: '$0.00238095/s' }, 'USD'))
+      .toBe('$0.002381/s')
+  })
+
+  it('补齐仅服务档位存在的价格项，混合价在单元格保留单位和精度', () => {
+    const table = modelPriceTable(providerModel({
+      catalogDisplay: [
+        { key: 'token_pricing', label: 'Token 计费', items: [pricingEntry('cache_write', '缓存写入', 0.125)] },
+        {
+          key: 'tier_priority',
+          label: 'Priority',
+          items: [{ key: 'cache_storage', label: '缓存存储', format: 'usd_per_1m_token_hour', value: 4.5 }]
+        }
+      ]
+    }))
+    expect(table.unitLabel).toBe('USD')
+    expect(table.rows.map((row) => row.key)).toEqual(['cache_write', 'cache_storage'])
+    expect(table.rows[1]?.cells.normal).toBeUndefined()
+    expect(formatPriceTableCell(table.rows[0]!.cells.normal!, table.unitLabel)).toBe('$0.125 / 1M tokens')
+    expect(formatPriceTableCell(table.rows[1]!.cells.priority!, table.unitLabel)).toBe('$4.5 / 1M tokens·小时')
+  })
 })
 
 describe('formatSpec', () => {
@@ -376,7 +462,7 @@ describe('卡面投影（模型广场卡片视觉层级）', () => {
     const image = providerModel({ mode: 'image', outputUsdPerImage: 0.04 })
     expect(modelCardPriceMeta(image, modelPriceSlots(image))).toEqual({
       caption: '目录价 · USD / 张',
-      pill: ''
+      pill: '旧口径'
     })
 
     const audio = providerModel({
@@ -386,7 +472,7 @@ describe('卡面投影（模型广场卡片视觉层级）', () => {
     })
     expect(modelCardPriceMeta(audio, modelPriceSlots(audio))).toEqual({
       caption: '目录价 · USD',
-      pill: ''
+      pill: '旧口径'
     })
 
     expect(modelCardPriceMeta(providerModel(), [])).toEqual({ caption: '', pill: '' })
@@ -398,5 +484,46 @@ describe('formatModelServiceTier', () => {
     expect(formatModelServiceTier('priority')).toBe('Priority')
     expect(formatModelServiceTier('flex')).toBe('Flex')
     expect(formatModelServiceTier('scale')).toBe('scale')
+  })
+})
+
+describe('向量/重排六分类拆分（2026-11-21）', () => {
+  it('modelCategoryOrder 扩六类且标签为向量/重排', () => {
+    expect([...modelCategoryOrder]).toEqual(['text', 'embedding', 'rerank', 'image', 'audio', 'video'])
+    expect(modelCategoryLabels).toEqual({
+      text: '对话 / 编码',
+      embedding: '向量',
+      rerank: '重排',
+      image: '图像',
+      audio: '音频',
+      video: '视频'
+    })
+  })
+
+  it('embedding/rerank 目录 mode 独立分类，不再归文本', () => {
+    expect(getModelCategory(providerModel({ mode: 'embedding', model: 'text-embedding-v4' }))).toBe('embedding')
+    expect(getModelCategory(providerModel({ mode: 'rerank', model: 'gte-rerank-v2' }))).toBe('rerank')
+    expect(getModelCategory(providerModel({ mode: 'chat', model: 'gpt-5.5' }))).toBe('text')
+  })
+
+  it('卡面标签与能力 tag 使用新分类词', () => {
+    expect(modelCapabilityTags(providerModel({ mode: 'embedding', model: 'text-embedding-v4' }))).toEqual(['向量'])
+    expect(modelCapabilityTags(providerModel({ mode: 'rerank', model: 'gte-rerank-v2' }))).toEqual(['重排'])
+  })
+
+  it('向量/重排价格槽位只取输入价', () => {
+    expect(modelPriceSlots(providerModel({ mode: 'embedding', inputUsdPer1M: 0.0005 }))).toEqual<ModelPriceSlot[]>([
+      { label: '输入', value: '0.0005', unit: '/1M tokens' }
+    ])
+    expect(modelPriceSlots(providerModel({ mode: 'rerank', inputUsdPer1M: 0.0008 }))).toEqual<ModelPriceSlot[]>([
+      { label: '输入', value: '0.0008', unit: '/1M tokens' }
+    ])
+  })
+
+  it('自定义行直接价格字段与协议缺省：向量/重排只含输入价、协议各归单值', () => {
+    expect(customModelPriceFields('qwen', 'embedding').map((field) => field.key)).toEqual(['inputUsdPer1M'])
+    expect(customModelPriceFields('qwen', 'rerank').map((field) => field.key)).toEqual(['inputUsdPer1M'])
+    expect(defaultProtocolsForModelCategory('embedding')).toEqual(['embeddings'])
+    expect(defaultProtocolsForModelCategory('rerank')).toEqual(['rerank'])
   })
 })

@@ -499,8 +499,6 @@ export interface AccountSummary {
   ownerSystemAccountName?: string
   authorizationStatus?: AuthorizationStatus
   authorizationExpiresAt?: string
-  authorizationLimits?: RequestQuotaLimits
-  authorizationQuotaExceeded?: boolean
   authorizationSources?: AuthorizationSourceSummary[]
   /** 运行态锁死状态只读投影（只读展示用，不作为配置提交）。 */
   lockState?: 'UNLOCKED' | 'LOCKED_IDLE' | 'ENGAGED' | 'DEAD_CONFIRMED'
@@ -526,7 +524,7 @@ export interface AccountListItem {
   name: string
   notes?: string
   type: AccountType
-  /** 账户能力域（M1 读通道回显）：四域菜单按域请求，响应域与请求一致；缺省视作对话域。 */
+  /** 账户能力域（M1 读通道回显）：六域菜单按域请求，响应域与请求一致；缺省视作对话域。 */
   capabilityDomain?: AccountCapabilityDomain
   status: AccountStatus
   apiKeyRuntime?: AccountApiKeyRuntimePublicSummary
@@ -615,8 +613,6 @@ export interface AccountListItem {
   bindingSystemAccountId?: string
   authorizationStatus?: AuthorizationStatus
   authorizationExpiresAt?: string
-  authorizationLimits?: RequestQuotaLimits
-  authorizationQuotaExceeded?: boolean
   lockState?: 'UNLOCKED' | 'LOCKED_IDLE' | 'ENGAGED' | 'DEAD_CONFIRMED'
   lockDeathTimeoutSeconds?: number
   lockRetryIntervalSeconds?: number
@@ -630,7 +626,6 @@ export interface AccountListItem {
     | 'canUse'
     | 'canEdit'
     | 'canDelete'
-    | 'canReturnAuthorization'
     | 'canAuthorize'
     | 'canViewCredentials'
     | 'canLock'
@@ -1249,7 +1244,6 @@ export interface GroupSummary {
   ownerSystemAccountName?: string
   authorizationStatus?: AuthorizationStatus
   authorizationExpiresAt?: string
-  authorizationLimits?: RequestQuotaLimits
   authorizationSources?: AuthorizationSourceSummary[]
   authorizationSourceSummary?: {
     activeSourceCount: number
@@ -1265,7 +1259,7 @@ export interface GroupSummary {
 
 export interface GroupListItem extends Omit<
   GroupSummary,
-  'accountIds' | 'schedulingPolicy' | 'authorizationLimits' | 'authorizationSources' | 'accountStats' | 'permissions'
+  'accountIds' | 'schedulingPolicy' | 'authorizationSources' | 'accountStats' | 'permissions'
 > {
   updatedAt: string
   /** 列表项可选调度策略（普通分组可选调度策略设计 §2.3）：供类型列摘要直接使用，不再逐行拉 edit-basic。 */
@@ -1342,7 +1336,6 @@ export type GroupOptionSummary = Pick<GroupSummary, 'id' | 'name'> & Partial<Pic
   | 'schedulingPolicy'
   | 'accessType'
   | 'authorizationExpiresAt'
-  | 'authorizationLimits'
   | 'authorizationStatus'
   | 'permissions'
 >> & {

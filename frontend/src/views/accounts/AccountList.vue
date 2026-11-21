@@ -56,7 +56,6 @@
         @delete="$emit('delete', $event.id)"
         @edit="$emit('edit', $event)"
         @menu-click="$emit('menu-click', $event, record)"
-        @return-authorization="$emit('return-authorization', $event.id)"
         @refresh-balance="$emit('refresh-balance', $event)"
         @balance-details-request="$emit('balance-details-request', $event)"
         @start-priority-edit="$emit('start-priority-edit', $event)"
@@ -93,7 +92,6 @@
         @edit="$emit('edit', record)"
         @bind-group="$emit('bind-group', record)"
         @menu-click="$emit('menu-click', $event, record)"
-        @return-authorization="$emit('return-authorization', record.id)"
         @refresh-balance="$emit('refresh-balance', record.id)"
         @balance-details-request="$emit('balance-details-request', $event)"
         @start-priority-edit="$emit('start-priority-edit', $event)"
@@ -159,7 +157,6 @@ defineEmits<{
   (event: 'menu-click', menuEvent: { key: string | number }, account: AccountListItem): void
   (event: 'mobile-load-more'): void
   (event: 'mobile-refresh'): void
-  (event: 'return-authorization', accountId: string): void
   (event: 'refresh-balance', accountId: string): void
   (event: 'balance-details-request', accountId: string): void
   (event: 'sort-change', sorts: ResponsiveDataListSort[]): void

@@ -37,7 +37,7 @@ import {
 } from './accountResponseInspectionPolicyPayload'
 import { loadAccountQuotaRecoveryPolicy } from './accountQuotaRecoveryPolicyTypes'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
-import { accountHealthCheckEndpointModeOptions, defaultAccountHealthCheckEndpointMode } from './accountHealthCheckEndpointMode'
+import { accountHealthCheckEndpointModeOptions, defaultAccountHealthCheckEndpointMode, isAccountHealthCheckEndpointMode } from './accountHealthCheckEndpointMode'
 import {
   createSavedAccountApiKeyRuntimeSnapshot,
   visibleSavedAccountApiKeyRuntimeDetails,
@@ -77,7 +77,7 @@ import {
 import { buildAccountSavePayload, type AccountSavePayload } from './accountSavePayload'
 import { useAccountProviderModelOptions } from './useAccountProviderModelOptions'
 import { providerModelsForProtocolProfile } from './accountEditFormPayload'
-import { DOMAIN_MODEL_MODES, capabilityDomainIsMedia, defaultValidHealthCheckEndpointModeForCapabilityDomain, mediaDomainModelProtocolTokens, preferredMediaDomainProviderCode, type AccountCapabilityDomain } from './accountCapabilityDomains'
+import { DOMAIN_MODEL_MODES, capabilityDomainIsMedia, defaultHealthCheckEndpointModeForCapabilityDomain, mediaDomainModelProtocolTokens, preferredMediaDomainProviderCode, type AccountCapabilityDomain } from './accountCapabilityDomains'
 import { cachedMediaDomainModelAvailability } from './mediaDomainModelAvailability'
 import { useAccountEditTagOptions } from './useAccountEditTagOptions'
 import { useAccountEditSaveFlow } from './useAccountEditSaveFlow'
@@ -204,7 +204,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       return providerModelsForProtocolProfile(
         loadedProviderModelOptions.value,
         selectedProtocolProfile.value,
-        form.type
+        form.type,
+        form.capabilityDomain
       )
     }
     // 媒体域：服务端已按目录 mode 过滤；这里保留退役媒体表单的协议 token 二次
@@ -421,18 +422,21 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       () => form.providerProtocolProfileId
     ],
     () => {
-      const available = accountHealthCheckEndpointModeOptions(form.supportedEndpointModes)
-      if (available.some((option) => option.value === form.healthCheckEndpointMode)) return
-      // 媒体域 health_check_endpoint_mode 是连接测试记录值：失效时优先域默认，
-      // 域默认不在当前声明集则取首个合法形态（qwen 音频只有 audio_job_*，
-      // 域默认 audio_speech 不可保存），不得落 chat 族默认。
-      if (capabilityDomainIsMedia(form.capabilityDomain)) {
-        form.healthCheckEndpointMode = defaultValidHealthCheckEndpointModeForCapabilityDomain({
-          capabilityDomain: form.capabilityDomain,
-          endpointModes: form.supportedEndpointModes
-        }) ?? form.healthCheckEndpointMode
+      // 五域退役（AI账户上游接口能力设计 §5）：非对话域声明集已不存在，
+      // 「检查请求形态」按域默认常量派生展示；存量合法记录值（27 值白名单内，
+      // 如旧 qwen 音频的 audio_job_create）在编辑态原样保留，不强制归位。
+      if (capabilityDomainIsMedia(form.capabilityDomain)
+        || form.capabilityDomain === 'embedding'
+        || form.capabilityDomain === 'rerank') {
+        if (!isAccountHealthCheckEndpointMode(form.healthCheckEndpointMode)) {
+          form.healthCheckEndpointMode = defaultHealthCheckEndpointModeForCapabilityDomain({
+            capabilityDomain: form.capabilityDomain
+          })
+        }
         return
       }
+      const available = accountHealthCheckEndpointModeOptions(form.supportedEndpointModes)
+      if (available.some((option) => option.value === form.healthCheckEndpointMode)) return
       form.healthCheckEndpointMode = defaultAccountHealthCheckEndpointMode(
         form.providerCode,
         form.providerProtocolProfileId,
@@ -828,7 +832,9 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       defaults,
       fallbackGroupId,
       selectedGroup,
-      allowMissingBaseUrl: advancedDetail?.accessType === 'authorized'
+      allowMissingBaseUrl: advancedDetail?.accessType === 'authorized',
+      // 五域退役：装载按路由域裁剪声明集（非对话域恒空集）。
+      capabilityDomain: options.capabilityDomain.value
     }
     let formPatch: AccountFormModel
     let advancedLoad: ReturnType<typeof buildAccountEditFormLoad> | undefined
@@ -928,7 +934,9 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       formLoad = buildAccountCloneFormLoad({
         account: sourceAccount,
         defaults,
-        selectedGroup
+        selectedGroup,
+        // 五域退役：克隆不透传来源声明集（非对话域恒空集）。
+        capabilityDomain: options.capabilityDomain.value
       })
     } catch (error) {
       reportAccountFormLoadError(error, '克隆来源账户数据结构异常，请清理后再克隆')

@@ -17,6 +17,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 )
 
 // ---- fake catalog port（测试本地形状；生产接口已退役） ----
@@ -329,12 +331,12 @@ func TestModelMappingCatalogHit(t *testing.T) {
 	// 拆除，models 行即权威）。
 	err := store.assertAccountModelMappingsInProviderCatalog(context.Background(), env.db, "gpt", "owner-1", profile,
 		[]ModelMapping{mapping("gpt-4o-mini", "chat_completions", "gpt-4o-mini", "chat_completions")},
-		[]string{"chat_json", "chat_sse"})
+		[]string{"chat_json", "chat_sse"}, accountscore.CapabilityDomainChat)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// 空 mapping 集早退（hybrid 分派分支已随 §555 终态扫描拆除，B4④）。
-	if err := store.assertAccountModelMappingsInProviderCatalog(context.Background(), env.db, "gpt", "owner-1", profile, nil, nil); err != nil {
+	if err := store.assertAccountModelMappingsInProviderCatalog(context.Background(), env.db, "gpt", "owner-1", profile, nil, nil, accountscore.CapabilityDomainChat); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -350,7 +352,7 @@ func TestModelMappingCatalogMiss(t *testing.T) {
 	modes := []string{"chat_json", "chat_sse"}
 	// 目标模型不在 models（夹具无 gpt-o1）。
 	assertValidationError(t, store.assertAccountModelMappingsInProviderCatalog(ctx, env.db, "gpt", "owner-1", profile,
-		[]ModelMapping{mapping("gpt-4o-mini", "chat_completions", "gpt-o1", "chat_completions")}, modes),
+		[]ModelMapping{mapping("gpt-4o-mini", "chat_completions", "gpt-o1", "chat_completions")}, modes, accountscore.CapabilityDomainChat),
 		"账号模型别名目标模型不在当前供应商模型目录中：gpt-o1")
 	// 错误样本只取前 5 个（归档 slice(0, 5).join('、')）。
 	assertValidationError(t, store.assertAccountModelMappingsInProviderCatalog(ctx, env.db, "gpt", "owner-1", profile,
@@ -361,7 +363,7 @@ func TestModelMappingCatalogMiss(t *testing.T) {
 			mapping("m4", "chat_completions", "gpt-o4", "chat_completions"),
 			mapping("m5", "chat_completions", "gpt-o5", "chat_completions"),
 			mapping("m6", "chat_completions", "gpt-o6", "chat_completions"),
-		}, modes),
+		}, modes, accountscore.CapabilityDomainChat),
 		"账号模型别名目标模型不在当前供应商模型目录中：gpt-o1、gpt-o2、gpt-o3、gpt-o4、gpt-o5")
 }
 

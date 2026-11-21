@@ -93,7 +93,6 @@
     @delete="$emit('delete', account)"
     @edit="$emit('edit', account)"
     @menu-click="$emit('menu-click', $event, account)"
-    @return-authorization="$emit('return-authorization', account)"
     @test="$emit('test', account)"
   />
 </template>
@@ -131,7 +130,6 @@ defineEmits<{
   (event: 'menu-click', menuEvent: { key: string | number }, account: AccountListItem): void
   (event: 'cancel-priority-edit', accountId: string): void
   (event: 'cancel-concurrency-edit', accountId: string): void
-  (event: 'return-authorization', account: AccountListItem): void
   (event: 'refresh-balance', accountId: string): void
   (event: 'balance-details-request', accountId: string): void
   (event: 'start-priority-edit', accountId: string): void

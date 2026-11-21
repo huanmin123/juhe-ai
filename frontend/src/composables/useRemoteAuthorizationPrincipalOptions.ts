@@ -1,6 +1,7 @@
 import { onBeforeUnmount, ref, shallowRef } from 'vue'
 
 import { api } from '@/api/client'
+import { authState } from '@/composables/useAuth'
 import { message } from '@/lib/antd'
 import { removeLocalSelectPreferenceValues } from '@/shared/selectLocalPreferenceCache'
 import type { SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
@@ -174,21 +175,48 @@ export function useRemoteAuthorizationPrincipalOptions<T extends AuthorizationPr
   }
 }
 
+// 授权身份候选项改走保留域：团队用 teams 列表/详情，账户用系统账户 options；
+// 个人视图没有远端候选（被授权用户即自己），由当前登录用户本地构造。
 async function fetchOptions<T extends AuthorizationPrincipalOption>(
   kind: AuthorizationPrincipalKind,
   isManagementView: boolean,
   params: { ids?: string[]; keyword?: string; limit: number }
 ): Promise<T[]> {
   if (kind === 'team') {
-    const options = isManagementView
-      ? await api.authorizationOptions.granteeTeams(params)
-      : await api.myAuthorizationOptions.granteeTeams(params)
-    return options as T[]
+    if (params.ids?.length) {
+      const details = await Promise.all(params.ids.map(async (id) => (isManagementView
+        ? await api.systemTeams.detail(id)
+        : await api.myTeams.detail(id))))
+      return details as unknown as T[]
+    }
+    const result = isManagementView
+      ? await api.systemTeams.list({ keyword: params.keyword, page: 1, pageSize: params.limit })
+      : await api.myTeams.list({ keyword: params.keyword, page: 1, pageSize: params.limit })
+    return result.items as unknown as T[]
   }
-  const options = isManagementView
-    ? await api.authorizationOptions.granteeAccounts(params)
-    : await api.myAuthorizationOptions.granteeAccounts(params)
-  return options as T[]
+  if (isManagementView) {
+    return (await api.systemAccounts.options({ ids: params.ids, keyword: params.keyword, limit: params.limit })) as unknown as T[]
+  }
+  const self = selfPrincipalOption()
+  if (!self) return []
+  if (params.ids?.length) {
+    return params.ids.includes(self.id) ? [self as unknown as T] : []
+  }
+  if (params.keyword && !principalMatchesKeyword(self, params.keyword)) return []
+  return [self as unknown as T]
+}
+
+function selfPrincipalOption(): SystemAccountPrincipalSummary | undefined {
+  const user = authState.currentUser.value
+  if (!user) return undefined
+  return { id: user.id, username: user.username, displayName: user.displayName, status: 'active' }
+}
+
+function principalMatchesKeyword(option: SystemAccountPrincipalSummary, keyword: string): boolean {
+  const normalized = keyword.trim().toLowerCase()
+  if (!normalized) return true
+  return option.username.toLowerCase().includes(normalized)
+    || option.displayName.toLowerCase().includes(normalized)
 }
 
 function mergeOptionsById<T extends { id: string }>(leading: T[], trailing: T[]): T[] {

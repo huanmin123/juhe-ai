@@ -21,6 +21,7 @@ import { asString } from './accountBasicFormatters'
 import { parseStrictDatePickerValue } from './accountFormatters'
 import { rememberProxyPoolLabel } from '@/shared/proxyLabelCache'
 import { resolveEditAccountProviderIdentity } from '@/shared/providerProtocol'
+import { capabilityDomainSupportsDeclaration, type AccountCapabilityDomain } from './accountCapabilityDomains'
 import type { AccountFormModel } from './accountFormTypes'
 import {
   defaultAccountEndpointModes,
@@ -63,6 +64,8 @@ interface AccountBasicFormLoadInput {
   fallbackGroupId?: string
   selectedGroup?: GroupSelection
   allowMissingBaseUrl?: boolean
+  /** 当前路由能力域：五域装载不读声明集（2026-11-21 五域退役，设计 §3）。 */
+  capabilityDomain?: AccountCapabilityDomain
 }
 
 interface AccountFormLoadInput extends AccountBasicFormLoadInput {
@@ -73,6 +76,8 @@ interface AccountCloneFormLoadInput {
   account: AccountCloneContext
   defaults: AccountFormModel
   selectedGroup?: GroupSelection
+  /** 当前路由能力域：五域克隆不透传来源声明集（设计 §3）。 */
+  capabilityDomain?: AccountCapabilityDomain
 }
 
 export function buildAccountEditFormLoad(input: AccountFormLoadInput): AccountEditFormLoadResult {
@@ -126,7 +131,7 @@ export function buildAccountBasicEditFormLoad(input: AccountBasicFormLoadInput):
 }
 
 function buildAccountBasicFormPatch(input: AccountBasicFormLoadInput): AccountFormModel {
-  const { account, credentials, defaults, fallbackGroupId, selectedGroup } = input
+  const { account, credentials, defaults, fallbackGroupId, selectedGroup, capabilityDomain } = input
   // T102：详情 providerProtocolProfileId 由后端探针表（13 条）反查派生，媒体四档
   // preset 返回空、generic_http 账户另因 vendor NULL 投影空 providerCode——原
   // `?? defaults` 不兜空串，这些账户被保存校验拦死。按连接 preset 前端反查补齐
@@ -149,10 +154,12 @@ function buildAccountBasicFormPatch(input: AccountBasicFormLoadInput): AccountFo
     privilege: account.superPriorityEnabled ? 'super_priority' : account.fallbackEnabled ? 'fallback' : 'normal',
     status: account.status === 'active' ? 'active' : account.status === 'disabled' ? 'disabled' : 'pending_test',
     clientCompatibility: accountClientCompatibilityForForm(account),
-    // 接口能力默认集按派生后的供应商身份推导（credentials 缺失时的 fallback 分支）。
+    // 接口能力默认集按派生后的供应商身份推导（credentials 缺失时的 fallback 分支）；
+    // 五域退役后非对话域装载恒为空集，凭据键（revision 30 已清洗）不再读入。
     supportedEndpointModes: accountEndpointModesForForm(
       { ...account, providerCode: providerIdentity.providerCode, providerProtocolProfileId: providerIdentity.providerProtocolProfileId },
-      credentials
+      credentials,
+      capabilityDomain
     ),
     groupId: selectedGroup?.id ?? fallbackGroupId,
     group: selectedGroup,
@@ -181,7 +188,7 @@ function buildAccountBasicFormPatch(input: AccountBasicFormLoadInput): AccountFo
 }
 
 export function buildAccountCloneFormLoad(input: AccountCloneFormLoadInput): AccountEditFormLoadResult {
-  const { account, defaults, selectedGroup } = input
+  const { account, defaults, selectedGroup, capabilityDomain } = input
   const credentials = account.credentialOptions
   const errorPolicyRules = loadCredentialErrorPolicyRules(credentials, '克隆来源错误处理策略')
   const responseInspectionRules = loadCredentialResponseInspectionRules(credentials, '克隆来源响应检查策略')
@@ -216,10 +223,11 @@ export function buildAccountCloneFormLoad(input: AccountCloneFormLoadInput): Acc
     status: accountCloneStatusForForm(account.status),
     statusSelectionExplicit: true,
     clientCompatibility: accountClientCompatibilityForForm(account),
-    // 接口能力默认集按派生后的供应商身份推导（credentials 缺失时的 fallback 分支）。
+    // 克隆不透传来源声明集（五域退役设计 §3；chat 域按来源凭据回填）。
     supportedEndpointModes: accountEndpointModesForForm(
       { ...account, providerCode: providerIdentity.providerCode, providerProtocolProfileId: providerIdentity.providerProtocolProfileId },
-      credentials
+      credentials,
+      capabilityDomain
     ),
     proxyProfileId: account.proxyProfileId,
     // 克隆复制配置绑定（代理池设计 §8.4）：复制 proxyPoolId（不复制租约），新账户按策略分配。
@@ -329,8 +337,12 @@ function parseAccountApiKeyStrategy(credentials: { api_key_strategy?: unknown })
 function accountEndpointModesForForm(
   account: Pick<AccountEditBasicDetail, 'providerCode' | 'providerProtocolProfileId' | 'type'>
     & Partial<Pick<AccountEditBasicDetail, 'protocolCode' | 'protocolVersion'>>,
-  credentials: Pick<AccountCloneCredentialOptions, 'supported_endpoint_modes'>
+  credentials: Pick<AccountCloneCredentialOptions, 'supported_endpoint_modes'>,
+  capabilityDomain?: AccountCapabilityDomain
 ): AccountFormModel['supportedEndpointModes'] {
+  // 五域退役（AI账户上游接口能力设计 §3）：非对话域不装载声明集——存量凭据键
+  // 已随 schema revision 30 清洗，供应商缺省推导也不得再为五域表单播种。
+  if (!capabilityDomainSupportsDeclaration(capabilityDomain)) return []
   return normalizeAccountEndpointModes(
     credentials.supported_endpoint_modes,
     defaultAccountEndpointModes(account.providerCode, account.type, undefined, {

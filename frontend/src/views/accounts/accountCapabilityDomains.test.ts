@@ -13,7 +13,7 @@ import {
   VOLCENGINE_OPENSPEECH_OPENAI_V1_PROFILE_ID,
   XAI_OPENAI_V1_PROFILE_ID
 } from '@/shared/providerProtocol'
-import type { AccountSupportedEndpointMode, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
+import type { ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
 import {
   allAccountEndpointModes,
   defaultEndpointModesForAccount,
@@ -27,16 +27,18 @@ import {
   ACCOUNT_CAPABILITY_DOMAIN_RULE_VERSION,
   DOMAIN_ENDPOINT_MODES_AUDIO,
   DOMAIN_ENDPOINT_MODES_CHAT,
+  DOMAIN_ENDPOINT_MODES_EMBEDDING,
   DOMAIN_ENDPOINT_MODES_IMAGE,
+  DOMAIN_ENDPOINT_MODES_RERANK,
   DOMAIN_ENDPOINT_MODES_VIDEO,
   DOMAIN_MODEL_MODES,
   accountCapabilityDomainLabel,
   allowedEndpointModesFor,
   capabilityDomainAccountTypes,
   capabilityDomainIsMedia,
+  capabilityDomainSupportsDeclaration,
   defaultEndpointModesForCapabilityDomain,
   defaultHealthCheckEndpointModeForCapabilityDomain,
-  defaultValidHealthCheckEndpointModeForCapabilityDomain,
   defaultStatusForCapabilityDomain,
   deriveCapabilityDomain,
   mediaDomainModelProtocolTokens,
@@ -46,13 +48,15 @@ import { FALLBACK_PROVIDERS } from './accountOptions'
 import { mergeAccountProviderDefinitions } from './useAccountEditForm'
 
 describe('能力域枚举与标签', () => {
-  it('域枚举固定为四值，顺序与 CHECK 约束一致', () => {
-    expect([...ACCOUNT_CAPABILITY_DOMAINS]).toEqual(['chat', 'video', 'audio', 'image'])
+  it('域枚举固定为六值，顺序与 CHECK 约束一致（向量/重排拆分）', () => {
+    expect([...ACCOUNT_CAPABILITY_DOMAINS]).toEqual(['chat', 'embedding', 'rerank', 'video', 'audio', 'image'])
   })
 
   it('中文标签覆盖全部域', () => {
     expect(ACCOUNT_CAPABILITY_DOMAIN_LABELS).toEqual({
       chat: '对话',
+      embedding: '向量',
+      rerank: '重排',
       video: '视频',
       audio: '音频',
       image: '图像'
@@ -62,13 +66,13 @@ describe('能力域枚举与标签', () => {
     }
   })
 
-  it('推导规则版本固定为 ruleVersion=1', () => {
-    expect(ACCOUNT_CAPABILITY_DOMAIN_RULE_VERSION).toBe(1)
+  it('推导规则版本固定为 ruleVersion=2（向量/重排拆分）', () => {
+    expect(ACCOUNT_CAPABILITY_DOMAIN_RULE_VERSION).toBe(2)
   })
 })
 
 describe('对话 modes 集合完整性', () => {
-  it('锚集合恰为 15 值（v8-A 移出三项 + 协议补齐批向量/重排两项）且顺序与计划锚定义一致', () => {
+  it('锚集合恰为 13 值（向量/重排拆分移出两 mode）且顺序与设计 lane 表一致', () => {
     expect([...DOMAIN_ENDPOINT_MODES_CHAT]).toEqual([
       'chat_json',
       'chat_sse',
@@ -82,10 +86,13 @@ describe('对话 modes 集合完整性', () => {
       'interactions_sse',
       'count_tokens',
       'embed_content',
-      'message_token_counting',
-      'embeddings_json',
-      'rerank_json'
+      'message_token_counting'
     ])
+  })
+
+  it('向量/重排独立域 lane 恰为单值', () => {
+    expect([...DOMAIN_ENDPOINT_MODES_EMBEDDING]).toEqual(['embeddings_json'])
+    expect([...DOMAIN_ENDPOINT_MODES_RERANK]).toEqual(['rerank_json'])
   })
 
   it('锚集合无重复值', () => {
@@ -129,9 +136,16 @@ describe('对话 modes 集合完整性', () => {
     expect(audioModes.has('audio_transcription_json')).toBe(true)
     expect(audioModes.has('realtime_session')).toBe(true)
   })
+
+  it('向量/重排拆分：embeddings_json / rerank_json 不得再出现在对话锚集合', () => {
+    const chatModes = new Set<string>(DOMAIN_ENDPOINT_MODES_CHAT)
+    for (const mode of ['embeddings_json', 'rerank_json'] as const) {
+      expect(chatModes.has(mode), `拆分后 ${mode} 不得再出现在对话锚集合`).toBe(false)
+    }
+  })
 })
 
-describe('deriveCapabilityDomain 推导规则（ruleVersion=1）', () => {
+describe('deriveCapabilityDomain 推导规则（ruleVersion=2）', () => {
   it.each([
     {
       name: '纯对话：chat_json/chat_sse 命中对话 modes，归 chat（规则⑤前置命中）',
@@ -149,8 +163,48 @@ describe('deriveCapabilityDomain 推导规则（ruleVersion=1）', () => {
       expected: 'chat'
     },
     {
-      name: '向量/重排：embeddings_json/rerank_json 属对话锚集合（文本 lane，不新增域）',
+      name: '向量/重排拆分：纯 embeddings_json 声明落 embedding 域（规则②）',
+      modes: ['embeddings_json'],
+      expected: 'embedding'
+    },
+    {
+      name: '向量/重排拆分：纯 rerank_json 声明落 rerank 域（规则③）',
+      modes: ['rerank_json'],
+      expected: 'rerank'
+    },
+    {
+      name: '向量/重排混合声明（无对话/媒体触发）：规则②③互斥，照 v1 落 chat（迁移失败清单人工处理）',
       modes: ['embeddings_json', 'rerank_json'],
+      expected: 'chat'
+    },
+    {
+      name: '混合声明：embeddings_json + 对话生成形态不拆域，归 chat（迁移失败清单人工处理）',
+      modes: ['embeddings_json', 'chat_json', 'chat_sse'],
+      expected: 'chat'
+    },
+    {
+      name: '混合声明：rerank_json + 对话生成形态不拆域，归 chat',
+      modes: ['rerank_json', 'responses_sse'],
+      expected: 'chat'
+    },
+    {
+      name: '混合声明：embeddings_json + 媒体触发值照 v1 落 chat（媒体分支排除新域 mode，与后端 DeriveDomain 同构）',
+      modes: ['embeddings_json', 'images_json'],
+      expected: 'chat'
+    },
+    {
+      name: '混合声明：embeddings_json + audio_speech 照 v1 落 chat（媒体分支排除新域 mode）',
+      modes: ['embeddings_json', 'audio_speech'],
+      expected: 'chat'
+    },
+    {
+      name: '混合声明：rerank_json + video_create 照 v1 落 chat（后端镜像钉值）',
+      modes: ['rerank_json', 'video_create'],
+      expected: 'chat'
+    },
+    {
+      name: '三向混合（向量+重排+对话锚）落 chat',
+      modes: ['embeddings_json', 'rerank_json', 'chat_sse'],
       expected: 'chat'
     },
     {
@@ -248,10 +302,7 @@ describe('deriveCapabilityDomain 推导规则（ruleVersion=1）', () => {
   })
 })
 
-// ---- M2 允许集/默认集镜像（声明集 ⊆ 域允许集不变式 + §档案×域清单表定案 v7） ----
-
-const VIDEO_GROUP: AccountSupportedEndpointMode[] = ['video_create', 'video_get', 'video_content', 'video_cancel']
-const AUDIO_JOB_GROUP: AccountSupportedEndpointMode[] = ['audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel']
+// ---- M2 允许集/默认集镜像（五域退役后允许集/默认集仅 chat 持有；创建墙矩阵由 capabilityDomainAccountTypes 承担） ----
 
 function fallbackProfileById(id: string): AccountProviderProfileLike {
   const provider = FALLBACK_PROVIDERS.find((item) => item.protocolProfiles.some((profile) => profile.id === id))
@@ -274,14 +325,13 @@ const volcengineProfile = fallbackProfileById(VOLCENGINE_OPENAI_V1_PROFILE_ID)
 const volcengineOpenSpeechProfile = fallbackProfileById(VOLCENGINE_OPENSPEECH_OPENAI_V1_PROFILE_ID)
 const qwenProfile = fallbackProfileById(QWEN_OPENAI_V1_PROFILE_ID)
 
-describe('allowedEndpointModesFor：chat 域允许集 = 15 值对话锚集合 ∩ 供应商词表（v8-A + 协议补齐批）', () => {
-  it('gpt：chat×2+responses×2+embeddings（向量为 2026-11-20 显式可选文本 lane）', () => {
+describe('allowedEndpointModesFor：chat 域允许集 = 13 值对话锚集合 ∩ 供应商词表（v8-A + 向量/重排拆分）', () => {
+  it('gpt：chat×2+responses×2（embeddings_json 已随向量域拆分退出 chat 域）', () => {
     expect(allowedEndpointModesFor({ capabilityDomain: 'chat', profile: gptProfile, accountType: 'api_key' })).toEqual([
       'chat_json',
       'chat_sse',
       'responses_json',
-      'responses_sse',
-      'embeddings_json'
+      'responses_sse'
     ])
   })
 
@@ -293,13 +343,15 @@ describe('allowedEndpointModesFor：chat 域允许集 = 15 值对话锚集合 �
     ])
   })
 
-  it('deepseek / glm / xai / gemini OpenAI Chat：v8-A 后收敛对话族', () => {
+  it('deepseek / glm / xai / gemini OpenAI Chat：v8-A 后收敛对话族，向量/重排 mode 不再出现在任何 chat 词表', () => {
     const deepseekAllowed = allowedEndpointModesFor({ capabilityDomain: 'chat', profile: deepseekProfile, accountType: 'api_key' })
     expect(deepseekAllowed).toContain('responses_json')
     expect(deepseekAllowed).not.toContain('images_json')
     expect(deepseekAllowed).not.toContain('audio_transcription_json')
     expect(deepseekAllowed).not.toContain('realtime_session')
     expect(deepseekAllowed).not.toContain('video_create')
+    expect(deepseekAllowed).not.toContain('embeddings_json')
+    expect(deepseekAllowed).not.toContain('rerank_json')
     expect(allowedEndpointModesFor({ capabilityDomain: 'chat', profile: glmProfile, accountType: 'api_key' })).toEqual([
       'chat_json',
       'chat_sse'
@@ -317,6 +369,30 @@ describe('allowedEndpointModesFor：chat 域允许集 = 15 值对话锚集合 �
       'responses_json',
       'responses_sse'
     ])
+    // 拆分后缺省域参数按 chat 收敛：词表不再含 embeddings_json / rerank_json。
+    expect(endpointModesForProfile(gptProfile)).not.toContain('embeddings_json')
+    expect(endpointModesForProfile(qwenProfile)).not.toContain('embeddings_json')
+    expect(endpointModesForProfile(qwenProfile)).not.toContain('rerank_json')
+  })
+
+  it('向量/重排独立域：五域退役后允许集恒为空集（声明集仅 chat 持有）', () => {
+    // 2026-11-21 五域退役（AI账户上游接口能力设计 §3）：embedding/rerank 域不再
+    // 有「允许集」概念，任何供应商×账户类型组合都返回空集；创建墙类型判定由
+    // capabilityDomainAccountTypes 承担（见下方用例）。
+    for (const profile of [gptProfile, qwenProfile, glmProfile, volcengineProfile, xaiProfile, deepseekProfile, anthropicProfile, geminiNativeProfile, geminiOpenAIChatProfile, minimaxProfile]) {
+      expect(allowedEndpointModesFor({ capabilityDomain: 'embedding', profile, accountType: 'api_key' })).toEqual([])
+      expect(allowedEndpointModesFor({ capabilityDomain: 'rerank', profile, accountType: 'api_key' })).toEqual([])
+      expect(allowedEndpointModesFor({ capabilityDomain: 'embedding', profile, accountType: 'oauth' })).toEqual([])
+      expect(allowedEndpointModesFor({ capabilityDomain: 'rerank', profile, accountType: 'oauth' })).toEqual([])
+    }
+  })
+
+  it('向量/重排域可建账户类型：api_key 按词表求交非空保留，oauth 自然被过滤', () => {
+    expect(capabilityDomainAccountTypes({ capabilityDomain: 'embedding', providerCode: 'gpt', profile: gptProfile })).toEqual(['api_key'])
+    expect(capabilityDomainAccountTypes({ capabilityDomain: 'embedding', providerCode: 'qwen', profile: qwenProfile })).toEqual(['api_key'])
+    expect(capabilityDomainAccountTypes({ capabilityDomain: 'rerank', providerCode: 'qwen', profile: qwenProfile })).toEqual(['api_key'])
+    expect(capabilityDomainAccountTypes({ capabilityDomain: 'embedding', providerCode: 'glm', profile: glmProfile })).toEqual([])
+    expect(capabilityDomainAccountTypes({ capabilityDomain: 'rerank', providerCode: 'gpt', profile: gptProfile })).toEqual([])
   })
 
   it('gemini native：generateContent/interactions/countTokens/embedContent，images_json 不在词表', () => {
@@ -346,24 +422,61 @@ describe('allowedEndpointModesFor：chat 域允许集 = 15 值对话锚集合 �
     }
   })
 
-  it('自定义向量/重排模型按档案可声明 mode 进入账户模型下拉', () => {
+  it('自定义向量/重排模型按域参数化的档案可声明 mode 进入账户模型下拉', () => {
     const models = [
       { label: 'custom-embed', value: 'custom-embed', supportedApiProtocols: ['embeddings' as const] },
       { label: 'custom-rerank', value: 'custom-rerank', supportedApiProtocols: ['rerank' as const] },
       { label: 'custom-chat', value: 'custom-chat', supportedApiProtocols: ['chat_completions' as const] }
     ]
+    // chat 域（缺省）：拆分后 chat 词表不含 embeddings_json / rerank_json，
+    // embedding/rerank 模型不再进入对话账户模型下拉（域 mode 白名单同步收窄）。
     const gptValues = providerModelsForProtocolProfile(models, gptProfile as unknown as ProviderProtocolProfileDefinition).map((model) => model.value)
-    expect(gptValues).toContain('custom-embed')
     expect(gptValues).toContain('custom-chat')
+    expect(gptValues).not.toContain('custom-embed')
     expect(gptValues).not.toContain('custom-rerank')
-    const qwenValues = providerModelsForProtocolProfile(models, qwenProfile as unknown as ProviderProtocolProfileDefinition).map((model) => model.value)
-    expect(qwenValues).toContain('custom-embed')
-    expect(qwenValues).toContain('custom-rerank')
-    const volcValues = providerModelsForProtocolProfile(models, volcengineProfile as unknown as ProviderProtocolProfileDefinition).map((model) => model.value)
+    // embedding 域：gpt/qwen 词表放行 embeddings 协议；rerank 协议不进 gpt。
+    const gptEmbeddingValues = providerModelsForProtocolProfile(
+      models,
+      gptProfile as unknown as ProviderProtocolProfileDefinition,
+      'api_key',
+      'embedding'
+    ).map((model) => model.value)
+    expect(gptEmbeddingValues).toContain('custom-embed')
+    expect(gptEmbeddingValues).toContain('custom-chat')
+    expect(gptEmbeddingValues).not.toContain('custom-rerank')
+    // rerank 域：仅 qwen 词表放行 rerank 协议；embeddings 协议不随 rerank 域放行。
+    const qwenRerankValues = providerModelsForProtocolProfile(
+      models,
+      qwenProfile as unknown as ProviderProtocolProfileDefinition,
+      'api_key',
+      'rerank'
+    ).map((model) => model.value)
+    expect(qwenRerankValues).toContain('custom-rerank')
+    expect(qwenRerankValues).not.toContain('custom-embed')
+    const qwenEmbeddingValues = providerModelsForProtocolProfile(
+      models,
+      qwenProfile as unknown as ProviderProtocolProfileDefinition,
+      'api_key',
+      'embedding'
+    ).map((model) => model.value)
+    expect(qwenEmbeddingValues).toContain('custom-embed')
+    expect(qwenEmbeddingValues).not.toContain('custom-rerank')
+    // volcengine 现役向量面报 400（词表无 embeddings_json）：embedding 域不放行。
+    const volcValues = providerModelsForProtocolProfile(
+      models,
+      volcengineProfile as unknown as ProviderProtocolProfileDefinition,
+      'api_key',
+      'embedding'
+    ).map((model) => model.value)
     expect(volcValues).not.toContain('custom-embed')
-    // glm 的 OpenAI 写侧词表不含 embeddings_json（后端 glmOpenAIVocabulary），
-    // 前端不得把 embedding 模型展示成可绑定。
-    const glmValues = providerModelsForProtocolProfile(models, glmProfile as unknown as ProviderProtocolProfileDefinition).map((model) => model.value)
+    // glm 的 OpenAI 收窄词表不含 embeddings_json（后端 glmOpenAINarrowedVocabulary），
+    // embedding 域也不得把 embedding 模型展示成可绑定。
+    const glmValues = providerModelsForProtocolProfile(
+      models,
+      glmProfile as unknown as ProviderProtocolProfileDefinition,
+      'api_key',
+      'embedding'
+    ).map((model) => model.value)
     expect(glmValues).not.toContain('custom-embed')
     expect(glmValues).not.toContain('custom-rerank')
     // OpenAI OAuth 写侧只保留 Responses 对：模型下拉必须收敛到 responses，
@@ -384,29 +497,23 @@ describe('allowedEndpointModesFor：chat 域允许集 = 15 值对话锚集合 �
   })
 })
 
-describe('allowedEndpointModesFor：媒体域矩阵逐格（域 modes 集 × 供应商写侧词表）', () => {
-  it.each([
-    // v8-A：音频域允许集补 audio_transcription_json / realtime_session（按
-    // 各供应商词表实际支持取舍；qwen/gemini/minimax/volcengine 词表无则不行值）。
-    { name: 'gpt', profile: gptProfile, video: VIDEO_GROUP, audio: ['audio_speech', 'audio_transcription_json', 'realtime_session'], image: ['images_json'] },
-    { name: 'xai', profile: xaiProfile, video: VIDEO_GROUP, audio: [], image: [] },
-    { name: 'glm', profile: glmProfile, video: VIDEO_GROUP, audio: ['audio_speech', 'audio_transcription_json'], image: [] },
-    { name: 'gemini native', profile: geminiNativeProfile, video: VIDEO_GROUP, audio: ['audio_speech'], image: [] },
-    { name: 'minimax', profile: minimaxProfile, video: VIDEO_GROUP, audio: ['audio_speech'], image: [] },
-    // volcengine 按档案×域拆分：Ark 不承接音频（TTS/长转写在 OpenSpeech 档案），
-    // OpenSpeech 音频另见档案专项用例。
-    { name: 'volcengine Ark', profile: volcengineProfile, video: VIDEO_GROUP, audio: [], image: ['images_json'] },
-    { name: 'qwen（仅长音频任务四值）', profile: qwenProfile, video: VIDEO_GROUP, audio: AUDIO_JOB_GROUP, image: [] },
-    { name: 'deepseek', profile: deepseekProfile, video: [], audio: [], image: [] },
-    { name: 'anthropic', profile: anthropicProfile, video: [], audio: [], image: [] },
-    { name: 'gemini OpenAI Chat（无媒体行）', profile: geminiOpenAIChatProfile, video: [], audio: [], image: [] }
-  ])('$name：域内允许集逐格相等', ({ profile, video, audio, image }) => {
-    expect(allowedEndpointModesFor({ capabilityDomain: 'video', profile, accountType: 'api_key' })).toEqual(video)
-    expect(allowedEndpointModesFor({ capabilityDomain: 'audio', profile, accountType: 'api_key' })).toEqual(audio)
-    expect(allowedEndpointModesFor({ capabilityDomain: 'image', profile, accountType: 'api_key' })).toEqual(image)
+describe('allowedEndpointModesFor：媒体域五域退役（允许集恒空，矩阵语义由创建墙承担）', () => {
+  // 2026-11-21 五域退役（AI账户上游接口能力设计 §3）：图像/音频/视频域不再有
+  // 「允许集」；域×供应商矩阵只服务创建墙（capabilityDomainAccountTypes）与
+  // 域默认检查形态，声明面恒为空集。
+  const mediaProfiles = [gptProfile, xaiProfile, glmProfile, geminiNativeProfile, minimaxProfile, volcengineProfile, volcengineOpenSpeechProfile, qwenProfile, deepseekProfile, anthropicProfile, geminiOpenAIChatProfile]
+
+  it('媒体域（video/audio/image）任何供应商×账户类型组合都返回空集', () => {
+    for (const profile of mediaProfiles) {
+      for (const accountType of ['api_key', 'oauth', 'google_oauth'] as const) {
+        expect(allowedEndpointModesFor({ capabilityDomain: 'video', profile, accountType })).toEqual([])
+        expect(allowedEndpointModesFor({ capabilityDomain: 'audio', profile, accountType })).toEqual([])
+        expect(allowedEndpointModesFor({ capabilityDomain: 'image', profile, accountType })).toEqual([])
+      }
+    }
   })
 
-  it('volcengine 档案×音频域：Ark 无可创建类型，OpenSpeech 可建 api_key 且允许音频声明', () => {
+  it('volcengine 档案×音频域创建墙：Ark 无可创建类型，OpenSpeech 可建 api_key（声明集仍为空）', () => {
     expect(capabilityDomainAccountTypes({
       capabilityDomain: 'audio',
       providerCode: 'volcengine',
@@ -426,33 +533,22 @@ describe('allowedEndpointModesFor：媒体域矩阵逐格（域 modes 集 × 供
       capabilityDomain: 'audio',
       profile: volcengineOpenSpeechProfile,
       accountType: 'api_key'
-    })).toEqual(['audio_speech', ...AUDIO_JOB_GROUP])
-  })
-
-  it('qwen 音频域 audio_speech 不进允许集（CosyVoice TTS 契约未回填）', () => {
-    const qwenAudio = allowedEndpointModesFor({ capabilityDomain: 'audio', profile: qwenProfile, accountType: 'api_key' })
-    expect(qwenAudio).not.toContain('audio_speech')
-    expect(qwenAudio).not.toContain('audio_transcription_json')
-    expect(qwenAudio).not.toContain('realtime_session')
-  })
-
-  it('矩阵结果与媒体触发集合一致：视频域允许集恒为视频四值组', () => {
-    for (const profile of [gptProfile, glmProfile, geminiNativeProfile, minimaxProfile, volcengineProfile, qwenProfile]) {
-      expect(allowedEndpointModesFor({ capabilityDomain: 'video', profile, accountType: 'api_key' })).toEqual([...DOMAIN_ENDPOINT_MODES_VIDEO])
-    }
+    })).toEqual([])
   })
 })
 
-describe('allowedEndpointModesFor：账户类型门（清单表：媒体域 = api_key ∪ gemini native google_oauth）', () => {
-  it('gpt/xai/anthropic 系 oauth 不可媒体：允许集为空', () => {
+describe('allowedEndpointModesFor：账户类型门与五域退役空集（清单表：媒体域 = api_key ∪ gemini native google_oauth）', () => {
+  it('gpt/xai/anthropic 系 oauth 不可媒体：允许集为空（五域退役后全域空集）', () => {
     expect(allowedEndpointModesFor({ capabilityDomain: 'video', profile: gptProfile, accountType: 'oauth' })).toEqual([])
     expect(allowedEndpointModesFor({ capabilityDomain: 'audio', profile: xaiProfile, accountType: 'oauth' })).toEqual([])
     expect(allowedEndpointModesFor({ capabilityDomain: 'image', profile: gptProfile, accountType: 'oauth' })).toEqual([])
   })
 
-  it('gemini native google_oauth 在 video/audio 域可用且允许集同 api_key', () => {
-    expect(allowedEndpointModesFor({ capabilityDomain: 'video', profile: geminiNativeProfile, accountType: 'google_oauth' })).toEqual([...DOMAIN_ENDPOINT_MODES_VIDEO])
-    expect(allowedEndpointModesFor({ capabilityDomain: 'audio', profile: geminiNativeProfile, accountType: 'google_oauth' })).toEqual(['audio_speech'])
+  it('gemini native google_oauth 媒体域允许集同为空集（声明面退役），类型判定仍放行', () => {
+    expect(allowedEndpointModesFor({ capabilityDomain: 'video', profile: geminiNativeProfile, accountType: 'google_oauth' })).toEqual([])
+    expect(allowedEndpointModesFor({ capabilityDomain: 'audio', profile: geminiNativeProfile, accountType: 'google_oauth' })).toEqual([])
+    expect(capabilityDomainAccountTypes({ capabilityDomain: 'video', providerCode: 'gemini', profile: geminiNativeProfile })).toEqual(['api_key', 'google_oauth'])
+    expect(capabilityDomainAccountTypes({ capabilityDomain: 'audio', providerCode: 'gemini', profile: geminiNativeProfile })).toEqual(['api_key', 'google_oauth'])
   })
 
   it('google_oauth 非 gemini native（无矩阵行）媒体域为空', () => {
@@ -460,8 +556,6 @@ describe('allowedEndpointModesFor：账户类型门（清单表：媒体域 = ap
   })
 
   it('capabilityDomainAccountTypes：媒体域 api_key 全量、google_oauth 仅 gemini native；gemini 图像域为空（另行立项）；chat 域返回空（不裁剪现行类型选择）', () => {
-    expect(capabilityDomainAccountTypes({ capabilityDomain: 'video', providerCode: 'gemini', profile: geminiNativeProfile })).toEqual(['api_key', 'google_oauth'])
-    expect(capabilityDomainAccountTypes({ capabilityDomain: 'audio', providerCode: 'gemini', profile: geminiNativeProfile })).toEqual(['api_key', 'google_oauth'])
     expect(capabilityDomainAccountTypes({ capabilityDomain: 'image', providerCode: 'gemini', profile: geminiNativeProfile })).toEqual([])
     expect(capabilityDomainAccountTypes({ capabilityDomain: 'video', providerCode: 'volcengine', profile: volcengineProfile })).toEqual(['api_key'])
     expect(capabilityDomainAccountTypes({ capabilityDomain: 'audio', providerCode: 'volcengine', profile: volcengineProfile })).toEqual([])
@@ -494,70 +588,51 @@ describe('defaultEndpointModesForCapabilityDomain：默认集按域收窄', () =
       .toEqual(['chat_json', 'chat_sse'])
   })
 
-  it.each([
-    { name: 'gpt 视频', profile: gptProfile, type: 'api_key' as const, expected: VIDEO_GROUP },
-    { name: 'qwen 视频', profile: qwenProfile, type: 'api_key' as const, expected: VIDEO_GROUP },
-    { name: 'gemini native google_oauth 视频', profile: geminiNativeProfile, type: 'google_oauth' as const, expected: VIDEO_GROUP }
-  ])('$name：video 域默认 = 视频四值组', ({ profile, type, expected }) => {
-    expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'video', profile, type })).toEqual(expected)
-  })
-
-  it('audio 域默认按供应商：audio_speech（qwen 除外）与 qwen 长音频四值；v8-A 默认集不含新移入两项', () => {
-    // volcengine 按档案拆分：默认 Ark 不承接音频，OpenSpeech 落 audio_speech。
-    expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'audio', profile: volcengineProfile, type: 'api_key' })).toEqual([])
-    expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'audio', profile: volcengineOpenSpeechProfile, type: 'api_key' })).toEqual(['audio_speech'])
-    expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'audio', profile: qwenProfile, type: 'api_key' })).toEqual([...AUDIO_JOB_GROUP])
-    expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'audio', profile: xaiProfile, type: 'api_key' })).toEqual([])
-    // v8-A：gpt 词表含 audio_transcription_json / realtime_session，但音频域
-    // 默认集维持现状语义只落 audio_speech（默认集不收，显式勾选承担）。
-    expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'audio', profile: gptProfile, type: 'api_key' })).toEqual(['audio_speech'])
-  })
-
-  it('image 域默认 = images_json（glm 无 image 域为空）', () => {
-    expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'image', profile: gptProfile, type: 'api_key' })).toEqual(['images_json'])
-    expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'image', profile: glmProfile, type: 'api_key' })).toEqual([])
+  it('五域退役：五域默认集恒为空集（创建不播种声明集）', () => {
+    // 2026-11-21 五域退役（AI账户上游接口能力设计 §3）：任何供应商×类型组合
+    // 都不播种默认集。
+    for (const profile of [gptProfile, qwenProfile, glmProfile, volcengineProfile, volcengineOpenSpeechProfile, xaiProfile, geminiNativeProfile, minimaxProfile]) {
+      for (const domain of ['video', 'audio', 'image', 'embedding', 'rerank'] as const) {
+        expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: domain, profile, type: 'api_key' })).toEqual([])
+      }
+    }
+    expect(defaultEndpointModesForCapabilityDomain({ capabilityDomain: 'video', profile: geminiNativeProfile, type: 'google_oauth' })).toEqual([])
   })
 })
 
 describe('媒体生命周期定案（v7）辅助语义', () => {
-  it('health_check_endpoint_mode 默认落值为纯域常量：image→images_json、audio→audio_speech（含 qwen 长音频）、video→video_create、chat→chat_sse（流式优先）', () => {
+  it('health_check_endpoint_mode 默认落值为纯域常量：image→images_json、audio→audio_speech（含 qwen 长音频）、video→video_create、embedding→embeddings_json、rerank→rerank_json、chat→chat_sse（流式优先）', () => {
     expect(defaultHealthCheckEndpointModeForCapabilityDomain({ capabilityDomain: 'image' })).toBe('images_json')
     expect(defaultHealthCheckEndpointModeForCapabilityDomain({ capabilityDomain: 'audio' })).toBe('audio_speech')
     // 2026-11-21 白名单扩展后 audio_job_create 已是合法记录值，但域默认仍是
-    // audio_speech；实际落值由 defaultValid... 按声明集收敛。
+    // audio_speech；存量合法记录值（如旧 qwen 音频 audio_job_create）由编辑
+    // 装载原样保留，不在前端强制归位（五域退役设计 §5）。
     expect(defaultHealthCheckEndpointModeForCapabilityDomain({ capabilityDomain: 'audio' })).not.toBe('audio_job_create')
     expect(defaultHealthCheckEndpointModeForCapabilityDomain({ capabilityDomain: 'video' })).toBe('video_create')
+    // 向量/重排域默认检查形态 = 域 lane 单值（设计 §7）。
+    expect(defaultHealthCheckEndpointModeForCapabilityDomain({ capabilityDomain: 'embedding' })).toBe('embeddings_json')
+    expect(defaultHealthCheckEndpointModeForCapabilityDomain({ capabilityDomain: 'rerank' })).toBe('rerank_json')
     expect(defaultHealthCheckEndpointModeForCapabilityDomain({ capabilityDomain: 'chat' })).toBe('chat_sse')
   })
 
-  it('声明集合法值优先于域常量：qwen/仅转写音频落 audio_job_create，不会写出未声明的 audio_speech', () => {
-    expect(defaultValidHealthCheckEndpointModeForCapabilityDomain({
-      capabilityDomain: 'audio',
-      endpointModes: [...AUDIO_JOB_GROUP]
-    })).toBe('audio_job_create')
-    expect(defaultValidHealthCheckEndpointModeForCapabilityDomain({
-      capabilityDomain: 'audio',
-      endpointModes: ['audio_speech', ...AUDIO_JOB_GROUP]
-    })).toBe('audio_speech')
-    expect(defaultValidHealthCheckEndpointModeForCapabilityDomain({
-      capabilityDomain: 'video',
-      endpointModes: ['video_get', 'video_content']
-    })).toBe('video_get')
-    expect(defaultValidHealthCheckEndpointModeForCapabilityDomain({
-      capabilityDomain: 'image',
-      endpointModes: []
-    })).toBeUndefined()
+  it('五域退役：声明集配置面判定仅 chat 为真，undefined 视作 chat', () => {
+    expect(capabilityDomainSupportsDeclaration('chat')).toBe(true)
+    expect(capabilityDomainSupportsDeclaration(undefined)).toBe(true)
+    for (const domain of ['video', 'audio', 'image', 'embedding', 'rerank'] as const) {
+      expect(capabilityDomainSupportsDeclaration(domain)).toBe(false)
+    }
   })
 
   it('新建表单默认 status：2026-11-21 起全部能力域统一 pending_test', () => {
-    expect(defaultStatusForCapabilityDomain('chat')).toBe('pending_test')
-    expect(defaultStatusForCapabilityDomain('video')).toBe('pending_test')
-    expect(defaultStatusForCapabilityDomain('audio')).toBe('pending_test')
-    expect(defaultStatusForCapabilityDomain('image')).toBe('pending_test')
+    for (const domain of ACCOUNT_CAPABILITY_DOMAINS) {
+      expect(defaultStatusForCapabilityDomain(domain)).toBe('pending_test')
+    }
   })
 
-  it('媒体域判定与目录协议 token 词表', () => {
+  it('媒体域判定与目录协议 token 词表（向量/重排为文本域，非媒体）', () => {
     expect(capabilityDomainIsMedia('chat')).toBe(false)
+    expect(capabilityDomainIsMedia('embedding')).toBe(false)
+    expect(capabilityDomainIsMedia('rerank')).toBe(false)
     expect(capabilityDomainIsMedia(undefined)).toBe(false)
     for (const domain of ['video', 'audio', 'image'] as const) {
       expect(capabilityDomainIsMedia(domain)).toBe(true)
@@ -565,16 +640,20 @@ describe('媒体生命周期定案（v7）辅助语义', () => {
     expect(mediaDomainModelProtocolTokens('video')).toEqual(['video'])
     expect(mediaDomainModelProtocolTokens('audio')).toEqual(['audio_speech', 'audio_transcription', 'realtime'])
     expect(mediaDomainModelProtocolTokens('image')).toEqual(['images'])
+    expect(mediaDomainModelProtocolTokens('embedding')).toEqual(['embeddings'])
+    expect(mediaDomainModelProtocolTokens('rerank')).toEqual(['rerank'])
     expect(mediaDomainModelProtocolTokens('chat')).toEqual([])
   })
 
-  it('v8-C 域→目录 mode 白名单：四域取值与目录词表七值对齐，向量/重排归对话域', () => {
-    expect(DOMAIN_MODEL_MODES.chat).toEqual(['chat', 'responses', 'embedding', 'rerank'])
+  it('v8-C 域→目录 mode 白名单：六域取值与目录词表七值对齐，向量/重排独立成域', () => {
+    expect(DOMAIN_MODEL_MODES.chat).toEqual(['chat', 'responses'])
+    expect(DOMAIN_MODEL_MODES.embedding).toEqual(['embedding'])
+    expect(DOMAIN_MODEL_MODES.rerank).toEqual(['rerank'])
     expect(DOMAIN_MODEL_MODES.video).toEqual(['video'])
     expect(DOMAIN_MODEL_MODES.audio).toEqual(['audio'])
     expect(DOMAIN_MODEL_MODES.image).toEqual(['image_generation'])
-    // 四域 mode 值互不相交，且全部落在目录 mode 词表内（embedding/rerank 是
-    // 对话域文本 lane，2026-11-20 协议补齐批起放行给对话域账户）；词表与服务端
+    // 六域 mode 值互不相交，且全部落在目录 mode 词表内（embedding/rerank 已随
+    // 2026-11-21 拆分移出对话域，各自独立白名单）；词表与服务端
     // ProviderCatalogModeValues 同源。
     const domainModes = ACCOUNT_CAPABILITY_DOMAINS.flatMap((domain) => [...DOMAIN_MODEL_MODES[domain]])
     expect(new Set(domainModes).size).toBe(domainModes.length)
@@ -619,11 +698,22 @@ describe('preferredMediaDomainProviderCode：媒体域新建默认供应商收�
     })).toBeUndefined()
   })
 
-  it('chat 域不适用（对话域默认供应商行为零变化）；gemini 仅 native 档案放行', () => {
+  it('chat 与向量/重排文本域不适用（文本域供应商清单同 chat 路径，不做媒体收敛）；gemini 仅 native 档案放行', () => {
     expect(preferredMediaDomainProviderCode({
       capabilityDomain: 'chat',
       providers: [providerByCode('gpt')],
       providerCodesWithDomainModels: new Set(['gpt'])
+    })).toBeUndefined()
+    // 向量/重排域供应商清单不过滤（§8.2 文本域同 chat 路径）。
+    expect(preferredMediaDomainProviderCode({
+      capabilityDomain: 'embedding',
+      providers: [providerByCode('gpt')],
+      providerCodesWithDomainModels: new Set(['gpt'])
+    })).toBeUndefined()
+    expect(preferredMediaDomainProviderCode({
+      capabilityDomain: 'rerank',
+      providers: [providerByCode('qwen')],
+      providerCodesWithDomainModels: new Set(['qwen'])
     })).toBeUndefined()
     // gemini OpenAI Chat 档案无媒体域（矩阵无行）：不参与媒体域收敛。
     const geminiOpenAIChat = providerByCode('gemini', { protocolProfiles: [geminiOpenAIChatProfile as never] })

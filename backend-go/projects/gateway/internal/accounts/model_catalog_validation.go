@@ -25,6 +25,8 @@ import (
 	"context"
 	"errors"
 	"strings"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 )
 
 // credentialEndpointModes mirrors endpointModesFromCredentials: the
@@ -66,6 +68,9 @@ func credentialEndpointModes(credentials Credentials) []string {
 //     （per-profile 白名单 + 上游 endpoint-mode 能力门）。batch/import 以行内
 //     协议列喂参；legacy hybrid 跨协议矩阵分支已随 §555 终态扫描拆除（混合
 //     供应商 token 形态不再是映射断言的分派维度，协议面由连接 preset 推导）。
+//     2026-11-21 五域退役（AI账户上游接口能力设计 §3）：上游 endpoint-mode
+//     能力格门吃账户声明集——五域（capabilityDomain 传入五域值）声明面退役
+//     后跳过该格门，协议族白名单/档案门保持；chat 域语义不变。
 //   - 目录段（models 表身份解析）：每条映射的 target 模型名必须解析到 owner
 //     可见且 active 的 models 行（vendor_code + upstream_model，与写入面
 //     resolveEntryModelID 同键）。来源模型是客户端 wire model 字符串、不作
@@ -73,11 +78,20 @@ func credentialEndpointModes(credentials Credentials) []string {
 //   - 计价段（BUG-0344/DR-P7 根治）：target 行必须可被计价引擎直接消费（基础
 //     直价列 / 静态媒体层，判据与网关目录 priced 过滤同一函数）。仅档位价或仅
 //     缓存价的行可绑定但默认流量 cost 为空/零，故在此显式拒绝。
-func (s *Store) assertAccountModelMappingsInProviderCatalog(ctx context.Context, q queryer, providerCode, systemAccountID string, profile protocolPredicateInput, mappings []ModelMapping, supportedEndpointModes []string) error {
+func (s *Store) assertAccountModelMappingsInProviderCatalog(ctx context.Context, q queryer, providerCode, systemAccountID string, profile protocolPredicateInput, mappings []ModelMapping, supportedEndpointModes []string, capabilityDomain string) error {
 	if len(mappings) == 0 {
 		return nil
 	}
+	declarationRetired := accountscore.EndpointModesDeclarationRetired(capabilityDomain)
 	for _, mapping := range mappings {
+		if declarationRetired {
+			// 五域声明面退役：跳过上游 endpoint-mode 声明能力格门，档案族门与
+			// 7 pair 白名单保留。
+			if err := assertAccountModelMappingProtocolFamilyAllowed(mapping, profile); err != nil {
+				return err
+			}
+			continue
+		}
 		if err := assertAccountModelMappingProtocolAllowed(mapping, profile, supportedEndpointModes); err != nil {
 			return err
 		}

@@ -67,9 +67,10 @@ func ManualModeCreationStatus(status string) CreationStatus {
 // ConnectionInput 是创建/PATCH/导入共享的连接行载荷（供应商与上游协议面重构
 // 设计 §8）：connectionPresetCode 是账户内自然键（连接 ID 永不由客户端提交，
 // 服务端确定性生成），baseUrl 走 §2.1 registry 数据驱动 validator，
-// endpointModes 必须非空且 ⊆ AllowedModes(domain, preset, account_type,
-// oauth_type)，enabled 必须显式提交。ProtocolSurfaceCode 是 §8 的可选回显字段
-// （纯媒体连接为空）；非空时必须等于 registry preset surface。
+// endpointModes 对话域连接必须非空且 ⊆ AllowedModes(domain, preset,
+// account_type, oauth_type)，五域（上游接口能力设计 §3）缺省（nil）合法，
+// enabled 必须显式提交。ProtocolSurfaceCode 是 §8 的可选回显字段（纯媒体连接
+// 为空）；非空时必须等于 registry preset surface。
 type ConnectionInput struct {
 	ConnectionPresetCode string
 	ProtocolSurfaceCode  string
@@ -79,8 +80,11 @@ type ConnectionInput struct {
 }
 
 // ParseConnectionInput 解析 §8 connections[] 元素（camelCase 键集：必填
-// connectionPresetCode/baseUrl/endpointModes/enabled + 可选 protocolSurfaceCode
-// 回显；未知键拒绝）。管理面路由、导入计划与公开面共用本解析器，不造第二份。
+// connectionPresetCode/baseUrl/enabled + 可选 protocolSurfaceCode 回显 +
+// endpointModes（上游接口能力设计 §3 五域退役：键缺失放行为 nil，对话域连接
+// 的非空与组合校验由 resolveConnectionSet 分域承担；键存在时仍必须是非空字符
+// 串数组）；未知键拒绝）。管理面路由、导入计划与公开面共用本解析器，不造
+// 第二份。
 func ParseConnectionInput(object map[string]any) (ConnectionInput, bool) {
 	text := func(value any) string {
 		if text, ok := value.(string); ok {
@@ -101,16 +105,19 @@ func ParseConnectionInput(object map[string]any) (ConnectionInput, bool) {
 		return ConnectionInput{}, false
 	}
 	connection.Enabled = enabled
-	rawModes, ok := object["endpointModes"].([]any)
-	if !ok || len(rawModes) == 0 {
-		return ConnectionInput{}, false
-	}
-	for _, mode := range rawModes {
-		modeText := text(mode)
-		if modeText == "" {
+	rawModes, present := object["endpointModes"]
+	if present {
+		list, ok := rawModes.([]any)
+		if !ok || len(list) == 0 {
 			return ConnectionInput{}, false
 		}
-		connection.EndpointModes = append(connection.EndpointModes, modeText)
+		for _, mode := range list {
+			modeText := text(mode)
+			if modeText == "" {
+				return ConnectionInput{}, false
+			}
+			connection.EndpointModes = append(connection.EndpointModes, modeText)
+		}
 	}
 	for key := range object {
 		switch key {
@@ -209,6 +216,12 @@ type CreateInput struct {
 // (credentials_normalize.go): the resolved provider/protocol identity the
 // write-side normalization resolves endpoint modes against. A nil context at
 // the facade entry means Node's `{ accountType }` fallback.
+//
+// CapabilityDomain 是写路径的能力域（camelCase capabilityDomain 解析值；五域
+// 退役设计 §3）：凭据归一化按它分路——五域（image/audio/video/embedding/
+// rerank）剥离 supported_endpoint_modes 键且不播种默认集，chat（含空串缺省）
+// 保持既有归一化语义。草稿类调用方（余额草稿/手工测试草稿）不携带域，按
+// chat 缺省处理，行为不变。
 type EndpointModeDefaultContext struct {
 	ProviderCode              string
 	AccountType               string
@@ -216,6 +229,7 @@ type EndpointModeDefaultContext struct {
 	ProtocolCode              string
 	ProtocolVersion           string
 	ProviderProtocolProfileID string
+	CapabilityDomain          string
 }
 
 // Tag validation limits（原门面 store.go maxTagNameLength/maxTagsPerAccount，
@@ -250,6 +264,7 @@ const MaxRPMLimit = MaxInt4
 //   - 2026-11-20 向量/重排协议补齐批同口径增补 embeddings_json / rerank_json：
 //     纯向量或纯重排账户没有 chat/media 检查形态，健康检查三件套必须能落到
 //     新 mode 才能创建；两者同样只作记录值、不派发自动探针。
+//
 // 2026-11-21 连接测试收口：白名单与 DB CHECK 的 27 值完全对齐——连接测试账户
 // 的检查形态只是持久化记录值（探测由连通性规格另选），媒体任务查询/内容/取消
 // 与 count_tokens/embed_content 等输入型形态都必须可落库，否则只声明这些
@@ -259,7 +274,7 @@ var AccountHealthCheckEndpointModes = map[string]bool{
 	"responses_json": true, "responses_sse": true,
 	"messages_json": true, "messages_sse": true,
 	"message_token_counting": true,
-	"generate_content_json": true, "generate_content_sse": true,
+	"generate_content_json":  true, "generate_content_sse": true,
 	"interactions_json": true, "interactions_sse": true,
 	"count_tokens": true, "embed_content": true,
 	"embeddings_json": true, "rerank_json": true,

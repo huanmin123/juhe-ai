@@ -70,7 +70,7 @@ func (s *Store) ReturnGroupForGrantee(ctx context.Context, groupID, granteeUserI
 	// only when the runtime has exactly one non-terminal source. Multiple
 	// sources must be handled per-source in the authorization center.
 	rows, err := tx.QueryContext(ctx, s.bind(`SELECT id FROM `+s.table("resource_authorization_sources")+`
-		WHERE authorization_id = ? AND status IN ('pending','active','dormant','needs_review')
+		WHERE authorization_id = ? AND status IN ('pending','active')
 		ORDER BY id LIMIT 2`), receipt.ID)
 	if err != nil {
 		return nil, err

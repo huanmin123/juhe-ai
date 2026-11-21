@@ -281,8 +281,10 @@ func TestM2CreateCapabilityDomainContract(t *testing.T) {
 	if domain := env.queryCell(t, `SELECT capability_domain FROM accounts WHERE id = ?`, videoID); domain != "video" {
 		t.Fatalf("video 域应落列：%s", domain)
 	}
-	if modes := m2AccountModes(t, env, videoID); len(modes) != 4 {
-		t.Fatalf("video 声明集应原样保留：%v", modes)
+	// 2026-11-21 五域退役（AI账户上游接口能力设计 §3）：五域创建提交的
+	// supported_endpoint_modes 被剥离，落库凭据无键（声明面退役回归钉）。
+	if modes := m2AccountModes(t, env, videoID); len(modes) != 0 {
+		t.Fatalf("video 域提交 modes 应被剥离（凭据无键）：%v", modes)
 	}
 	if mode := env.queryCell(t, `SELECT health_check_endpoint_mode FROM accounts WHERE id = ?`, videoID); mode != "video_create" {
 		t.Fatalf("video 域健康检查默认应为 video_create：%s", mode)
@@ -296,8 +298,9 @@ func TestM2CreateCapabilityDomainContract(t *testing.T) {
 		t.Fatalf("volcengine video 缺省 modes 创建应 201：%d %v", code, payload)
 	}
 	volcVideoID := dataMap(t, payload)["id"].(string)
-	if modes := m2AccountModes(t, env, volcVideoID); !unorderedStringListEqual(modes, []string{"video_create", "video_get", "video_content", "video_cancel"}) {
-		t.Fatalf("video 域缺省 modes 应落四值组：%v", modes)
+	// 五域退役：创建不按 DefaultEndpointModesForDomain 播种默认集，凭据无键。
+	if modes := m2AccountModes(t, env, volcVideoID); len(modes) != 0 {
+		t.Fatalf("video 域缺省不应播种声明集（凭据无键）：%v", modes)
 	}
 
 	// audio 域 modes 缺省 → audio_speech。
@@ -330,8 +333,9 @@ func TestM2CreateCapabilityDomainContract(t *testing.T) {
 		t.Fatalf("gpt image 创建应 201：%d %v", code, payload)
 	}
 	imageID := dataMap(t, payload)["id"].(string)
-	if modes := m2AccountModes(t, env, imageID); !unorderedStringListEqual(modes, []string{"images_json"}) {
-		t.Fatalf("image 域缺省 modes 应落 images_json：%v", modes)
+	// 五域退役：image 域缺省不播种声明集，凭据无键；检查形态按域默认落值。
+	if modes := m2AccountModes(t, env, imageID); len(modes) != 0 {
+		t.Fatalf("image 域缺省不应播种声明集（凭据无键）：%v", modes)
 	}
 	if mode := env.queryCell(t, `SELECT health_check_endpoint_mode FROM accounts WHERE id = ?`, imageID); mode != "images_json" {
 		t.Fatalf("image 域健康检查默认应为 images_json：%s", mode)
@@ -348,8 +352,9 @@ func TestM2CreateCapabilityDomainContract(t *testing.T) {
 		t.Fatalf("volcengine image 创建应 201（矩阵已开通图像域）：%d %v", code, payload)
 	}
 	volcImageID := dataMap(t, payload)["id"].(string)
-	if modes := m2AccountModes(t, env, volcImageID); !unorderedStringListEqual(modes, []string{"images_json"}) {
-		t.Fatalf("volcengine image 域缺省 modes 应落 images_json：%v", modes)
+	// 五域退役：image 域缺省不播种声明集，凭据无键。
+	if modes := m2AccountModes(t, env, volcImageID); len(modes) != 0 {
+		t.Fatalf("volcengine image 域缺省不应播种声明集（凭据无键）：%v", modes)
 	}
 	if mode := env.queryCell(t, `SELECT health_check_endpoint_mode FROM accounts WHERE id = ?`, volcImageID); mode != "images_json" {
 		t.Fatalf("volcengine image 域健康检查默认应为 images_json：%s", mode)
@@ -466,7 +471,7 @@ func TestM2CreateCapabilityDomainContract(t *testing.T) {
 		m2CreateBody("m2-audio-v8a", "gpt", "prof-gpt", "api_key", "audio", apiKeyCredentials(),
 			[]string{"audio_transcription_json", "realtime_session"}))
 	if code != http.StatusCreated {
-		t.Fatalf("v8-A 音频域声明短转写+实时会话应 201（按词表求交）：%d %v", code, payload)
+		t.Fatalf("音频域声明短转写+实时会话应 201（五域声明面退役，提交键剥离不校验）：%d %v", code, payload)
 	}
 
 	// modes 显式 null / 空数组：与现状逐项一致（基线探针证实：写侧归一化
@@ -696,32 +701,38 @@ func TestM2PatchStrictDeclarationSubset(t *testing.T) {
 		return env.do(t, http.MethodPatch, "/__aisys__/api/accounts/"+accountID, body)
 	}
 
-	// minimax×video：写侧缺省集 audio_speech 对 video 域越界（直通归一化会
-	// 静默回写域外声明）→ 替换后的按域默认集 = 视频四值组 → 200，持久化
-	// 声明 = DefaultEndpointModesForDomain(video, minimax)，不含 audio_speech。
+	// minimax×video（五域退役，2026-11-21 用户裁决）：删键收敛不再需要——
+	// 五域声明面退役，合并结果统一剥键（显式提交与存量残留一并清除），200
+	// 且持久化凭据无 supported_endpoint_modes 键（历史遗留 audio_speech 一并
+	// 清理，不再有按域默认集重置路径）。
 	m2SeedProvider(t, env, adminID, "minimax", minimaxOpenAIV1ProfileID, "openai", "v1", []string{"api_key"})
 	m2SeedDomainAccountWithModes(t, env, "acc-m2-minimax-video", adminID, "m2-minimax-video",
 		"minimax", minimaxOpenAIV1ProfileID, "video", []string{"audio_speech"})
 	code, payload = patchAccount("acc-m2-minimax-video", `{"expectedConfigRevision":1,"credentialsPatch":{"supported_endpoint_modes":null}}`)
 	if code != http.StatusOK {
-		t.Fatalf("minimax video 删键应按域默认集重置 200：%d %v", code, payload)
+		t.Fatalf("minimax video 删键应 200（五域剥键）：%d %v", code, payload)
 	}
-	minimaxVideoDefaults := accountscore.DefaultEndpointModesForDomain(accountscore.CapabilityDomainVideo, "minimax", "api_key", accountscore.ProtocolPredicate{
-		ProviderCode:              "minimax",
-		ProtocolCode:              "openai",
-		ProtocolVersion:           "v1",
-		ProviderProtocolProfileID: minimaxOpenAIV1ProfileID,
-	})
-	if len(minimaxVideoDefaults) == 0 {
-		t.Fatalf("minimax video 按域默认集不应为空：%v", minimaxVideoDefaults)
+	if modes := m2AccountModes(t, env, "acc-m2-minimax-video"); len(modes) != 0 {
+		t.Fatalf("minimax video 删键应剥净声明集（凭据无键）：%v", modes)
 	}
-	for _, mode := range minimaxVideoDefaults {
-		if mode == "audio_speech" {
-			t.Fatalf("video 域按域默认集不应含 audio_speech：%v", minimaxVideoDefaults)
-		}
+	// 五域 PATCH 显式提交 modes → 忽略并剥离，不报错且幂等（凭据已无键时
+	// 提交是 no-op：200、不推进版本）。
+	code, payload = patchAccount("acc-m2-minimax-video", `{"expectedConfigRevision":2,"credentialsPatch":{"supported_endpoint_modes":["audio_speech","video_create"]}}`)
+	if code != http.StatusOK {
+		t.Fatalf("minimax video 显式提交 modes 应 200（忽略剥离）：%d %v", code, payload)
 	}
-	if modes := m2AccountModes(t, env, "acc-m2-minimax-video"); !unorderedStringListEqual(modes, minimaxVideoDefaults) {
-		t.Fatalf("minimax video 删键应落按域默认集：%v want %v", modes, minimaxVideoDefaults)
+	if got := env.queryCell(t, `SELECT config_revision FROM accounts WHERE id = 'acc-m2-minimax-video'`); got != "2" {
+		t.Fatalf("忽略剥离是 no-op，不得推进版本：got %s want 2", got)
+	}
+	code, payload = patchAccount("acc-m2-minimax-video", `{"expectedConfigRevision":2,"credentialsPatch":{"supported_endpoint_modes":["audio_speech","video_create"]}}`)
+	if code != http.StatusOK {
+		t.Fatalf("minimax video 重放提交应 200（幂等）：%d %v", code, payload)
+	}
+	if got := env.queryCell(t, `SELECT config_revision FROM accounts WHERE id = 'acc-m2-minimax-video'`); got != "2" {
+		t.Fatalf("幂等重放不得推进版本：got %s want 2", got)
+	}
+	if modes := m2AccountModes(t, env, "acc-m2-minimax-video"); len(modes) != 0 {
+		t.Fatalf("幂等重放后凭据仍应无键：%v", modes)
 	}
 
 	// volcengine×chat：删键重置为按域默认集。BUG-0323 已根治：chat 分支与
@@ -789,24 +800,27 @@ func TestM2PatchGeminiChatConversationRequirement(t *testing.T) {
 func TestM2PatchRejectsNonGenerationHealthModeForModelTestAccount(t *testing.T) {
 	env := newTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
-	env.seedProviderAndDefaultGroup(t, adminID)
+	m2SeedProvider(t, env, adminID, "gemini", "profile_gemini_native_v1beta", "gemini", "v1beta", []string{"api_key"})
 
 	// 混合形态 chat 账户：声明含真实对话生成形态，测试方式为模型测试。
+	// （向量/重排拆分批把 embeddings_json 移出 chat lane 后，gpt 词表与 chat
+	// lane 的交集只剩生成形态，混合臂迁移到唯一可携带 chat 输入型形态的
+	// gemini_native_v1beta：generate_content_json + embed_content，语义不变。）
 	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts",
-		m2CreateBody("m2-mixed-health", "gpt", "prof-gpt", "api_key", "chat",
-			map[string]any{"api_key": "sk-m2-mixed-health", "base_url": "https://api.openai.com/v1"},
-			[]string{"chat_json", "embeddings_json"}))
+		m2CreateBody("m2-mixed-health", "gemini", "profile_gemini_native_v1beta", "api_key", "chat",
+			map[string]any{"api_key": "AIza-m2-mixed-health", "base_url": "https://generativelanguage.googleapis.com"},
+			[]string{"generate_content_json", "embed_content"}))
 	if code != http.StatusCreated {
 		t.Fatalf("混合形态 chat 创建应 201：%d %v", code, payload)
 	}
 	accountID := dataMap(t, payload)["id"].(string)
 	revision := dataMap(t, payload)["configRevision"].(float64)
 
-	// 模型测试账户的检查形态必须是真实对话生成形态：把检查形态改为
-	// embeddings_json 会同时逃出 J1（非生成形态）与连通性通道（账户含生成
-	// 形态），必须在写侧拒绝。
+	// 模型测试账户的检查形态必须是真实对话生成形态：把检查形态改为连接内
+	// 非生成形态 embed_content 会同时逃出 J1（非生成形态）与连通性通道（账户
+	// 含生成形态），必须在写侧拒绝。
 	code, payload = env.do(t, http.MethodPatch, "/__aisys__/api/accounts/"+accountID,
-		`{"expectedConfigRevision":`+itoa64(int64(revision))+`,"healthCheckConnectionPresetCode":"gpt_openai_v1","healthCheckEndpointMode":"embeddings_json","healthCheckModel":"m-default"}`)
+		`{"expectedConfigRevision":`+itoa64(int64(revision))+`,"healthCheckConnectionPresetCode":"gemini_native_v1beta","healthCheckEndpointMode":"embed_content","healthCheckModel":"m-default"}`)
 	if code != http.StatusBadRequest || !strings.Contains(m2Message(payload), "真实对话生成形态") {
 		t.Fatalf("模型测试账户改输入型检查形态应 400：%d %v", code, payload)
 	}
@@ -956,8 +970,9 @@ func TestM2ImportCapabilityDomainStrict(t *testing.T) {
 	if domain := env.queryCell(t, `SELECT capability_domain FROM accounts WHERE id = ?`, videoRowID); domain != "video" {
 		t.Fatalf("导入视频账户应落 video 域：%s", domain)
 	}
-	if modes := m2AccountModes(t, env, videoRowID); !unorderedStringListEqual(modes, []string{"video_create", "video_get", "video_content", "video_cancel"}) {
-		t.Fatalf("导入视频账户声明集应保留：%v", modes)
+	// 五域退役：包内 modes 仅用于推域，落库剥离凭据键（历史导入文件兼容）。
+	if modes := m2AccountModes(t, env, videoRowID); len(modes) != 0 {
+		t.Fatalf("导入视频账户凭据应无声明键：%v", modes)
 	}
 	if mode := env.queryCell(t, `SELECT health_check_endpoint_mode FROM accounts WHERE id = ?`, videoRowID); mode != "video_create" {
 		t.Fatalf("导入视频账户健康检查默认应为 video_create：%s", mode)

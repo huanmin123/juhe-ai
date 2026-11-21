@@ -14,18 +14,24 @@ import (
 	"testing"
 )
 
-// TestClassifyCatalogModels 账户目录分类表：chat 三协议、functionCalling 任一
-// 协议声明、image 家族白名单、video/audio 供应商 × 协议 × 端点模式、generic_http
-// 账户目录、白名单外供应商不产媒体行。
+// TestClassifyCatalogModels 账户目录分类表（五域退役修订：账户侧判定按能力
+// 域，不再按端点模式——单账户单域）：chat 三协议、functionCalling 任一协议
+// 声明、image 家族白名单、video/audio 供应商 × 协议 × 能力域、白名单外供应
+// 商与跨域能力不产对应行。
 func TestClassifyCatalogModels(t *testing.T) {
 	apiKeyView := TransportAccount{
 		ID: "acc_1", Type: "api_key", ProviderCode: "gpt",
-		SupportedEndpointModes: []string{"chat_sse", "video_create", "audio_speech", "images_json"},
-		SupportedModels:        []string{"m-chat", "m-claude", "m-gemini", "m-hybrid", "gpt-image-2", "grok-imagine-video-1.5", "speech-2.8-hd"},
+		CapabilityDomain: "chat",
+		SupportedModels:  []string{"m-chat", "m-claude", "m-gemini", "m-hybrid"},
+	}
+	imageView := TransportAccount{
+		ID: "acc_img", Type: "api_key", ProviderCode: "gpt",
+		CapabilityDomain: "image",
+		SupportedModels:  []string{"gpt-image-2"},
 	}
 	oauthView := TransportAccount{
 		ID: "acc_2", Type: "oauth", ProviderCode: "xai",
-		SupportedEndpointModes: []string{"chat_sse"},
+		CapabilityDomain: "image",
 	}
 	cases := []struct {
 		name         string
@@ -58,14 +64,23 @@ func TestClassifyCatalogModels(t *testing.T) {
 			want: map[string]ModelKind{"m-hybrid": KindChat},
 		},
 		{
-			name:         "image 家族白名单（gpt × gpt-image-2，xai × grok-imagine）",
+			name:         "image 域 × 家族白名单（gpt × gpt-image-2）",
 			providerCode: "gpt",
 			catalog: []CatalogItem{
 				{Model: "gpt-image-2", SupportedAPIProtocols: []string{"image_generation"}},
 				{Model: "other-image-model", SupportedAPIProtocols: []string{"image_generation"}},
 			},
-			view: &apiKeyView,
+			view: &imageView,
 			want: map[string]ModelKind{"gpt-image-2": KindImage},
+		},
+		{
+			name:         "chat 域账户不产 image 行（跨域能力不进候选）",
+			providerCode: "gpt",
+			catalog: []CatalogItem{
+				{Model: "gpt-image-2", SupportedAPIProtocols: []string{"image_generation"}},
+			},
+			view: &apiKeyView,
+			want: map[string]ModelKind{},
 		},
 		{
 			name:         "xai 生图家族 + 非 api_key 账户不可路由",
@@ -75,18 +90,43 @@ func TestClassifyCatalogModels(t *testing.T) {
 			want:         map[string]ModelKind{},
 		},
 		{
-			name:         "video/audio 白名单供应商 × 协议 × 端点模式",
+			name:         "video 域白名单供应商 × video 协议",
 			providerCode: "gemini",
 			catalog: []CatalogItem{
 				{Model: "veo-3", SupportedAPIProtocols: []string{"video", "generate_content"}},
+			},
+			view: &TransportAccount{
+				ID: "acc_gv", Type: "api_key", ProviderCode: "gemini",
+				CapabilityDomain: "video",
+				SupportedModels:  []string{"veo-3"},
+			},
+			want: map[string]ModelKind{"veo-3": KindVideo},
+		},
+		{
+			name:         "audio 域白名单供应商 × audio_speech 协议",
+			providerCode: "gemini",
+			catalog: []CatalogItem{
 				{Model: "tts-hd", SupportedAPIProtocols: []string{"audio_speech"}},
 			},
 			view: &TransportAccount{
-				ID: "acc_g", Type: "api_key", ProviderCode: "gemini",
-				SupportedEndpointModes: []string{"chat_sse", "video_create", "audio_speech"},
-				SupportedModels:        []string{"veo-3", "tts-hd"},
+				ID: "acc_ga", Type: "api_key", ProviderCode: "gemini",
+				CapabilityDomain: "audio",
+				SupportedModels:  []string{"tts-hd"},
 			},
-			want: map[string]ModelKind{"veo-3": KindVideo, "tts-hd": KindAudio, "veo-3-chat": KindChat},
+			want: map[string]ModelKind{"tts-hd": KindAudio},
+		},
+		{
+			name:         "video 域账户不列 chat 行（generate_content 协议不跨域）",
+			providerCode: "gemini",
+			catalog: []CatalogItem{
+				{Model: "veo-3", SupportedAPIProtocols: []string{"video", "generate_content"}},
+			},
+			view: &TransportAccount{
+				ID: "acc_gv2", Type: "api_key", ProviderCode: "gemini",
+				CapabilityDomain: "video",
+				SupportedModels:  []string{"veo-3"},
+			},
+			want: map[string]ModelKind{"veo-3": KindVideo},
 		},
 		{
 			name:         "非白名单供应商无媒体行",
@@ -98,12 +138,12 @@ func TestClassifyCatalogModels(t *testing.T) {
 			want: map[string]ModelKind{},
 		},
 		{
-			name:         "端点模式缺失不列媒体行",
+			name:         "跨域能力域不列媒体行（chat 域账户不列视频目录行）",
 			providerCode: "minimax",
 			catalog: []CatalogItem{
 				{Model: "video-no-mode", SupportedAPIProtocols: []string{"video"}},
 			},
-			view: &TransportAccount{ID: "acc_9", Type: "api_key", ProviderCode: "minimax", SupportedEndpointModes: []string{"chat_sse"}, SupportedModels: []string{"video-no-mode"}},
+			view: &TransportAccount{ID: "acc_9", Type: "api_key", ProviderCode: "minimax", CapabilityDomain: "chat", SupportedModels: []string{"video-no-mode"}},
 			want: map[string]ModelKind{},
 		},
 		{
@@ -117,12 +157,12 @@ func TestClassifyCatalogModels(t *testing.T) {
 			want: map[string]ModelKind{},
 		},
 		{
-			name:         "chat 无 chat lane 端点模式不产出（视频账户不列 chat 模型）",
+			name:         "视频域账户不列 chat 模型",
 			providerCode: "gpt",
 			catalog: []CatalogItem{
 				{Model: "m-chat", SupportedAPIProtocols: []string{"chat_completions"}},
 			},
-			view: &TransportAccount{ID: "acc_v", Type: "api_key", ProviderCode: "gpt", SupportedEndpointModes: []string{"video_create", "video_get"}, SupportedModels: []string{"m-chat"}},
+			view: &TransportAccount{ID: "acc_v", Type: "api_key", ProviderCode: "gpt", CapabilityDomain: "video", SupportedModels: []string{"m-chat"}},
 			want: map[string]ModelKind{},
 		},
 	}
@@ -165,7 +205,7 @@ func TestClassifyCatalogModels(t *testing.T) {
 // TestFunctionCallingAnyProtocol functionCalling = 任一协议行声明 function_calling
 // （chat supportsTool 口径：仅声明在 messages 行也判真）。
 func TestFunctionCallingAnyProtocol(t *testing.T) {
-	view := TransportAccount{ID: "a", Type: "api_key", ProviderCode: "gpt", SupportedEndpointModes: []string{"chat_sse"}}
+	view := TransportAccount{ID: "a", Type: "api_key", ProviderCode: "gpt", CapabilityDomain: "chat"}
 	catalog := []CatalogItem{{
 		Model:                    "m",
 		SupportedAPIProtocols:    []string{"chat_completions", "messages"},
@@ -191,7 +231,7 @@ func TestAccountsEndpoint(t *testing.T) {
 			"acc_3": {ID: "acc_3", Name: "无快照账户", ProviderCode: "gpt", Enabled: true, EnabledGroupIDs: []string{"grp_missing"}},
 		}},
 		TransportAccounts: &staticTransport{views: map[string][]TransportAccount{
-			"acc_1": {{ID: "acc_1", Type: "api_key", ProviderCode: "gpt", SupportedEndpointModes: []string{"chat_sse", "images_json"}}},
+			"acc_1": {{ID: "acc_1", Type: "api_key", ProviderCode: "gpt", CapabilityDomain: "chat"}},
 		}},
 		ProviderCatalog: &staticCatalog{byProvider: map[string][]CatalogItem{
 			"gpt": {
@@ -229,14 +269,13 @@ func TestAccountsEndpoint(t *testing.T) {
 	if entry.AccountName != "神影-克隆" || entry.ProviderCode != "gpt" {
 		t.Fatalf("账户投影不符: %+v", entry)
 	}
-	if len(entry.Models) != 2 {
-		t.Fatalf("模型行数量不符: %+v（chat gpt-5.4 + image gpt-image-2，api_key 账户模型清单空 = 不限制）", entry.Models)
+	// 五域退役修订：chat 域账户只列 chat 行（gpt-image-2 属 image 域能力，
+	// 跨域能力不进候选）。
+	if len(entry.Models) != 1 {
+		t.Fatalf("模型行数量不符: %+v（chat gpt-5.4；image 行随五域退役按域隔离）", entry.Models)
 	}
 	if entry.Models[0].ModelID != "gpt-5.4" || entry.Models[0].Kind != "chat" || !entry.Models[0].FunctionCalling {
 		t.Fatalf("chat 行不符: %+v", entry.Models[0])
-	}
-	if entry.Models[1].ModelID != "gpt-image-2" || entry.Models[1].Kind != "image" {
-		t.Fatalf("image 行不符: %+v", entry.Models[1])
 	}
 }
 
@@ -269,7 +308,7 @@ func TestAccountsEndpointEnvelopeContract(t *testing.T) {
 			"acc_1": {ID: "acc_1", Name: "神影-克隆", ProviderCode: "gpt", Enabled: true, EnabledGroupIDs: []string{"grp_1"}},
 		}},
 		TransportAccounts: &staticTransport{views: map[string][]TransportAccount{
-			"acc_1": {{ID: "acc_1", Type: "api_key", ProviderCode: "gpt", SupportedEndpointModes: []string{"chat_sse", "images_json"}}},
+			"acc_1": {{ID: "acc_1", Type: "api_key", ProviderCode: "gpt", CapabilityDomain: "chat"}},
 		}},
 		ProviderCatalog: &staticCatalog{byProvider: map[string][]CatalogItem{
 			"gpt": {{Model: "gpt-5.4", SupportedAPIProtocols: []string{"chat_completions"}}},

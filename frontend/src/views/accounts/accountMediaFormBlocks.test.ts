@@ -27,6 +27,9 @@ import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 
 const VIDEO_GROUP: AccountSupportedEndpointMode[] = ['video_create', 'video_get', 'video_content', 'video_cancel']
 
+// 五域退役（AI账户上游接口能力设计 §3）：媒体表单不持有声明集，域默认集恒为
+// 空集；本 helper 保留 defaultEndpointModesForCapabilityDomain 调用以钉住
+// 「五域默认集恒空」契约。
 function mediaForm(capabilityDomain: AccountCapabilityDomain, patch: Partial<AccountFormModel> = {}): AccountFormModel {
   const form = defaultAccountForm('gpt', 'api_key')
   form.capabilityDomain = capabilityDomain
@@ -67,14 +70,16 @@ const rateLimitedRule: AccountErrorPolicyRuleForm = {
 
 // ---- A组①②③④⑤⑥⑦：创建 payload 七项全量（缺省值与 chat 同源默认） ----
 
-describe('buildAccountSavePayload 媒体创建（七项全量）', () => {
-  it('缺省值分支：域默认集 + chat 同源调度/到期/计划/余额默认', () => {
+describe('buildAccountSavePayload 媒体创建（五域退役：payload 不携带声明集）', () => {
+  it('缺省值分支：凭据不携带 supported_endpoint_modes，调度/到期/计划/余额默认与 chat 同源', () => {
     const form = mediaForm('video', { apiKeys: ['sk-default'] })
-    expect(form.supportedEndpointModes).toEqual(VIDEO_GROUP)
+    expect(form.supportedEndpointModes).toEqual([])
     const payload = buildPayload(form)
-    // ① 上游接口能力（域默认集）
+    // ① 上游接口能力：五域凭据归一化不落该键（设计 §3）
     expect(payload.capabilityDomain).toBe('video')
-    expect(payload.credentials.supported_endpoint_modes).toEqual(VIDEO_GROUP)
+    expect(payload.credentials).not.toHaveProperty('supported_endpoint_modes')
+    // 连接载荷同样不携带 endpointModes（连接行不写 account_endpoint_modes）。
+    expect(payload.connections?.[0]).not.toHaveProperty('endpointModes')
     // ② 多 Key 策略缺省不产生池键
     expect(payload.credentials).not.toHaveProperty('api_key_strategy')
     // ③ 优先级/超级优先/降级备用（chat 同源默认）
@@ -91,8 +96,9 @@ describe('buildAccountSavePayload 媒体创建（七项全量）', () => {
     expect(payload.credentials).not.toHaveProperty('error_handling_rules')
   })
 
-  it('用户配置分支：勾选收窄、优先级/特权、多 Key 策略权重、到期、余额、时间计划、错误策略全量携带', () => {
+  it('用户配置分支：表单残留声明集不进 payload，优先级/特权、多 Key 策略权重、到期、余额、时间计划、错误策略全量携带', () => {
     const form = mediaForm('audio', {
+      // 五域表单不持有声明集；此处显式注入残留值，钉住「payload 恒剥离」语义。
       supportedEndpointModes: ['audio_speech', 'realtime_session'],
       priority: 5,
       privilege: 'super_priority',
@@ -111,7 +117,7 @@ describe('buildAccountSavePayload 媒体创建（七项全量）', () => {
     }
     const payload = buildPayload(form, [rateLimitedRule])
     // ①
-    expect(payload.credentials.supported_endpoint_modes).toEqual(['audio_speech', 'realtime_session'])
+    expect(payload.credentials).not.toHaveProperty('supported_endpoint_modes')
     // ②
     expect(payload.credentials.api_keys).toEqual(['sk-a', 'sk-b'])
     expect(payload.credentials.api_key_strategy).toBe('weighted_round_robin')
@@ -136,12 +142,11 @@ describe('buildAccountSavePayload 媒体创建（七项全量）', () => {
 
 // ---- A组①-⑦：编辑 payload 显式字段差量 + CAS 语义不变 ----
 
-describe('buildAccountAdvancedUpdatePatch 媒体编辑（七项差量 + CAS）', () => {
+describe('buildAccountAdvancedUpdatePatch 媒体编辑（五域退役：声明集不进差量）', () => {
   it('变更字段进差量、未变更字段省略、expectedConfigRevision 原样携带', () => {
     const baselineForm = mediaForm('video')
     const baseline = buildPayload(baselineForm)
     const currentForm = mediaForm('video', {
-      supportedEndpointModes: [...VIDEO_GROUP],
       priority: 7,
       privilege: 'fallback',
       accountExpiresAt: dayjs('2027-03-01T12:00:00'),
@@ -174,18 +179,20 @@ describe('buildAccountAdvancedUpdatePatch 媒体编辑（七项差量 + CAS）',
     expect(Array.isArray(delta?.credentialsPatch?.error_handling_rules)).toBe(true)
     // ②（凭据面差量：策略）
     expect(delta?.credentialsPatch?.api_key_strategy).toBe('round_robin')
-    // ①（modes 未变则不出现在凭据差量）
+    // ①（声明集已退役，凭据差量恒不含 supported_endpoint_modes）
     expect(delta?.credentialsPatch).not.toHaveProperty('supported_endpoint_modes')
   })
 
-  it('modes 勾选变化经凭据差量提交完整声明集（D6）', () => {
+  it('表单残留声明集变化不进凭据差量（五域 payload 恒剥离声明集，D6 退役）', () => {
     const baselineForm = mediaForm('audio')
     baselineForm.supportedEndpointModes = ['audio_speech', 'audio_transcription_json']
     const baseline = buildPayload(baselineForm)
     const currentForm = mediaForm('audio', { supportedEndpointModes: ['audio_speech'] })
     const current = buildPayload(currentForm)
     const delta = buildAccountAdvancedUpdatePatch(current, baseline, 3, false)
-    expect(delta?.credentialsPatch?.supported_endpoint_modes).toEqual(['audio_speech'])
+    // 声明集恒剥离后残留差异在 payload 层不存在：声明集变化连差量都不产生
+    //（delta 为 null 即最强形态），凭据差量自然不含 supported_endpoint_modes。
+    expect(delta?.credentialsPatch ?? {}).not.toHaveProperty('supported_endpoint_modes')
   })
 
   it('与基线完全一致时不产生 patch（未检测到修改语义不变）', () => {
@@ -249,7 +256,7 @@ describe('buildAccountEditFormLoad 媒体编辑装载（七项落表单）', () 
     return { account, advanced }
   }
 
-  it('优先级/特权/能力 modes/多 Key 策略权重/到期/余额/时间计划/错误策略全量装载', () => {
+  it('优先级/特权/多 Key 策略权重/到期/余额/时间计划/错误策略全量装载；声明集不进表单（五域退役）', () => {
     const credentials = {
       api_key: 'vk-1',
       api_keys: ['vk-1', 'vk-2'],
@@ -272,15 +279,17 @@ describe('buildAccountEditFormLoad 媒体编辑装载（七项落表单）', () 
       account,
       advanced,
       credentials: { ...account.credentials, ...advanced.credentials },
-      defaults: defaultAccountForm('volcengine', 'api_key')
+      defaults: defaultAccountForm('volcengine', 'api_key'),
+      // 五域退役：按路由域裁剪——凭据残留键（revision 30 前存量）不读入表单。
+      capabilityDomain: 'video'
     })
     // ③ 优先级/特权
     expect(load.patch.priority).toBe(3)
     expect(load.patch.privilege).toBe('super_priority')
     expect(load.patch.concurrencyLimit).toBe(4)
     expect(load.patch.rpmLimit).toBe(0)
-    // ① 能力 modes（编辑装载不裁剪）
-    expect(load.patch.supportedEndpointModes).toEqual(VIDEO_GROUP)
+    // ① 声明集不装载（设计 §3：五域表单不持有「上游接口能力」）
+    expect(load.patch.supportedEndpointModes).toEqual([])
     // ② 多 Key 策略与权重
     expect(load.patch.apiKeys).toEqual(['vk-1', 'vk-2'])
     expect(load.patch.apiKeyStrategy).toBe('weighted_round_robin')

@@ -2,16 +2,27 @@
 // capability domain 与 endpoint mode 的编译期唯一事实源。
 //
 // 数据与计数契约来自 docs/functions/供应商与上游协议面重构设计.md：
-//   - §1.1（:29-50 的 20 行注册表去掉 generic_http 三行后 18 行）展开恰有 42 个
-//     允许连接组合与 138 个单 mode 组合；
+//   - §1.1（:29-50 的 20 行注册表去掉 generic_http 三行后 18 行）展开的允许
+//     连接组合与单 mode 组合：2026-11-20 协议补齐批单 mode 组合由 133 增至
+//     138；2026-11-21 向量/重排拆分批（《AI账户能力域向量重排拆分设计》§3/§5）
+//     域四值→六值、chat lane 15→13、embedding/rerank 独立 lane，gpt API Key
+//     行增 embedding、qwen 行增 embedding+rerank，组合 42→45、单 mode 组合
+//     138→136；2026-11-21 五域退役批（《AI账户上游接口能力设计》§3）单 mode
+//     组合收缩为 chat 域 136→60——「上游接口能力」自该批起仅 chat 域账户
+//     持有，五域（image/audio/video/embedding/rerank）账户彻底去除声明/校验/
+//     过滤；五域连接组合保留（账户仍按六域创建），五域 lane 降格为域探测
+//     形态集（健康检查默认形态与连通性探测规格选型，不再是账户声明校验
+//     依据）；
 //   - §1（:95）的公共协议面 upstream operation template 清单（OpenAI 16 条、Anthropic 2 条、Gemini native 8 条）；
-//   - §2.2 的域 lane（chat 15、video 4、audio 7、image 1）、preset 词表（8 行）与 driver 收窄规则。
-//     2026-11-20 向量/重排协议补齐批：openAIVocabulary 与 qwenDashScopeVocabulary
-//     追加新 mode（qwen 两项、OpenAI 族一项），单 mode 组合由 133 增至 138；
-//     volcengine ark 标准 /api/v3/embeddings 对其现役向量行不可用，词表不扩。
+//   - §2.2 的域 lane（chat 13、embedding 1、rerank 1、video 4、audio 7、
+//     image 1）、preset 词表（8 行）与 driver 收窄规则。2026-11-20 向量/重排
+//     协议补齐批：openAIVocabulary 与 qwenDashScopeVocabulary 追加新 mode
+//     （qwen 两项、OpenAI 族一项）；volcengine ark 标准 /api/v3/embeddings
+//     对其现役向量行不可用，词表不扩。
 //
-// 42 与 138 必须由本文件的组合行 + 词表 + 域 lane + 收窄规则推导，
-// 禁止另建第二份手写清单互相对账（设计 §1.1「计数来源和阻断规则」）。
+// 45 连接组合与 60 chat 单 mode 组合必须由本文件的组合行 + 词表 + 域 lane +
+// 收窄规则推导，禁止另建第二份手写清单互相对账（设计 §1.1「计数来源和阻断
+// 规则」）。
 //
 // 2026-11 裁决：registry 只注册九家真实厂商（gpt/xai/deepseek/anthropic/gemini/
 // glm/minimax/volcengine/qwen），不再提供 generic_http 通用连接器与三条 generic
@@ -88,12 +99,14 @@ const (
 	AuthStrategyDriverDefined = "driver_defined"
 )
 
-// 账户能力域（capability_domain，设计 §2，恰好 4 个值）。
+// 账户能力域（capability_domain，设计 §2 + 向量/重排拆分设计 §3，恰好 6 个值）。
 const (
-	DomainChat  = "chat"
-	DomainVideo = "video"
-	DomainAudio = "audio"
-	DomainImage = "image"
+	DomainChat      = "chat"
+	DomainVideo     = "video"
+	DomainAudio     = "audio"
+	DomainImage     = "image"
+	DomainEmbedding = "embedding"
+	DomainRerank    = "rerank"
 )
 
 // 连接预设标识（connection_preset_code，设计 §1.1 注册表，恰好 14 个值）。
@@ -116,7 +129,8 @@ const (
 
 // endpoint mode（设计 §2.2 域 lane 的并集，恰好 27 个值）。
 const (
-	// chat lane（15 个）。
+	// chat lane（13 个；2026-11-20 协议补齐批曾达 15 个，v2 向量/重排拆分
+	// 把 embeddings_json / rerank_json 移出 chat lane，见下方两域 lane）。
 	ModeChatJSON             = "chat_json"
 	ModeChatSSE              = "chat_sse"
 	ModeResponsesJSON        = "responses_json"
@@ -130,7 +144,8 @@ const (
 	ModeInteractionsSSE      = "interactions_sse"
 	ModeCountTokens          = "count_tokens"
 	ModeEmbedContent         = "embed_content"
-	// 2026-11-20 协议补齐批：OpenAI Embeddings 规范面与 Cohere/Jina 重排面。
+	// embedding / rerank lane（各 1 个）：OpenAI Embeddings 规范面与
+	// Cohere/Jina 重排面，2026-11-21 起为独立落库能力域。
 	ModeEmbeddingsJSON = "embeddings_json"
 	ModeRerankJSON     = "rerank_json"
 
@@ -157,16 +172,26 @@ const (
 // 域 lane（设计 §2.2「域 lane 固定如下」表）
 // ---------------------------------------------------------------------------
 
-// capabilityDomainLanes 是每个 capability domain 允许的 endpoint mode 集合。
+// capabilityDomainLanes 是每个 capability domain 的 endpoint mode 形态集
+// （向量/重排拆分设计 §3：chat 13 值、embedding/rerank 各 1 值）。2026-11-21
+// 五域退役批（《AI账户上游接口能力设计》§3）起口径分域：
+//   - chat lane 是对话域账户声明校验的锚集（AllowedModes = chat lane ∩
+//     preset 词表，写侧校验/缺省播种/导入推域仍消费）；
+//   - 五域 lane（embedding/rerank/video/audio/image）降格为「域探测形态集」：
+//     供健康检查默认形态（DefaultHealthCheckEndpointModeForDomain）与连通性
+//     探测规格选型（ConnectivityProbeForModes 输入），不再是账户声明校验
+//     依据——五域账户不再声明 supported_endpoint_modes（revision 30 清洗），
+//     派发按域闸门圈定候选，不做 mode 级过滤。
 var capabilityDomainLanes = map[string][]string{
 	DomainChat: {
 		ModeChatJSON, ModeChatSSE, ModeResponsesJSON, ModeResponsesSSE,
 		ModeMessagesJSON, ModeMessagesSSE, ModeMessageTokenCounting,
 		ModeGenerateContentJSON, ModeGenerateContentSSE,
 		ModeInteractionsJSON, ModeInteractionsSSE, ModeCountTokens, ModeEmbedContent,
-		ModeEmbeddingsJSON, ModeRerankJSON,
 	},
-	DomainVideo: {ModeVideoCreate, ModeVideoGet, ModeVideoContent, ModeVideoCancel},
+	DomainEmbedding: {ModeEmbeddingsJSON},
+	DomainRerank:    {ModeRerankJSON},
+	DomainVideo:     {ModeVideoCreate, ModeVideoGet, ModeVideoContent, ModeVideoCancel},
 	DomainAudio: {
 		ModeAudioSpeech, ModeAudioTranscriptionJSON, ModeAudioJobCreate,
 		ModeAudioJobGet, ModeAudioJobContent, ModeAudioJobCancel, ModeRealtimeSession,
@@ -738,8 +763,10 @@ type connectorComboRow struct {
 }
 
 var connectorComboRows = []connectorComboRow{
+	// gpt API Key 行 2026-11-21 增 DomainEmbedding（向量/重排拆分设计 §5：
+	// OpenAI 族词表含 embeddings_json）。
 	{Driver: DriverGPT, AccountTypes: []string{AccountTypeAPIKey}, Preset: PresetGPTOpenAIV1,
-		Domains: []string{DomainChat, DomainVideo, DomainAudio, DomainImage}},
+		Domains: []string{DomainChat, DomainVideo, DomainAudio, DomainImage, DomainEmbedding}},
 	{Driver: DriverGPT, AccountTypes: []string{AccountTypeOAuth}, Preset: PresetGPTOpenAIV1,
 		Domains: []string{DomainChat}},
 	{Driver: DriverXAI, AccountTypes: []string{AccountTypeAPIKey}, Preset: PresetXAIOpenAIV1,
@@ -772,12 +799,15 @@ var connectorComboRows = []connectorComboRow{
 		Domains: []string{DomainChat, DomainVideo, DomainImage}},
 	{Driver: DriverVolcengine, AccountTypes: []string{AccountTypeAPIKey}, Preset: PresetVolcengineOpenSpeech,
 		Domains: []string{DomainAudio}},
+	// qwen DashScope 行 2026-11-21 增 DomainEmbedding / DomainRerank（向量/
+	// 重排拆分设计 §5：qwenDashScopeVocabulary 含 embeddings_json 与
+	// rerank_json；rerank 全平台仅此一行）。
 	{Driver: DriverQwen, AccountTypes: []string{AccountTypeAPIKey}, Preset: PresetQwenDashScope,
-		Domains: []string{DomainChat, DomainVideo, DomainAudio}},
+		Domains: []string{DomainChat, DomainVideo, DomainAudio, DomainEmbedding, DomainRerank}},
 }
 
 // ---------------------------------------------------------------------------
-// 派生数据（42 连接组合与 138 单 mode 组合的唯一来源）
+// 派生数据（45 连接组合与 60 chat 域单 mode 组合的唯一来源）
 // ---------------------------------------------------------------------------
 
 // ConnectorCombo 是一个允许的连接组合（设计 §1.1 五元组 + driver/preset 投影字段）。
@@ -801,7 +831,9 @@ type ConnectorCombo struct {
 }
 
 // EndpointModeCombo 是 ConnectorCombo 的单 mode 展开：一个连接组合允许的每个
-// endpoint mode 各一条（设计 §1.1 :54 的 138 条清单）。
+// endpoint mode 各一条。2026-11-21 五域退役批起只展开 chat 域连接组合
+// （声明面收窄为 chat 域，60 条）；五域连接组合保留在 ConnectorCombo 清单，
+// 其探测形态集见 capabilityDomainLanes 五域 lane。
 type EndpointModeCombo struct {
 	// Driver/Vendor/AccountType/OAuthType/Preset/Surface/Domain 语义与 ConnectorCombo 相同。
 	Driver      string
@@ -825,9 +857,10 @@ var (
 )
 
 var (
-	// connectorCombos 是 42 条允许连接组合的排序稳定清单。
+	// connectorCombos 是 45 条允许连接组合的排序稳定清单。
 	connectorCombos = buildConnectorCombos()
-	// endpointModeCombos 是 138 条单 mode 组合的排序稳定清单。
+	// endpointModeCombos 是 60 条 chat 域单 mode 组合的排序稳定清单
+	//（五域退役批起声明面仅 chat 域）。
 	endpointModeCombos = buildEndpointModeCombos()
 	// connectorComboIndex 是五元组判定索引。
 	connectorComboIndex = buildConnectorComboIndex(connectorCombos)
@@ -958,6 +991,12 @@ func buildConnectorCombos() []ConnectorCombo {
 func buildEndpointModeCombos() []EndpointModeCombo {
 	combos := make([]EndpointModeCombo, 0, 4*len(connectorCombos))
 	for _, combo := range connectorCombos {
+		// 2026-11-21 五域退役批（《AI账户上游接口能力设计》§3）：单 mode 组合
+		// 只展开 chat 域连接——「上游接口能力」声明面仅 chat 域账户持有；
+		// 五域组合保留在 connectorCombos（账户仍按六域创建），不产生声明行。
+		if combo.Domain != DomainChat {
+			continue
+		}
 		preset := connectorPresetRecordIndex[combo.Preset]
 		for _, mode := range AllowedModes(combo.Domain, combo.Preset, combo.AccountType, combo.OAuthType) {
 			combos = append(combos, EndpointModeCombo{
@@ -1024,6 +1063,10 @@ func presetVocabulary(preset, accountType, oauthType string) map[string]struct{}
 
 // AllowedModes 返回 DomainLane(domain) ∩ PresetVocabulary(preset, accountType, oauthType)，
 // 按 ASCII 升序排序；未知域、未知 preset 或空交集返回空切片（设计 §2.2）。
+// 2026-11-21 五域退役批起，声明校验入口仅 chat 域：写侧（创建播种/PATCH
+// 严格校验/批量编辑/连接 preset modes 组合校验）与导入只对 chat 域账户消费
+// 本函数；五域账户不声明 endpoint modes（revision 30 清洗存量），其域 lane
+// 交集仅作为域探测形态集（健康检查/连通性探测选型）保留，本函数逻辑不变。
 func AllowedModes(domain, preset, accountType, oauthType string) []string {
 	lane, ok := capabilityDomainLanes[domain]
 	if !ok {
@@ -1044,14 +1087,14 @@ func AllowedModes(domain, preset, accountType, oauthType string) []string {
 // 公开 API（设计 §1.1：三个项目绑定同一 tuple，不得复制允许集合）
 // ---------------------------------------------------------------------------
 
-// AllowedConnectorCombos 返回全部 42 个允许连接组合，
+// AllowedConnectorCombos 返回全部 45 个允许连接组合，
 // 按 driver、account type、oauth type、preset、domain 的字典序稳定排序。
 // 返回值是 registry 内部数据的只读视图，调用方不得修改。
 func AllowedConnectorCombos() []ConnectorCombo {
 	return connectorCombos
 }
 
-// AllowedEndpointModeCombos 返回全部 138 个单 mode 组合，
+// AllowedEndpointModeCombos 返回全部 60 个 chat 域单 mode 组合，
 // 按 connectorCombos 同一排序规则追加 mode 字典序。
 // 返回值是 registry 内部数据的只读视图，调用方不得修改。
 func AllowedEndpointModeCombos() []EndpointModeCombo {
@@ -1066,13 +1109,13 @@ func IsAllowedConnectorCombo(driver, accountType, oauthType, preset, domain stri
 }
 
 // ConnectorComboVerdict 是笛卡尔积判定辅助，语义与 IsAllowedConnectorCombo 相同，
-// 供外部遍历全组合空间（9 driver × 3 account type × 4 oauth 值 × 14 preset × 4 domain
-// = 6048）时统计允许/拒绝结论。
+// 供外部遍历全组合空间（9 driver × 3 account type × 4 oauth 值 × 14 preset × 6 domain
+// = 9072）时统计允许/拒绝结论。
 func ConnectorComboVerdict(driver, accountType, oauthType, preset, domain string) (allowed bool) {
 	return IsAllowedConnectorCombo(driver, accountType, oauthType, preset, domain)
 }
 
-// ComboDriverCounts 返回 42 条连接组合按 driver 的计数。
+// ComboDriverCounts 返回 45 条连接组合按 driver 的计数。
 func ComboDriverCounts() map[string]int {
 	counts := make(map[string]int, len(connectorCombos))
 	for _, combo := range connectorCombos {
@@ -1081,7 +1124,7 @@ func ComboDriverCounts() map[string]int {
 	return counts
 }
 
-// ModeComboDriverCounts 返回 138 条单 mode 组合按 driver 的计数。
+// ModeComboDriverCounts 返回 60 条 chat 域单 mode 组合按 driver 的计数。
 func ModeComboDriverCounts() map[string]int {
 	counts := make(map[string]int, len(endpointModeCombos))
 	for _, combo := range endpointModeCombos {
@@ -1091,7 +1134,7 @@ func ModeComboDriverCounts() map[string]int {
 }
 
 // RegistryFingerprint 返回 registry 的 SHA-256 指纹（64 位小写 hex）。
-// 计算方式（设计 §1.1 :56）：对 138 条单 mode 元素组成的 UTF-8 compact JSON 数组的
+// 计算方式（设计 §1.1 :56）：对 60 条 chat 域单 mode 元素组成的 UTF-8 compact JSON 数组的
 // 原始 bytes 计算 SHA-256；数组元素按 ASCII 字典序排序；每个元素字段顺序固定为
 // driver、vendor、accountType、oauthType、preset、surface、domain、mode、
 // allowedBaseSuffixes、operationTemplates、defaultBaseUrl；oauthType/surface

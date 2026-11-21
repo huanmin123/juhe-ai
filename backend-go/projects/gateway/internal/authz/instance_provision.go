@@ -61,40 +61,6 @@ type authorizedInstanceProvision struct {
 	GrantExpiresAt         *string
 }
 
-// provisionAuthorizedAccountInstance mirrors the bind gating of
-// bindActiveAccountAuthorizationToGranteeGroup (:184-188): active,
-// unexpired account grants only, then ensure the instance and bind it into
-// the grantee group. It runs inside the create transaction so a validation
-// rejection rolls the whole grant back.
-func (s *Store) provisionAuthorizedAccountInstance(ctx context.Context, tx *sql.Tx, in authorizedInstanceProvision, nowTime time.Time, now string) error {
-	if in.GrantExpiresAt != nil && *in.GrantExpiresAt != "" &&
-		authorizationExpiresPassed(*in.GrantExpiresAt, nowTime) {
-		return nil
-	}
-	// The instance row is stamped with the runtime authorization id (Node
-	// upsertResourceAuthorizationForUser hands the bind the resource_
-	// authorizations row); without the runtime row there is nothing to stamp.
-	runtimeID, err := s.findRuntimeIDForUserGrant(ctx, tx, "account", in.SourceAccountID, in.GranteeID)
-	if err != nil {
-		return err
-	}
-	if runtimeID == "" {
-		return nil
-	}
-	in.RuntimeAuthorizationID = runtimeID
-	instance, err := s.ensureAccountAuthorizationInstance(ctx, tx, in, nowTime, now)
-	if err != nil {
-		return err
-	}
-	// 供应商解耦（设计 §2.1）：connection_driver_code 是资源账户必填身份列，
-	// 空 driver（含 generic_http 退场后的历史空 vendor 行）表示源行不完整，
-	// 沿用归档实现的「退化跳过」语义。实例缺失同样跳过。
-	if instance == nil || instance.id == "" || instance.driver == "" {
-		return nil
-	}
-	return s.bindInstanceToGranteeGroup(ctx, tx, instance, in, now)
-}
-
 // sourceAccountColumns is the projection the restore and insert arms share
 // (archived `SELECT *` narrowed to the consumed fields). capability_domain
 // 承载域继承（AI 账户能力域拆分 D3）：实例域恒等于源域，插入臂与软删除
@@ -466,54 +432,6 @@ func (s *Store) defaultGroupIDForProvider(ctx context.Context, q queryer, provid
 		return "", &Fail{Message: "超级分组不能直接绑定账户", Code: "group_kind_conflict"}
 	}
 	return id, nil
-}
-
-// provisionTeamAccountInstanceForMember runs the create-tail instance clone
-// for one member of an active team account grant. 设计 :257: the member keeps
-// their own current enabled default group for the source provider; the group
-// is never auto-created, so a missing default group fails the whole enclosing
-// transaction with the member label (name, falling back to the id). The gate
-// order mirrors provisionAuthorizedAccountInstance: an expired grant skips
-// silently. 供应商解耦后按 vendor 判定目录维度，不再按空 provider 跳过。
-func (s *Store) provisionTeamAccountInstanceForMember(ctx context.Context, tx *sql.Tx, sourceAccountID, ownerID, memberID string, grantExpiresAt *string, nowTime time.Time, now string) error {
-	if grantExpiresAt != nil && *grantExpiresAt != "" &&
-		authorizationExpiresPassed(*grantExpiresAt, nowTime) {
-		return nil
-	}
-	var providerCode, driverCode string
-	err := tx.QueryRowContext(ctx, s.bind(`SELECT COALESCE(vendor_code, '') AS provider_code,
-			COALESCE(connection_driver_code, '') AS connection_driver_code FROM `+s.table("accounts")+`
-		WHERE id = ? AND deleted_at IS NULL LIMIT 1`), sourceAccountID).Scan(&providerCode, &driverCode)
-	if errors.Is(err, sql.ErrNoRows) {
-		// Source deleted: ensureAccountAuthorizationInstance skips silently for
-		// the same condition, so the fanout skips before resolving groups.
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if driverCode == "" {
-		// 退化源行（缺 driver）沿用归档的静默跳过。
-		return nil
-	}
-	groupID, err := s.defaultGroupIDForProvider(ctx, tx, providerCode, memberID)
-	if err != nil {
-		return err
-	}
-	if groupID == "" {
-		label, err := s.teamMemberDisplayLabel(ctx, tx, memberID)
-		if err != nil {
-			return err
-		}
-		return failf("团队成员 %s 缺少该供应商的默认分组，无法完成团队授权", label)
-	}
-	return s.provisionAuthorizedAccountInstance(ctx, tx, authorizedInstanceProvision{
-		SourceAccountID: sourceAccountID,
-		OwnerID:         ownerID,
-		GranteeID:       memberID,
-		TargetGroupID:   &groupID,
-		GrantExpiresAt:  grantExpiresAt,
-	}, nowTime, now)
 }
 
 // teamMemberDisplayLabel renders the member identity the team-authorization

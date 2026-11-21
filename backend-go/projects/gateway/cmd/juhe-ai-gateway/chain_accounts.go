@@ -17,8 +17,6 @@ package main
 //   - account-api-key-runtime-state.repository.ts
 //     (loadAccountApiKeyRuntimeStatesByAccountIds),
 //   - proxy.repository.ts (resolveProxyUrlsForProfiles + proxyUrlFromRow),
-//   - resource-authorization-helpers.ts / request-quota-limits.ts
-//     (resourceAuthorizationQuotaLimited),
 //   - openai-endpoint-modes.ts + provider-protocol.ts (runtime endpoint modes).
 //
 // Every field of the Node OpenAIAccountSecret projection is hydrated; nothing
@@ -42,7 +40,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayscheduling"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/authzrevision"
 	"github.com/huanminabc/juhe-ai/backend-go-platform/proxyresolve"
 )
 
@@ -219,6 +216,11 @@ type chainCandidateRow struct {
 	AuthorizationInstanceSourceAccountID     sql.NullString
 	AuthorizationInstanceAuthorizationID     sql.NullString
 	AuthorizationInstanceOwnerSystemAccountI sql.NullString
+	// CapabilityDomain 是账户能力域投影（COALESCE(source_accounts.capability_domain,
+	// accounts.capability_domain)：授权实例继承来源账户域，直连账户落自身；
+	// 五域退役修订的域闸门输入，五域退役设计 §4）。列 NOT NULL DEFAULT 'chat'，
+	// COALESCE 只在 source 行缺失（LEFT JOIN 未命中）时落到账户自身值。
+	CapabilityDomain sql.NullString
 
 	// ConnectionBaseURL / ConnectionPresetCode 是单连接事实源投影（B4 第一批，
 	// 设计 §2.1「Base URL 属于连接行」）：候选窗口按资源账户（授权实例经
@@ -303,7 +305,8 @@ const chainCandidateColumns = `group_accounts.account_id,
 			source_accounts.proxy_profile_id AS resource_proxy_profile_id,
 			source_accounts.proxy_pool_id AS resource_proxy_pool_id,
 			source_accounts.concurrency_limit AS resource_concurrency_limit,
-			source_accounts.rpm_limit AS resource_rpm_limit`
+			source_accounts.rpm_limit AS resource_rpm_limit,
+			COALESCE(source_accounts.capability_domain, accounts.capability_domain) AS capability_domain`
 
 // chainCandidateModelTail extends the model-candidate window projection.
 const chainCandidateModelTail = `,
@@ -687,7 +690,8 @@ func (s *chainAccountsSelector) listChatPinnedCandidateRows(ctx context.Context,
 // client_compatibility 投影已拆除（B4 W2 收口后 chainCandidateRow 不再保留
 // ProviderCode/ResourceProviderCode 过渡字段；ProviderProtocolProfileID 等
 // 其余过渡字段恒零值不赋值）；
-// 列序尾部为单连接事实源两投影（connection_base_url / connection_preset_code）。
+// 列序尾部为单连接事实源两投影（connection_base_url / connection_preset_code）
+// 与能力域投影（capability_domain，五域退役修订的域闸门输入）。
 func candidateScanDest(row *chainCandidateRow) []any {
 	return []any{
 		&row.AccountID, &row.BindingSystemAccountID, &row.GroupID, &row.AccountAuthorizationID,
@@ -720,6 +724,7 @@ func candidateScanDest(row *chainCandidateRow) []any {
 		&row.ResourceProxyPoolID,
 		&row.ResourceConcurrencyLimit,
 		&row.ResourceRPMLimit,
+		&row.CapabilityDomain,
 	}
 }
 
@@ -1172,25 +1177,23 @@ func (s *chainAccountsSelector) resolveGroupAccess(ctx context.Context, groupID,
 	if authorization == nil {
 		return nil, nil
 	}
-	// Group settings are fail-closed (§4.6): a missing row, a disabled switch,
-	// an unbuilt snapshot or a mismatched owner never degrades to "allowed".
-	var localEnabled int
-	var snapshotRevision, settingsOwner, settingsGroup string
-	err = s.db.QueryRowContext(ctx, s.bind(`SELECT enabled, COALESCE(snapshot_revision, ''),
-			system_account_id, group_id
+	// Group settings are fail-closed: a missing claim row or a mismatched
+	// owner/group never degrades to "allowed".
+	var settingsOwner, settingsGroup string
+	err = s.db.QueryRowContext(ctx, s.bind(`SELECT system_account_id, group_id
 		FROM `+s.table("group_authorization_settings")+`
 		WHERE authorization_id = ? LIMIT 1`), authorization.id).
-		Scan(&localEnabled, &snapshotRevision, &settingsOwner, &settingsGroup)
+		Scan(&settingsOwner, &settingsGroup)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	if localEnabled != 1 || snapshotRevision == "" || settingsOwner != systemAccountID || settingsGroup != groupID {
+	if settingsOwner != systemAccountID || settingsGroup != groupID {
 		return nil, nil
 	}
-	allowed, err := s.runtimeSourceRevisionOK(ctx, authorization.id, "group", groupID, ownerID,
+	allowed, err := s.runtimeSourceRevisionOK(ctx, authorization.id,
 		authorization.effectiveSourceType, authorization.effectiveSourceTeamID)
 	if err != nil || !allowed {
 		return nil, err
@@ -1202,14 +1205,13 @@ func (s *chainAccountsSelector) resolveGroupAccess(ctx context.Context, groupID,
 		SchedulingPolicy:               policy,
 		GroupAuthorizationID:           nullStringPtr(sql.NullString{String: authorization.id, Valid: true}),
 		GroupAuthorizationExpiresAt:    authorization.expiresAt,
-		GroupAuthorizationQuotaLimited: chainResourceAuthorizationQuotaLimited(authorization.limitsJSON),
 		GroupAuthorizationSourceType:   authorization.effectiveSourceType,
 		GroupAuthorizationSourceTeamID: authorization.effectiveSourceTeamID,
 	}, nil
 }
 
 // chainAuthorizationRow mirrors the ResourceAuthorizationRow subset the
-// selector consumes.
+// selector consumes（授权额度退役：额度列不再投影）.
 type chainAuthorizationRow struct {
 	id                    string
 	resourceID            string
@@ -1217,10 +1219,9 @@ type chainAuthorizationRow struct {
 	expiresAt             *string
 	effectiveSourceType   *string
 	effectiveSourceTeamID *string
-	limitsJSON            *string
 }
 
-const chainAuthorizationColumns = `id, resource_id, resource_owner_system_account_id, expires_at, effective_source_type, effective_source_team_id, limits_json`
+const chainAuthorizationColumns = `id, resource_id, resource_owner_system_account_id, expires_at, effective_source_type, effective_source_team_id`
 
 // activeResourceAuthorization mirrors activeResourceAuthorization.
 func (s *chainAccountsSelector) activeResourceAuthorization(ctx context.Context, resourceType, resourceID, granteeSystemAccountID string) (*chainAuthorizationRow, error) {
@@ -1231,7 +1232,7 @@ func (s *chainAccountsSelector) activeResourceAuthorization(ctx context.Context,
 	var resourceOwner sql.NullString
 	err := s.db.QueryRowContext(ctx, s.bind(query), resourceType, resourceID, granteeSystemAccountID, now).
 		Scan(&authorization.id, &authorization.resourceID, &resourceOwner, &authorization.expiresAt,
-			&authorization.effectiveSourceType, &authorization.effectiveSourceTeamID, &authorization.limitsJSON)
+			&authorization.effectiveSourceType, &authorization.effectiveSourceTeamID)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -1251,7 +1252,7 @@ func (s *chainAccountsSelector) activeResourceAuthorizationByID(ctx context.Cont
 	var resourceOwner sql.NullString
 	err := s.db.QueryRowContext(ctx, s.bind(query), authorizationID, granteeSystemAccountID, now).
 		Scan(&authorization.id, &authorization.resourceID, &resourceOwner, &authorization.expiresAt,
-			&authorization.effectiveSourceType, &authorization.effectiveSourceTeamID, &authorization.limitsJSON)
+			&authorization.effectiveSourceType, &authorization.effectiveSourceTeamID)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -1285,7 +1286,7 @@ func (s *chainAccountsSelector) activeResourceAuthorizationsByIDs(ctx context.Co
 		var authorization chainAuthorizationRow
 		var resourceOwner sql.NullString
 		if err := rows.Scan(&authorization.id, &authorization.resourceID, &resourceOwner, &authorization.expiresAt,
-			&authorization.effectiveSourceType, &authorization.effectiveSourceTeamID, &authorization.limitsJSON); err != nil {
+			&authorization.effectiveSourceType, &authorization.effectiveSourceTeamID); err != nil {
 			return nil, err
 		}
 		authorization.resourceOwnerID = resourceOwner.String
@@ -1329,7 +1330,6 @@ type chainAccountAccess struct {
 	accountOwnerID         *string
 	accountAuthorizationID *string
 	expiresAt              *string
-	quotaLimited           *bool
 	sourceType             *string
 	sourceTeamID           *string
 }
@@ -1342,7 +1342,6 @@ func chainAccountAccessFromAuthorization(authorization *chainAuthorizationRow) *
 		accountOwnerID:         strPtr(authorization.resourceOwnerID),
 		accountAuthorizationID: strPtr(authorization.id),
 		expiresAt:              authorization.expiresAt,
-		quotaLimited:           chainResourceAuthorizationQuotaLimited(authorization.limitsJSON),
 		sourceType:             authorization.effectiveSourceType,
 		sourceTeamID:           authorization.effectiveSourceTeamID,
 	}
@@ -1373,8 +1372,8 @@ func (s *chainAccountsSelector) resolveChainAccountAccess(ctx context.Context, r
 		if boundAccountAuthorizationID != "" && authorization.id != boundAccountAuthorizationID {
 			return nil, nil
 		}
-		allowed, err := s.runtimeSourceRevisionOK(ctx, authorization.id, "account", authorization.resourceID,
-			authorization.resourceOwnerID, authorization.effectiveSourceType, authorization.effectiveSourceTeamID)
+		allowed, err := s.runtimeSourceRevisionOK(ctx, authorization.id,
+			authorization.effectiveSourceType, authorization.effectiveSourceTeamID)
 		if err != nil || !allowed {
 			return nil, err
 		}
@@ -1389,13 +1388,12 @@ func (s *chainAccountsSelector) resolveChainAccountAccess(ctx context.Context, r
 			if groupAccess.GroupAuthorizationID != nil {
 				authorizationID = strings.TrimSpace(*groupAccess.GroupAuthorizationID)
 			}
-			groupAllowed, err := s.runtimeSourceRevisionOK(ctx, authorizationID, "group", row.GroupID.String,
-				groupAccess.GroupOwnerSystemAccountID, groupAccess.GroupAuthorizationSourceType,
-				groupAccess.GroupAuthorizationSourceTeamID)
+			groupAllowed, err := s.runtimeSourceRevisionOK(ctx, authorizationID,
+				groupAccess.GroupAuthorizationSourceType, groupAccess.GroupAuthorizationSourceTeamID)
 			if err != nil || !groupAllowed {
 				return nil, err
 			}
-			allowed, err := s.groupSnapshotAllows(ctx, authorizationID, row.ID)
+			allowed, err := s.groupSnapshotAllows(ctx, authorizationID)
 			if err != nil || !allowed {
 				return nil, err
 			}
@@ -1423,19 +1421,18 @@ func (s *chainAccountsSelector) resolveChainAccountAccess(ctx context.Context, r
 	if authorization == nil {
 		return nil, nil
 	}
-	allowed, err := s.runtimeSourceRevisionOK(ctx, authorization.id, "account", authorization.resourceID,
-		authorization.resourceOwnerID, authorization.effectiveSourceType, authorization.effectiveSourceTeamID)
+	allowed, err := s.runtimeSourceRevisionOK(ctx, authorization.id,
+		authorization.effectiveSourceType, authorization.effectiveSourceTeamID)
 	if err != nil || !allowed {
 		return nil, err
 	}
 	return chainAccountAccessFromAuthorization(authorization), nil
 }
 
-// runtimeSourceRevisionOK is the runtime source gate (authorization
-// governance design §8.1): the runtime must still have an active source of the
-// effective type, and its accepted material revision must equal the current
-// account/group revision. Runtime status alone is not sufficient.
-func (s *chainAccountsSelector) runtimeSourceRevisionOK(ctx context.Context, runtimeID, resourceType, resourceID, ownerID string,
+// runtimeSourceRevisionOK is the runtime source gate (send-and-claim model):
+// the runtime must still have an active source of the effective type backed by
+// an active, unexpired grant. Runtime status alone is not sufficient.
+func (s *chainAccountsSelector) runtimeSourceRevisionOK(ctx context.Context, runtimeID string,
 	effectiveSourceType, effectiveSourceTeamID *string) (bool, error) {
 	if strings.TrimSpace(runtimeID) == "" {
 		return false, nil
@@ -1454,15 +1451,13 @@ func (s *chainAccountsSelector) runtimeSourceRevisionOK(ctx context.Context, run
 	if sourceType == "team" && teamID == "" {
 		return false, nil
 	}
-	var acceptedRevision string
-	var acceptedVersion, revisionVersion int
 	now := chainNowISO(s.now)
 	// The source gate must not trust a stale runtime projection: the runtime,
-	// its parent grant and the accepted source revision all have to agree at
-	// request time. A source without grant_id (legacy/unmigrated) fails
-	// closed because the inner JOIN cannot match it.
-	err := s.db.QueryRowContext(ctx, s.bind(`SELECT COALESCE(s.accepted_source_revision, ''),
-			COALESCE(s.accepted_source_revision_version, 0), s.revision_version
+	// its parent grant and the effective source all have to agree at request
+	// time. A source without grant_id fails closed because the inner JOIN
+	// cannot match it.
+	var one int
+	err := s.db.QueryRowContext(ctx, s.bind(`SELECT 1
 		FROM `+s.table("resource_authorization_sources")+` s
 		JOIN `+s.table("resource_authorization_grants")+` g ON g.id = s.grant_id
 		JOIN `+s.table("resource_authorizations")+` ra ON ra.id = s.authorization_id
@@ -1473,61 +1468,36 @@ func (s *chainAccountsSelector) runtimeSourceRevisionOK(ctx context.Context, run
 		  AND (COALESCE(g.expires_at, '') = '' OR g.expires_at > ?)
 		  AND ((? = 'manual' AND s.source_type = 'manual')
 		    OR (? = 'team' AND s.source_type = 'team' AND s.source_team_id = ?))
-		LIMIT 1`), runtimeID, now, now, sourceType, sourceType, teamID).
-		Scan(&acceptedRevision, &acceptedVersion, &revisionVersion)
+		LIMIT 1`), runtimeID, now, now, sourceType, sourceType, teamID).Scan(&one)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	if acceptedRevision == "" || acceptedVersion == 0 {
-		return false, nil
-	}
-	currentRevision, currentVersion, err := s.currentResourceRevision(ctx, resourceType, resourceID, ownerID)
-	if err != nil {
-		return false, err
-	}
-	return acceptedRevision == currentRevision && acceptedVersion == revisionVersion && currentVersion == revisionVersion, nil
+	return true, nil
 }
 
-func (s *chainAccountsSelector) currentResourceRevision(ctx context.Context, resourceType, resourceID, ownerID string) (string, int, error) {
-	if resourceType == "account" {
-		revision, version, _, err := authzrevision.Compute(ctx, s.db, resourceID, s.secret)
-		return revision, version, err
-	}
-	return authzrevision.Group(s.secret, resourceID, ownerID), authzrevision.Version, nil
-}
-
-// groupSnapshotAllows enforces the group scope snapshot at account granularity
-// (§4.6/§5.10): missing settings/snapshot or a changed account revision is a
-// denial. The group-level enabled switch is checked by resolveGroupAccess and
-// re-checked here so a stale cached access object cannot bypass it.
-func (s *chainAccountsSelector) groupSnapshotAllows(ctx context.Context, authorizationID, accountID string) (bool, error) {
-	if strings.TrimSpace(authorizationID) == "" || strings.TrimSpace(accountID) == "" {
+// groupSnapshotAllows enforces the group-authorization claim at request time
+// (send-and-claim model): the claim row in group_authorization_settings is the
+// whole visibility contract. Group membership is resolved live from the
+// group_accounts rows of the owner's group, so no per-account snapshot is
+// involved.
+func (s *chainAccountsSelector) groupSnapshotAllows(ctx context.Context, authorizationID string) (bool, error) {
+	if strings.TrimSpace(authorizationID) == "" {
 		return false, nil
 	}
-	var snapshotRevision, accountRevision string
-	var snapshotVersion int
-	err := s.db.QueryRowContext(ctx, s.bind(`SELECT COALESCE(s.snapshot_revision, ''),
-			COALESCE(ga.source_revision, ''), COALESCE(ga.revision_version, 0)
-		FROM `+s.table("group_authorization_settings")+` s
-		JOIN `+s.table("resource_authorization_group_accounts")+` ga
-		  ON ga.authorization_id = s.authorization_id AND ga.account_id = ?
-		WHERE s.authorization_id = ? AND s.enabled = 1 AND COALESCE(s.snapshot_revision, '') <> ''
-		LIMIT 1`), accountID, authorizationID).
-		Scan(&snapshotRevision, &accountRevision, &snapshotVersion)
+	var one int
+	err := s.db.QueryRowContext(ctx, s.bind(`SELECT 1
+		FROM `+s.table("group_authorization_settings")+`
+		WHERE authorization_id = ? LIMIT 1`), authorizationID).Scan(&one)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	currentRevision, currentVersion, err := s.currentResourceRevision(ctx, "account", accountID, "")
-	if err != nil {
-		return false, err
-	}
-	return accountRevision == currentRevision && snapshotVersion == currentVersion, nil
+	return true, nil
 }
 
 // canScheduleChainAuthorizedAccount mirrors canScheduleAuthorizedAccount.

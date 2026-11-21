@@ -94,7 +94,6 @@ func (d *Deps) mountUsageRoutes(k *kernel.Kernel, adminPrefix, selfPrefix string
 	k.Register("GET "+adminPrefix+"/{id}/usage", admin(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.usageDetail(w, r, false)
 	})))
-	k.Register("DELETE "+adminPrefix+"/{id}/return", admin(http.HandlerFunc(d.adminReturn)))
 
 	k.Register("GET "+selfPrefix+"/usage/team-details", self(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.usageRows(w, r, "team", true)
@@ -362,11 +361,4 @@ func (d *Deps) usageDetail(w http.ResponseWriter, r *http.Request, selfOnly bool
 		return
 	}
 	kernel.WriteOK(w, summary, "")
-}
-
-// adminReturn serves DELETE /authorizations/{id}/return: the shared return
-// mutation with the grantee resolved through userVisibleSystemAccountId
-// (return.repository.ts:121/:166).
-func (d *Deps) adminReturn(w http.ResponseWriter, r *http.Request) {
-	d.returnValue(w, r, false)
 }

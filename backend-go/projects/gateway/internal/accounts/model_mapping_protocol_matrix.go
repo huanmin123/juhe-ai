@@ -194,7 +194,29 @@ func assertSupportedAccountModelMappingEndpointFamilyConversion(source, upstream
 // （protocolCode/protocolVersion/providerProtocolProfileID），归档写入链路
 // 的 profile 形态（protocolProfileFromRow / requireEnabled 档案）不含
 // endpointFamilies，故此处不需要该字段。
+//
+// 2026-11-21 五域退役（AI账户上游接口能力设计 §3）：上游 endpoint-mode 能力
+// 格门吃账户声明集——五域账户声明面退役后由调用方改走
+// assertAccountModelMappingProtocolFamilyAllowed（跳过能力格门，档案族门与
+// 7 pair 白名单保留）；chat 域仍走本函数全量门。
 func assertAccountModelMappingProtocolAllowed(mapping ModelMapping, profile protocolPredicateInput, supportedEndpointModes []string) error {
+	if err := assertAccountModelMappingProtocolFamilyAllowed(mapping, profile); err != nil {
+		return err
+	}
+	if mappingEnabled(mapping) && !hasAccountModelMappingUpstreamEndpointFamilyCapability(mapping.UpstreamEndpointFamily, supportedEndpointModes) {
+		if rule := findProtocolConversionRule(accountModelMappingProtocolRules, mapping.SourceEndpointFamily, mapping.UpstreamEndpointFamily); rule != nil && rule.requiresNativeResponses {
+			return &ValidationError{Message: "上游协议 Responses 只能用于账号真实支持 Responses API 的原生上游"}
+		}
+		return &ValidationError{Message: missingUpstreamEndpointFamilyCapabilityMessage(mapping.UpstreamEndpointFamily)}
+	}
+	return nil
+}
+
+// assertAccountModelMappingProtocolFamilyAllowed 是映射门的档案族段（openai/
+// anthropic/gemini 档案族 + Gemini OpenAI Chat / native 特判 + 7 pair 白名单 +
+// 按族的档案匹配校验），不含上游 endpoint-mode 声明能力格门。五域退役后五域
+// 账户的映射断言走本段（声明面退役，协议面校验保留）。
+func assertAccountModelMappingProtocolFamilyAllowed(mapping ModelMapping, profile protocolPredicateInput) error {
 	openAIProfile := isOpenAIProtocolProfileOf(profile)
 	anthropicProfile := isAnthropicProtocolProfileOf(profile)
 	geminiProfile := isGeminiProtocolProfileOf(profile)
@@ -235,12 +257,6 @@ func assertAccountModelMappingProtocolAllowed(mapping ModelMapping, profile prot
 	}
 	if isGeminiGenerateContentMappingSource(mapping.SourceEndpointFamily) && !geminiNativeProfile {
 		return &ValidationError{Message: "当前供应商协议不支持 Gemini native 账号模型别名"}
-	}
-	if mappingEnabled(mapping) && !hasAccountModelMappingUpstreamEndpointFamilyCapability(mapping.UpstreamEndpointFamily, supportedEndpointModes) {
-		if rule.requiresNativeResponses {
-			return &ValidationError{Message: "上游协议 Responses 只能用于账号真实支持 Responses API 的原生上游"}
-		}
-		return &ValidationError{Message: missingUpstreamEndpointFamilyCapabilityMessage(mapping.UpstreamEndpointFamily)}
 	}
 	return nil
 }

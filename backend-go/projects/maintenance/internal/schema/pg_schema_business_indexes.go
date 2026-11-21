@@ -671,13 +671,6 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 	{
 		SchemaName: "juhe_business",
 		Source:     "business",
-		SQL: `CREATE INDEX IF NOT EXISTS idx_resource_authorizations_quota_snapshot
-      ON resource_authorizations(status, updated_at DESC, id)
-      WHERE limits_json IS NOT NULL`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
 		SQL:        `CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_authorizations_user_unique ON resource_authorizations(resource_type, resource_id, grantee_system_account_id)`,
 	},
 	{
@@ -937,13 +930,6 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 		SchemaName: "juhe_business",
 		Source:     "business",
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_resource_authorization_grants_grantee_team_created ON resource_authorization_grants(grantee_team_id, status, created_at DESC, id DESC)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
-		SQL: `CREATE INDEX IF NOT EXISTS idx_resource_authorization_grants_team_quota_snapshot
-      ON resource_authorization_grants(resource_type, resource_id, grantee_team_id, status, updated_at DESC, id)
-      WHERE grantee_type = 'team' AND limits_json IS NOT NULL`,
 	},
 	{
 		SchemaName: "juhe_business",

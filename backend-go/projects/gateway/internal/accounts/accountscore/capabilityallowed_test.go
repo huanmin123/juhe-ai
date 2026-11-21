@@ -65,12 +65,18 @@ func TestAllowedEndpointModesIntersectsWithWriteVocabulary(t *testing.T) {
 		// 词表交集为空的矩阵外组合（矩阵内行 + 类型/词表收窄）。
 		{name: "qwen audio 无 audio_speech", domain: "audio", providerCode: "qwen", accountType: "api_key", profile: qwen, want: []string{"audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel"}},
 
-		// 矩阵内组合。v8-A 对话域纯粹化：chat 域允许集 = 15 值锚集 ∩ 词表
-		// （openai 族 api_key 为 chat×2+responses×2+embeddings；2026-11-20
-		// 协议补齐批把 embeddings_json/rerank_json 纳入对话锚集）；images_json /
+		// 矩阵内组合。v2 向量/重排拆分（2026-11-21 定案）：chat 域允许集 =
+		// 13 值锚集 ∩ 词表（openai 族 api_key 为 chat×2+responses×2，
+		// embeddings_json/rerank_json 移入独立两域）；images_json /
 		// audio_transcription_json / realtime_session 移出对话域。
-		{name: "gpt chat 恰为对话两对 + embeddings（v8-A + 协议补齐）", domain: "chat", providerCode: "gpt", accountType: "api_key", profile: gptOpenAI,
-			want: []string{"chat_json", "chat_sse", "responses_json", "responses_sse", "embeddings_json"}},
+		{name: "gpt chat 恰为对话两对（v2 移出 embeddings）", domain: "chat", providerCode: "gpt", accountType: "api_key", profile: gptOpenAI,
+			want: []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}},
+		{name: "gpt embedding 单值（v2 矩阵开通）", domain: "embedding", providerCode: "gpt", accountType: "api_key", profile: gptOpenAI,
+			want: []string{"embeddings_json"}},
+		{name: "gpt rerank 矩阵拒绝（rerank 全平台仅 qwen）", domain: "rerank", providerCode: "gpt", accountType: "api_key", profile: gptOpenAI,
+			want: []string{}},
+		{name: "gpt oauth embedding 空（oauth 词表收窄 responses 对）", domain: "embedding", providerCode: "gpt", accountType: "oauth", profile: gptOpenAI,
+			want: []string{}},
 		{name: "gpt audio 含 v8-A 新移入两项", domain: "audio", providerCode: "gpt", accountType: "api_key", profile: gptOpenAI,
 			want: []string{"audio_speech", "audio_job_create", "audio_job_get", "audio_job_content", "audio_job_cancel", "audio_transcription_json", "realtime_session"}},
 		{name: "gpt oauth chat 只剩 responses 对", domain: "chat", providerCode: "gpt", accountType: "oauth", profile: gptOpenAI,
@@ -79,16 +85,24 @@ func TestAllowedEndpointModesIntersectsWithWriteVocabulary(t *testing.T) {
 			want: []string{"video_create", "video_get", "video_content", "video_cancel"}},
 		{name: "anthropic chat", domain: "chat", providerCode: "anthropic", accountType: "api_key", profile: anthropicV1,
 			want: []string{"messages_json", "messages_sse", "message_token_counting"}},
-		{name: "deepseek openai chat 矩阵内（v8-A 收敛对话两对 + embeddings）", domain: "chat", providerCode: "deepseek", accountType: "api_key", profile: deepSeekOpenAI,
-			want: []string{"chat_json", "chat_sse", "responses_json", "responses_sse", "embeddings_json"}},
+		{name: "anthropic embedding 矩阵拒绝", domain: "embedding", providerCode: "anthropic", accountType: "api_key", profile: anthropicV1,
+			want: []string{}},
+		{name: "deepseek openai chat 矩阵内（v2 收敛对话两对）", domain: "chat", providerCode: "deepseek", accountType: "api_key", profile: deepSeekOpenAI,
+			want: []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}},
 		{name: "xai video 矩阵内", domain: "video", providerCode: "xai", accountType: "api_key", profile: xaiOpenAI,
 			want: []string{"video_create", "video_get", "video_content", "video_cancel"}},
-		{name: "xai chat 矩阵内（v8-A 收敛对话两对 + embeddings）", domain: "chat", providerCode: "xai", accountType: "api_key", profile: xaiOpenAI,
-			want: []string{"chat_json", "chat_sse", "responses_json", "responses_sse", "embeddings_json"}},
+		{name: "xai chat 矩阵内（v2 收敛对话两对）", domain: "chat", providerCode: "xai", accountType: "api_key", profile: xaiOpenAI,
+			want: []string{"chat_json", "chat_sse", "responses_json", "responses_sse"}},
+		{name: "xai embedding 矩阵拒绝", domain: "embedding", providerCode: "xai", accountType: "api_key", profile: xaiOpenAI,
+			want: []string{}},
 		{name: "gemini openai-chat chat 矩阵内（仅 Chat 对，向量走 native embed_content）", domain: "chat", providerCode: "gemini", accountType: "api_key", profile: geminiOpenAIChat,
 			want: []string{"chat_json", "chat_sse"}},
-		{name: "qwen chat 含向量/重排", domain: "chat", providerCode: "qwen", accountType: "api_key", profile: qwen,
-			want: []string{"chat_json", "chat_sse", "embeddings_json", "rerank_json"}},
+		{name: "qwen chat 对（v2 移出向量/重排）", domain: "chat", providerCode: "qwen", accountType: "api_key", profile: qwen,
+			want: []string{"chat_json", "chat_sse"}},
+		{name: "qwen embedding 单值", domain: "embedding", providerCode: "qwen", accountType: "api_key", profile: qwen,
+			want: []string{"embeddings_json"}},
+		{name: "qwen rerank 单值（全平台唯一 rerank 行）", domain: "rerank", providerCode: "qwen", accountType: "api_key", profile: qwen,
+			want: []string{"rerank_json"}},
 		{name: "glm chat 对（v8-A STT 透传移出对话域）", domain: "chat", providerCode: "glm", accountType: "api_key", profile: glmOpenAI,
 			want: []string{"chat_json", "chat_sse"}},
 		{name: "glm video", domain: "video", providerCode: "glm", accountType: "api_key", profile: glmOpenAI,
@@ -182,6 +196,20 @@ func TestDefaultEndpointModesForDomain(t *testing.T) {
 	if got := DefaultEndpointModesForDomain("chat", "qwen", "api_key", qwen); !reflect.DeepEqual(got, []string{"chat_json", "chat_sse"}) {
 		t.Fatalf("qwen chat 默认集应落词表内基础对话对：%v", got)
 	}
+	// v2 向量/重排拆分设计 §3：两域 lane 单值，默认集=域 lane ∩ 词表（新建
+	// ⊆ 允许集，D6；chat 对不在两域 lane 内，落它会被越界门拒绝）。
+	if got := DefaultEndpointModesForDomain("embedding", "gpt", "api_key", gptOpenAI); !reflect.DeepEqual(got, []string{"embeddings_json"}) {
+		t.Fatalf("gpt embedding 默认集应为 embeddings_json 单值：%v", got)
+	}
+	if got := DefaultEndpointModesForDomain("embedding", "qwen", "api_key", qwen); !reflect.DeepEqual(got, []string{"embeddings_json"}) {
+		t.Fatalf("qwen embedding 默认集应为 embeddings_json 单值：%v", got)
+	}
+	if got := DefaultEndpointModesForDomain("rerank", "qwen", "api_key", qwen); !reflect.DeepEqual(got, []string{"rerank_json"}) {
+		t.Fatalf("qwen rerank 默认集应为 rerank_json 单值：%v", got)
+	}
+	if got := DefaultEndpointModesForDomain("embedding", "anthropic", "api_key", capabilityAllowedPredicate("anthropic", "anthropic", "v1", "profile_anthropic_v1")); len(got) != 0 {
+		t.Fatalf("anthropic embedding 默认集应为空（矩阵拒绝该域）：%v", got)
+	}
 	// §555 终态：legacy hybrid token 的矩阵行已拆除（B4④），任何域的默认集
 	// 为空（词表未注册），与「未注册上下文」同类。
 	if got := DefaultEndpointModesForDomain("chat", "hybrid", "api_key", capabilityAllowedPredicate("hybrid", "", "", "")); len(got) != 0 {
@@ -190,14 +218,17 @@ func TestDefaultEndpointModesForDomain(t *testing.T) {
 }
 
 func TestDefaultHealthCheckEndpointModeForDomain(t *testing.T) {
-	// 对话域流式优先（chat_sse）；未知/空域同落 chat_sse。
+	// 对话域流式优先（chat_sse）；向量/重排域各落单值 lane（拆分设计 §7）；
+	// 未知/空域同落 chat_sse。
 	cases := map[string]string{
-		"chat":  "chat_sse",
-		"image": "images_json",
-		"audio": "audio_speech",
-		"video": "video_create",
-		"bogus": "chat_sse",
-		"":      "chat_sse",
+		"chat":      "chat_sse",
+		"image":     "images_json",
+		"audio":     "audio_speech",
+		"video":     "video_create",
+		"embedding": "embeddings_json",
+		"rerank":    "rerank_json",
+		"bogus":     "chat_sse",
+		"":          "chat_sse",
 	}
 	for domain, want := range cases {
 		if got := DefaultHealthCheckEndpointModeForDomain(domain); got != want {

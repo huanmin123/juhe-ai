@@ -562,7 +562,6 @@ var postgresSchemaBusinessTables = []PGStatement{
       last_source_changed_at text,
       remark text,
       expires_at text,
-      limits_json text,
       created_by text NOT NULL,
       created_at text NOT NULL,
       revoked_by text,
@@ -717,7 +716,7 @@ $$`,
       background_probe_enabled integer NOT NULL DEFAULT 1 CHECK (background_probe_enabled IN (0, 1)),
       temporary_unavailable_continuous_probe_enabled integer NOT NULL DEFAULT 1 CHECK (temporary_unavailable_continuous_probe_enabled IN (0, 1)),
       expedited_recovery_enabled integer NOT NULL DEFAULT 0 CHECK (expedited_recovery_enabled IN (0, 1)),
-      capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image')),
+      capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image','embedding','rerank')),
       health_check_connection_id text,
       health_check_model text,
       health_check_endpoint_mode text CHECK (health_check_endpoint_mode IN ('images_json', 'chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'message_token_counting', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse', 'count_tokens', 'embed_content', 'embeddings_json', 'rerank_json', 'audio_speech', 'audio_transcription_json', 'video_create', 'video_get', 'video_content', 'video_cancel', 'audio_job_create', 'audio_job_get', 'audio_job_content', 'audio_job_cancel', 'realtime_session')),
@@ -1314,7 +1313,6 @@ $$`,
       status text NOT NULL DEFAULT 'active',
       remark text,
       expires_at text,
-      limits_json text,
       created_by text NOT NULL,
       created_at text NOT NULL,
       revoked_by text,
@@ -1354,13 +1352,16 @@ $$`,
     )`,
 	},
 	{
+		// group_authorization_settings 目标形态（revision 31 授权治理简化）：
+		// 分组授权开关（enabled）与快照字段（snapshot_revision/snapshot_mode）
+		// 退役，revision 28 的 enabled DEFAULT 0 收敛语句一并撤销；存量 dev 库
+		// 的 enabled 列由 revision 31 步骤 DROP。
 		SchemaName: "juhe_business",
 		Source:     "business",
 		SQL: `CREATE TABLE IF NOT EXISTS group_authorization_settings (
       authorization_id text PRIMARY KEY,
       system_account_id text NOT NULL,
       group_id text NOT NULL,
-      enabled integer NOT NULL DEFAULT 1,
       group_type text NOT NULL DEFAULT 'personal',
       scheduling_policy_json text,
       created_at text NOT NULL,
@@ -1717,13 +1718,62 @@ $$`,
 		// AI 账户能力域拆分（PLAN-20261011T141004000Z §数据变化）：accounts
 		// capability_domain 列的存量库加式迁移。与 expedited_recovery_enabled
 		// 同为「CREATE TABLE 只救新库」的显式 ALTER；ADD COLUMN 携带 NOT NULL
-		// DEFAULT 'chat'，存量行恒落 chat 满足列级 CHECK。列已存在时的四值
+		// DEFAULT 'chat'，存量行恒落 chat 满足列级 CHECK。列已存在时的六值
 		// 形状校验（类型/NOT NULL/DEFAULT/CHECK）由 EnsurePostgres 末尾的
 		// verifyPostgresBusinessCapabilityDomainShape 承载，不以 IF NOT EXISTS
 		// 命中替代形状检查。
 		SchemaName: "juhe_business",
 		Source:     "account-capability-domain-pg-column",
-		SQL:        `ALTER TABLE "juhe_business"."accounts" ADD COLUMN IF NOT EXISTS capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image'))`,
+		SQL:        `ALTER TABLE "juhe_business"."accounts" ADD COLUMN IF NOT EXISTS capability_domain text NOT NULL DEFAULT 'chat' CHECK (capability_domain IN ('chat','video','audio','image','embedding','rerank'))`,
+	},
+	{
+		// accounts.capability_domain CHECK 四值→六值（向量/重排拆分设计 §6，
+		// revision 29；照 account-endpoint-mode-pg-check 先例）：建表内联约束在
+		// 存量库上不会被 CREATE TABLE IF NOT EXISTS 更新，必须按约束定义文本
+		// 定位并重建——旧约束（定义不含 'embedding'）先删除，再按具名约束补上
+		// 六值词表。建表 DDL 已含六值的新库：内联约束的 PG 自动名与本具名约束
+		// 同名（accounts_capability_domain_check），第二步 IF NOT EXISTS 直接
+		// 命中跳过；重复执行无副作用。词表扩值前须先完成 revision 29 数据步骤
+		// 见 upgrade_steps（记录升级与重推导）；CHECK 只放宽取值域、不迁移数据，
+		// 顺序无关（四值行仍满足六值 CHECK）。
+		SchemaName: "juhe_business",
+		Source:     "account-capability-domain-vector-rerank-pg-check",
+		SQL: `DO $$
+DECLARE
+  legacy_constraint text;
+BEGIN
+  IF to_regclass('juhe_business.accounts') IS NOT NULL THEN
+    SELECT c.conname INTO legacy_constraint
+    FROM pg_constraint AS c
+    JOIN pg_class AS relation ON relation.oid = c.conrelid
+    JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+    WHERE namespace.nspname = 'juhe_business'
+      AND relation.relname = 'accounts'
+      AND c.contype = 'c'
+      AND pg_get_constraintdef(c.oid) LIKE '%capability_domain%'
+      AND pg_get_constraintdef(c.oid) NOT LIKE '%embedding%'
+      AND EXISTS (
+        SELECT 1 FROM pg_attribute AS a
+        WHERE a.attrelid = c.conrelid
+          AND a.attname = 'capability_domain'
+          AND a.attnum = ANY(c.conkey)
+      );
+    IF legacy_constraint IS NOT NULL THEN
+      EXECUTE format('ALTER TABLE juhe_business.accounts DROP CONSTRAINT %I', legacy_constraint);
+    END IF;
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_constraint AS c
+      JOIN pg_class AS relation ON relation.oid = c.conrelid
+      JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+      WHERE namespace.nspname = 'juhe_business'
+        AND relation.relname = 'accounts'
+        AND c.conname = 'accounts_capability_domain_check'
+    ) THEN
+      EXECUTE 'ALTER TABLE juhe_business.accounts ADD CONSTRAINT accounts_capability_domain_check CHECK (capability_domain IN (''chat'', ''video'', ''audio'', ''image'', ''embedding'', ''rerank''))';
+    END IF;
+  END IF;
+END
+$$`,
 	},
 	{
 		// 账户级后台自动探测总开关（AI账户后台自动探测总开关设计 §2）：
@@ -1978,20 +2028,15 @@ BEGIN
           p_scope_type = 'account_authorization_team'
           AND accounts.id || ':' || authorizations.effective_source_team_id = p_scope_id
         ))
-      AND COALESCE(((CASE
-        WHEN p_scope_type = 'account_authorization_team' THEN team_grants.limits_json
-        ELSE authorizations.limits_json
-      END)::jsonb -> p_period ->> 'enabled')::boolean, false)
+      -- revision 31 授权治理简化：授权额度（resource_authorizations.limits_json /
+      -- resource_authorization_grants.limits_json）全链退役，授权 scope 的额度
+      -- 投影收敛为 NULL（enabled 恒 false），授权来源永不触发配额越限脏标记；
+      -- 函数与 team_grants JOIN 保留（api_key 域共用 mark_dirty_accounts 管道）。
+      AND COALESCE((NULL::jsonb -> p_period ->> 'enabled')::boolean, false)
       AND (
-        COALESCE(p_old_cost, 0) >= COALESCE(((CASE
-          WHEN p_scope_type = 'account_authorization_team' THEN team_grants.limits_json
-          ELSE authorizations.limits_json
-        END)::jsonb -> p_period ->> 'limit')::double precision, 0)
+        COALESCE(p_old_cost, 0) >= COALESCE((NULL::jsonb -> p_period ->> 'limit')::double precision, 0)
       ) IS DISTINCT FROM (
-        COALESCE(p_new_cost, 0) >= COALESCE(((CASE
-          WHEN p_scope_type = 'account_authorization_team' THEN team_grants.limits_json
-          ELSE authorizations.limits_json
-        END)::jsonb -> p_period ->> 'limit')::double precision, 0)
+        COALESCE(p_new_cost, 0) >= COALESCE((NULL::jsonb -> p_period ->> 'limit')::double precision, 0)
       )
   ), 'authorization_quota_' || p_period || '_crossed');
 END;

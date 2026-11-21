@@ -466,7 +466,7 @@ new-api 用 JS 插件把"供应商协议"变成数据（`meta/routes/protocols`�
 
 | 项 | 改动 |
 | --- | --- |
-| endpoint mode | 新增 `rerank_json` 与 `embeddings_json`（均为 chat 域 lane 成员，词表 25→27）：`shared/contracts/connector_registry.go`、`shared/platform/capabilitydomain`、`providers/endpoint_modes.go`、`accounts/endpoint_modes.go`（+ `accountscore`）、`gatewaypreauth/metadata_endpointmodes.go`、`gatewayopenai/endpoint.go`、`gatewayresponse/nonstreamjson.go`、`cmd/juhe-ai-gateway/chain_catalog.go`、`business/settings/settings.go`、`frontend` 类型/选项/能力域/供应商能力面 |
+| endpoint mode | 新增 `rerank_json` 与 `embeddings_json`（均为 chat 域 lane 成员，词表 25→27；2026-11-21 起两 mode 归属 embedding/rerank 独立能力域，chat 域锚集收回 13 值，见 [AI账户能力域向量重排拆分设计](AI账户能力域向量重排拆分设计.md) §3）：`shared/contracts/connector_registry.go`、`shared/platform/capabilitydomain`、`providers/endpoint_modes.go`、`accounts/endpoint_modes.go`（+ `accountscore`）、`gatewaypreauth/metadata_endpointmodes.go`、`gatewayopenai/endpoint.go`、`gatewayresponse/nonstreamjson.go`、`cmd/juhe-ai-gateway/chain_catalog.go`、`business/settings/settings.go`、`frontend` 类型/选项/能力域/供应商能力面 |
 | schema | `accounts.health_check_endpoint_mode` 与 **`account_endpoint_modes.endpoint_mode`**（实际表名；设计早期误写为 `account_endpoint_mode_declarations`，已按代码更正）的 CHECK 约束追加两值 → **business schema revision 26→27**（`backend-go/projects/maintenance/internal/schema/pg_schema_business_tables.go`），随 `maintenance upgrade` 发布。revision 27 为纯 DDL 空号：`account-endpoint-mode-pg-check` 幂等 DO 块按 `NOT LIKE '%rerank_json%'` 定位旧约束并重建；`accounts-health-check-endpoint-mode-pg-check` 的旧谓词 `message_token_counting` 对 25 值约束不再命中，本批同批改为 `rerank_json` |
 | 目录 | `ProviderCatalogModeValues` 增 `rerank`（模型选择/管理面按文本分类展示，不新增 Tab）；`modelSeedProtocolEndpointModes` 增 `embeddings`→`embeddings_json`、`rerank`→`rerank_json`；qwen `gte-rerank-v2` 新增行（`mode=rerank`，输入 $0.11428571428571428/1M = 0.8 元/百万 ÷7.0，`maxInputTokens=30000`），qwen `text-embedding-v4` 协议回正为 `embeddings`；种子行数 216→217（qwen 17→18） |
 | 计费 | 输入 token 行项（复用文本口径），无输出 token；usage 缺失不虚计。响应归一保证 `usage.prompt_tokens` 可用（total-only 上游按 total 回填） |
@@ -541,6 +541,7 @@ new-api 用 JS 插件把"供应商协议"变成数据（`meta/routes/protocols`�
   - 批量编辑健康检查白名单改为复用 `accountscore.AccountHealthCheckEndpointModes`（UI 可选即后端可存），`supportedEndpointModes` 上限 13→27；补批量校验测试。
   - 运行时 endpoint mode 归一补两处：OAuth 对存量显式 chat 声明同样收窄为 Responses 对；qwen/volcengine 无 mode 事实时回落 chat 对，不再回落含 Responses 的 OpenAI 缺省集。
   - rerank `return_documents=true` 时上游 `document:null`/空串/空对象按请求原文回填；`stream` 非布尔值（`"true"`/`1`）按非法流式 400；补用例。
+- **向量/重排独立域拆分（2026-11-21 后续变更，[AI账户能力域向量重排拆分设计](AI账户能力域向量重排拆分设计.md)）**：本批把 `embeddings_json`/`rerank_json` 写为 chat 域 lane 成员（15 值锚集）的形态升级为独立落库能力域——`accounts.capability_domain` 四值→六值（新增 `embedding`/`rerank`，schema revision 28→29）、chat 域锚集 15→13、两域 lane 各单值（embedding=`embeddings_json`、rerank=`rerank_json`），推导规则升级 ruleVersion 1→2（纯单值声明落新域、混合声明进迁移失败清单）；新域恒连接测试（不进 J1、无人工测试模板，延续本批边界），默认健康检查形态 embedding→`embeddings_json`、rerank→`rerank_json`；AI 账户菜单六项、模型广场分类六类、调度偏好新域「无调度偏好」占位；本端点候选账户相应收窄为对应域账户，`/v1` 派发链零改动。
 - **已知边界（本批未改）**：secret 投影以 `account_endpoint_modes` 为事实源（写入侧已按域∩preset 收窄），仅无 mode 行的 legacy 数据走 credentials 回退；GLM/Gemini OpenAI Chat 的 legacy 显式声明不做逐供应商二次收窄，避免部署后静默改变既有路由。`/v1/embeddings`、`/v1/rerank` 的模型目录 `mode` 校验尚未进入候选过滤，错误模型组合目前由上游 4xx 返回而非本地 404；列入 §7.3 后续项。
 
 验收（本机已执行，未发布）：

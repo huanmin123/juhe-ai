@@ -26,11 +26,10 @@ func (d *Deps) RequireSession(touch bool) func(http.Handler) http.Handler {
 	return d.Auth.RequireSession(touch)
 }
 
-// createFingerprint mirrors the mutation-guard fingerprint of
-// authorizations.routes.ts:221-231; the owner component comes from the
-// ?systemAccountId scope query, which the my-* surface pins to the empty
-// string because forceSelfAccessScope deletes the parameter before the router
-// runs.
+// createFingerprint mirrors the mutation-guard fingerprint of the create
+// route; the owner component comes from the ?systemAccountId scope query,
+// which the my-* surface pins to the empty string because forceSelfAccessScope
+// deletes the parameter before the router runs.
 func createFingerprint(r *http.Request, owner string) (any, error) {
 	return map[string]any{
 		"owner":                  owner,
@@ -41,10 +40,8 @@ func createFingerprint(r *http.Request, owner string) (any, error) {
 		"granteeSystemAccountId": kernel.TextField(kernel.BodyField(r, "granteeSystemAccountId")),
 		"teamName":               kernel.TextField(kernel.BodyField(r, "teamName")),
 		"teamId":                 kernel.TextField(kernel.BodyField(r, "teamId")),
-		"targetGroupId":          kernel.TextField(kernel.BodyField(r, "targetGroupId")),
 		"remark":                 kernel.TextField(kernel.BodyField(r, "remark")),
 		"expiresAt":              kernel.TextField(kernel.BodyField(r, "expiresAt")),
-		"limits":                 kernel.BodyField(r, "limits"),
 	}, nil
 }
 
@@ -52,17 +49,16 @@ func createFingerprint(r *http.Request, owner string) (any, error) {
 // (request-scope-query.ts): ?systemAccountId is optional, but a
 // present-and-blank value fails min(1, '系统账号 ID 不能为空') and renders as
 // 400 '查询参数不合法' (D-216 present-but-empty semantics). Every write route
-// in authorizations.routes.ts runs this validation before its body schema.
+// runs this validation before its body schema.
 func writeScopeQueryBadRequest(w http.ResponseWriter, r *http.Request) bool {
 	parser := newQueryParser(r)
 	parser.text("systemAccountId", "系统账号 ID 不能为空")
 	return parser.writeBadRequest(w, "查询参数不合法")
 }
 
-// normalizeMutationVersion mirrors rfc3339InstantSchema('授权配置版本格式不正确')
-// (authorizations.routes.ts:33-35, :123-124, :136): the optimistic-lock version
-// must be an absolute RFC3339 instant and is canonicalized to UTC milliseconds
-// before the store-level comparison.
+// normalizeMutationVersion mirrors rfc3339InstantSchema('授权配置版本格式不正确'):
+// the optimistic-lock version must be an absolute RFC3339 instant and is
+// canonicalized to UTC milliseconds before the store-level comparison.
 func normalizeMutationVersion(raw string) (string, bool) {
 	text := strings.TrimSpace(raw)
 	if text == "" {
@@ -84,27 +80,9 @@ func rawJSONNull(raw json.RawMessage) bool {
 	return len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
 }
 
-// parseStatusInput mirrors the update schema status enum
-// (authorizations.routes.ts:125): only 'active'|'paused'; JSON null and other
-// values are rejected by the contract layer.
-func parseStatusInput(raw json.RawMessage) (*string, bool) {
-	if !rawJSONPresent(raw) {
-		return nil, rawJSONNull(raw)
-	}
-	var value string
-	if err := json.Unmarshal(raw, &value); err != nil {
-		return nil, false
-	}
-	if value != StatusActive && value != StatusPaused {
-		return nil, false
-	}
-	return &value, true
-}
-
-// parseExpiresAtInput mirrors the update schema expiresAt union
-// (authorizations.routes.ts:126-129): absent keeps the stored value, JSON null
-// clears it, and strings must be canonicalizable RFC3339 instants
-// ('过期时间格式不正确').
+// parseExpiresAtInput mirrors the update schema expiresAt union: absent keeps
+// the stored value, JSON null clears it, and strings must be canonicalizable
+// RFC3339 instants ('过期时间格式不正确').
 func parseExpiresAtInput(raw json.RawMessage) (*string, bool, bool) {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil, false, true
@@ -150,7 +128,11 @@ func (d *Deps) accessFor(r *http.Request, selfOnly bool) accessInfo {
 	return accessInfo{ViewerID: auth.SystemAccountID}
 }
 
-// Mount wires the authorizations route family onto both prefixes.
+// Mount wires the authorizations route family onto the API prefix. The
+// send-and-claim model keeps: create (direct send), the list family
+// (inbound/outbound/owned + admin all), grant detail, remark/expiry PATCH,
+// revoke and the governance claim surface; the legacy grant-level return and
+// the approval routes are gone.
 func (d *Deps) Mount(k *kernel.Kernel) {
 	prefix := "/__aisys__/api"
 	k.Register("GET "+prefix+"/my-authorizations", d.RequireSelf(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -159,24 +141,14 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	k.Register("GET "+prefix+"/my-authorizations/{id}", d.RequireSelf(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.find(w, r, true)
 	})))
-	k.Register("DELETE "+prefix+"/my-authorizations/{id}/return", d.RequireSelf(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		d.returnValue(w, r, true)
-	})))
-	// D-215: the user-side write surface. Node mounts the same router under
-	// `/my-authorizations` + forceSelfAccessScope (scope-boundary regression
-	// mount :68), so POST create / PATCH update / PATCH expire / DELETE revoke
-	// all serve the my-* prefix with the viewer pinned as owner scope.
+	// D-215: the user-side write surface. The same router serves the my-*
+	// prefix with the viewer pinned as owner scope.
 	k.Register("POST "+prefix+"/my-authorizations", d.RequireSelf(
 		kernel.MutationGuardMiddleware(kernel.MutationGuardOptions{
 			OperationKey: "authorizations.create",
-			// Node succeededTtlMs: 0 (authorizations.routes.ts:219) = success is
-			// immediately retryable; failures keep the default 10s window.
 			SucceededTTL:  kernel.DedupNoRetention,
 			FailedTTL:     0,
 			ProcessingTTL: authorizationsProcessingTTL,
-			// forceSelfAccessScope deletes ?systemAccountId before the router
-			// runs, so the dedupe scope and owner fingerprint stay empty on the
-			// my-* surface no matter what the client sent.
 			Scope:       func(*http.Request) (any, error) { return "", nil },
 			Fingerprint: func(r *http.Request) (any, error) { return createFingerprint(r, "") },
 		})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -200,8 +172,6 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	k.Register("POST "+prefix+"/authorizations", d.RequireAdmin(
 		kernel.MutationGuardMiddleware(kernel.MutationGuardOptions{
 			OperationKey: "authorizations.create",
-			// Node succeededTtlMs: 0 (authorizations.routes.ts:219) = success is
-			// immediately retryable; failures keep the default 10s window.
 			SucceededTTL:  kernel.DedupNoRetention,
 			FailedTTL:     0,
 			ProcessingTTL: authorizationsProcessingTTL,
@@ -225,7 +195,7 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 		d.patch(w, r, true)
 	})))
 
-	// Recipient-consent governance surface (design §6).
+	// Recipient claim surface (send-and-claim governance).
 	d.mountGovernanceRoutes(k, prefix)
 
 	// Usage read family: 8 aggregate endpoints + the per-id usage detail and
@@ -258,9 +228,8 @@ func (d *Deps) list(w http.ResponseWriter, r *http.Request, selfOnly bool) {
 		return
 	}
 	if !selfOnly {
-		// The admin list is the full business-record view (design §6.4): the
-		// legacy ?systemAccountId / ?direction scoping belongs to the retired
-		// single-grant semantics and must not narrow the governance inventory.
+		// The admin list is the full business-record view: the legacy
+		// ?systemAccountId / ?direction scoping must not narrow the inventory.
 		items, err := d.Store.ListScopedOffers(r.Context(), "",
 			"", strings.TrimSpace(r.URL.Query().Get("status")))
 		if err != nil {
@@ -287,8 +256,6 @@ func (d *Deps) list(w http.ResponseWriter, r *http.Request, selfOnly bool) {
 		items, err = d.Store.ListOutboundOffers(r.Context(), auth.SystemAccountID)
 	case "owned":
 		items, err = d.Store.ListOwnedOffers(r.Context(), auth.SystemAccountID)
-	case "owner_pending":
-		items, err = d.Store.ListOwnerPendingOffers(r.Context(), auth.SystemAccountID)
 	default:
 		kernel.WriteBadRequest(w, "direction 参数无效")
 		return
@@ -301,8 +268,7 @@ func (d *Deps) list(w http.ResponseWriter, r *http.Request, selfOnly bool) {
 }
 
 func (d *Deps) find(w http.ResponseWriter, r *http.Request, selfOnly bool) {
-	// authorizations.routes.ts:286-291: the detail route validates the scope
-	// query before the params schema.
+	// The detail route validates the scope query before the params schema.
 	if !writeScopeQueryBadRequest(w, r) {
 		return
 	}
@@ -320,9 +286,8 @@ func (d *Deps) find(w http.ResponseWriter, r *http.Request, selfOnly bool) {
 		kernel.WriteError(w, http.StatusNotFound, "授权记录不存在")
 		return
 	}
-	// Admin scope parity with the {id}/usage read (findScopedUsageGrant): when
-	// ?systemAccountId selects a scope account, the grant must belong to that
-	// owner; anything else reads as not found.
+	// Admin scope parity with the {id}/usage read: when ?systemAccountId
+	// selects a scope account, the grant must belong to that owner.
 	if !selfOnly && access.FilterID != "" && summary.OwnerID != access.FilterID {
 		kernel.WriteError(w, http.StatusNotFound, "授权记录不存在")
 		return
@@ -333,12 +298,6 @@ func (d *Deps) find(w http.ResponseWriter, r *http.Request, selfOnly bool) {
 func (d *Deps) visibleTo(summary *Summary, viewerID string) bool {
 	if summary.OwnerID == viewerID {
 		return true
-	}
-	// An admin-created offer stays invisible to the receiver until the resource
-	// owner approves it. List queries already exclude this status; the detail
-	// read must enforce the same boundary by id.
-	if summary.Status == StatusPendingOwnerApproval {
-		return false
 	}
 	if summary.GranteeUserID != nil && *summary.GranteeUserID == viewerID {
 		return true
@@ -367,28 +326,22 @@ func (d *Deps) create(w http.ResponseWriter, r *http.Request) {
 		ownerScope = auth.SystemAccountID
 	}
 	var body struct {
-		ResourceType           *string         `json:"resourceType"`
-		ResourceID             *string         `json:"resourceId"`
-		GranteeType            *string         `json:"granteeType"`
-		GranteeUsername        *string         `json:"granteeUsername"`
-		GranteeSystemAccountID *string         `json:"granteeSystemAccountId"`
-		TeamName               *string         `json:"teamName"`
-		TeamID                 *string         `json:"teamId"`
-		TargetGroupID          *string         `json:"targetGroupId"`
-		Remark                 *string         `json:"remark"`
-		ExpiresAt              *string         `json:"expiresAt"`
-		Limits                 json.RawMessage `json:"limits"`
+		ResourceType           *string `json:"resourceType"`
+		ResourceID             *string `json:"resourceId"`
+		GranteeType            *string `json:"granteeType"`
+		GranteeUsername        *string `json:"granteeUsername"`
+		GranteeSystemAccountID *string `json:"granteeSystemAccountId"`
+		TeamName               *string `json:"teamName"`
+		TeamID                 *string `json:"teamId"`
+		Remark                 *string `json:"remark"`
+		ExpiresAt              *string `json:"expiresAt"`
 	}
 	if !decodeStrictJSON(w, r, &body, map[string]bool{
 		"resourceType": true, "resourceId": true, "granteeType": true,
 		"granteeUsername": true, "granteeSystemAccountId": true,
-		"teamName": true, "teamId": true, "targetGroupId": true,
-		"remark": true, "expiresAt": true, "limits": true,
+		"teamName": true, "teamId": true,
+		"remark": true, "expiresAt": true,
 	}) {
-		return
-	}
-	if body.TargetGroupID != nil && strings.TrimSpace(*body.TargetGroupID) != "" {
-		kernel.WriteBadRequest(w, "授权不再支持 targetGroupId，请由接收方接受后自行绑定")
 		return
 	}
 	if body.ResourceType == nil || body.ResourceID == nil || body.GranteeType == nil ||
@@ -426,10 +379,6 @@ func (d *Deps) create(w http.ResponseWriter, r *http.Request) {
 		TeamID:                 strings.TrimSpace(stringOrEmpty(body.TeamID)),
 		Remark:                 body.Remark,
 		ExpiresAt:              body.ExpiresAt,
-	}
-	if rawJSONPresent(body.Limits) && !rawJSONNull(body.Limits) {
-		text := string(bytes.TrimSpace(body.Limits))
-		input.LimitsJSON = &text
 	}
 	result, err := d.Store.CreateOffer(r.Context(), input, auth.SystemAccountID, isAdmin, ownerScope)
 	if err != nil {
@@ -485,8 +434,7 @@ func (d *Deps) revoke(w http.ResponseWriter, r *http.Request) {
 }
 
 // revokeSelf serves DELETE /my-authorizations/{id}: the viewer is pinned as
-// the owner scope, so a grantee cannot revoke an inbound grant (scope
-// boundary regression :747).
+// the owner scope, so a grantee cannot revoke an inbound grant.
 func (d *Deps) revokeSelf(w http.ResponseWriter, r *http.Request) {
 	d.revokeScoped(w, r, true)
 }
@@ -498,7 +446,7 @@ func (d *Deps) revokeScoped(w http.ResponseWriter, r *http.Request, selfOnly boo
 		return
 	}
 	// Present-but-empty ?systemAccountId is invalid on every write surface,
-	// including revoke (the create/patch/find handlers already enforce this).
+	// including revoke.
 	if !writeScopeQueryBadRequest(w, r) {
 		return
 	}
@@ -530,14 +478,6 @@ func (d *Deps) revokeScoped(w http.ResponseWriter, r *http.Request, selfOnly boo
 	d.writeData(w, map[string]any{"status": StatusRevoked})
 }
 
-func (d *Deps) returnValue(w http.ResponseWriter, r *http.Request, selfOnly bool) {
-	_ = selfOnly
-	kernel.WriteJSON(w, http.StatusConflict, map[string]any{
-		"code":    "state_conflict",
-		"message": "请前往授权中心按来源归还；团队授权不能归还整个业务记录",
-	})
-}
-
 func (d *Deps) patchSelf(w http.ResponseWriter, r *http.Request, expireOnly bool) {
 	d.patchScoped(w, r, expireOnly, true)
 }
@@ -560,9 +500,8 @@ func (d *Deps) patchScoped(w http.ResponseWriter, r *http.Request, expireOnly, s
 		ExpectedUpdatedAt string          `json:"expectedUpdatedAt"`
 		Remark            *string         `json:"remark"`
 		ExpiresAt         json.RawMessage `json:"expiresAt"`
-		Limits            json.RawMessage `json:"limits"`
 	}
-	allowed := map[string]bool{"expectedUpdatedAt": true, "remark": true, "expiresAt": true, "limits": true}
+	allowed := map[string]bool{"expectedUpdatedAt": true, "remark": true, "expiresAt": true}
 	if expireOnly {
 		allowed = map[string]bool{"expectedUpdatedAt": true, "expiresAt": true}
 	}
@@ -570,12 +509,11 @@ func (d *Deps) patchScoped(w http.ResponseWriter, r *http.Request, expireOnly, s
 		return
 	}
 	hasExpiresAt := len(bytes.TrimSpace(body.ExpiresAt)) > 0
-	hasLimits := len(bytes.TrimSpace(body.Limits)) > 0
-	if !hasExpiresAt && !hasLimits && body.Remark == nil {
+	if !hasExpiresAt && body.Remark == nil {
 		kernel.WriteBadRequest(w, "请提供要修改的授权内容")
 		return
 	}
-	input := UpdateOfferInput{Remark: body.Remark, ExpiresAtSet: hasExpiresAt}
+	input := UpdateOfferInput{Remark: body.Remark}
 	if hasExpiresAt {
 		expiresAt, expiresSet, ok := parseExpiresAtInput(body.ExpiresAt)
 		if !ok {
@@ -584,13 +522,6 @@ func (d *Deps) patchScoped(w http.ResponseWriter, r *http.Request, expireOnly, s
 		}
 		input.ExpiresAt = expiresAt
 		input.ExpiresAtSet = expiresSet
-	}
-	if hasLimits {
-		input.LimitsSet = true
-		if !rawJSONNull(body.Limits) {
-			text := string(bytes.TrimSpace(body.Limits))
-			input.LimitsJSON = &text
-		}
 	}
 	if err := d.Store.UpdateOffer(r.Context(), auth.SystemAccountID, r.PathValue("id"), input, nowISO(d.Store)); err != nil {
 		writeGovernanceError(r, w, err)
@@ -602,24 +533,10 @@ func (d *Deps) patchScoped(w http.ResponseWriter, r *http.Request, expireOnly, s
 			OperationScopeSystemAccountID: auth.SystemAccountID,
 			Mode:                          "self", Module: "authorizations", Action: "update",
 			OperationKey: "authorizations.update", ResourceType: "authorization",
-			ResourceID: r.PathValue("id"), Summary: "更新授权额度与备注",
+			ResourceID: r.PathValue("id"), Summary: "更新授权备注与到期时间",
 		}, r)
 	}
 	d.writeData(w, map[string]any{"updated": true})
-}
-
-func orDefault(value, fallback string) string {
-	if value == "" {
-		return fallback
-	}
-	return value
-}
-
-func orText(value *string, fallback string) string {
-	if value == nil || *value == "" {
-		return fallback
-	}
-	return *value
 }
 
 func errorsAsFail(err error, target **Fail) bool {

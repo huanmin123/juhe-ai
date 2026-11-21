@@ -190,6 +190,7 @@ func (a playgroundTransportAccountsAdapter) ListPinnedAccountsForGroup(groupID, 
 			Type:                   account.Type,
 			ProviderCode:           account.ProviderCode,
 			SupportedEndpointModes: account.SupportedEndpointModes,
+			CapabilityDomain:       account.CapabilityDomain,
 			SupportedModels:        account.SupportedModels,
 			ModelMappings:          mappings,
 		})

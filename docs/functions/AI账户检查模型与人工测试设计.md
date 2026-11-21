@@ -14,21 +14,21 @@
 
 ## 测试方式分层（2026-11-21 定案）
 
-账户测试只有两种方式，由能力域与账户声明的 endpoint modes 自动判定，不由菜单、供应商或用户选择：
+账户测试只有两种方式，由能力域与（仅 chat 域持有的）账户声明 endpoint modes 自动判定，不由菜单、供应商或用户选择：
 
 - **模型测试**：能力域为 `chat`，且账户声明了任一真实对话生成形态（`chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`）。只有模型测试显示「模型 + 测试请求形态」，并真实调用上游模型。
-- **连接测试**：其余全部账户——图像 / 音频 / 视频域，以及只声明 `embeddings_json`、`rerank_json`、`embed_content`、`count_tokens`、`message_token_counting` 等非对话形态的 chat 账户。连接测试只验证 API Key、Base URL 与认证头可达，不调用模型、不生成图片 / 音频 / 视频 / 任务，也不存在「测试协议 / 测试请求形态」概念。
+- **连接测试**：其余全部账户——图像 / 音频 / 视频 / 向量 / 重排五域账户（2026-11-21 五域退役起无上游接口能力声明，恒连接测试），以及只声明 `embeddings_json`、`rerank_json`、`embed_content`、`count_tokens`、`message_token_counting` 等非对话形态的 chat 账户。连接测试只验证 API Key、Base URL 与认证头可达，不调用模型、不生成图片 / 音频 / 视频 / 任务，也不存在「测试协议 / 测试请求形态」概念。
 
 派生收口为 `capabilitydomain.TestKindForAccount(domain, modes)`，`GET /accounts/{id}/test-options` 顶层返回 `testKind: "model" | "connection"`；连接测试的候选列表恒为空（`data=[]`、`total=0`）。前端只按 `testKind` 渲染测试弹窗，不自行按菜单或供应商猜测测试方式。后台自动探针同口径拆分：模型测试账户由 J1 承载，连接测试账户由 jobs `account-connectivity-health` 连通性健康检查通道承载（§17）。
 
 ## 健康检查请求形态
 
-- 模型测试账户必须保存不可空 `healthCheckEndpointMode`，数据库字段为 `health_check_endpoint_mode`。允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`；`images_json`、`audio_speech`、`audio_transcription_json`、`audio_job_create`、`video_create`、`realtime_session`、`embeddings_json`、`rerank_json` 等媒体 / 输入型形态保留为写侧落值白名单的**记录值**：连接测试账户（媒体域与仅声明输入型形态的 chat 账户）保存时可由后端派生并落库，但连接测试执行不依赖它，J1 也不再按这些形态派发真实上游探针。`video_create` 是视频域默认落值形态（AI 账户能力域拆分 v7 定案），`audio_job_create` 与 `realtime_session` 分别是长音频任务账户与实时会话账户的持久化诊断形态。创建与 PATCH 写侧对模型测试账户强校验该值属于上述 10 个生成形态；连接测试账户不受此约束。克隆遵循同一分层：连接测试源账户缺省三件套时按最终目标连接派生（源账户没有三件套也能克隆），模型测试源账户复制源三件套、源与请求均缺失按显式错误拒绝。
+- 模型测试账户必须保存不可空 `healthCheckEndpointMode`，数据库字段为 `health_check_endpoint_mode`。允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`；`images_json`、`audio_speech`、`audio_transcription_json`、`audio_job_create`、`video_create`、`realtime_session`、`embeddings_json`、`rerank_json` 等媒体 / 输入型形态保留为写侧落值白名单的**记录值**：连接测试账户（媒体域、embedding/rerank 域——2026-11-21 向量/重排拆分批起新域恒连接测试——与仅声明输入型形态的 chat 账户）保存时可由后端派生并落库，但连接测试执行不依赖它，J1 也不再按这些形态派发真实上游探针。`video_create` 是视频域默认落值形态（AI 账户能力域拆分 v7 定案），`embeddings_json` 与 `rerank_json` 分别是向量域与重排域的默认落值形态（2026-11-21 拆分批），`audio_job_create` 与 `realtime_session` 分别是长音频任务账户与实时会话账户的持久化诊断形态。创建与 PATCH 写侧对模型测试账户强校验该值属于上述 10 个生成形态；连接测试账户不受此约束。克隆遵循同一分层：连接测试源账户缺省三件套时按最终目标连接派生（源账户没有三件套也能克隆），模型测试源账户复制源三件套、源与请求均缺失按显式错误拒绝。
 - 音频与语音（2026-11-01 裁决、2026-11-21 扩展）：`audio_speech`、`audio_transcription_json` 与全部音频任务形态都属于连接测试，不再由人工测试或 J1 触发真实 TTS / 转写请求。连接测试按连接器注册表的预设路径验证密钥与端点（§17），`audio_transcription_json` 不再要求内置 WAV 样本。
-- J1 后台激活、周期健康、冷却恢复、质量确认、运行态恢复只处理模型测试账户的真实对话形态，直接使用账户保存的精确 mode，不再从协议族推导 JSON / SSE。连接测试账户不再进入 J1；图像、音频、视频与仅声明输入型形态的 chat 账户由 `account-connectivity-health` 按连接器注册表执行连通性探测，不产生付费生成。
+- J1 后台激活、周期健康、冷却恢复、质量确认、运行态恢复只处理模型测试账户的真实对话形态，直接使用账户保存的精确 mode，不再从协议族推导 JSON / SSE。连接测试账户不再进入 J1；图像、音频、视频、向量、重排五域账户与仅声明输入型形态的 chat 账户由 `account-connectivity-health` 按连接器注册表执行连通性探测，不产生付费生成。
 - 新账户默认：GPT 官方 API Key / OAuth 使用 `responses_sse`；通用 OpenAI-compatible、DeepSeek、当前 GLM Chat 和 Gemini OpenAI profile 使用 `chat_sse`；Anthropic profile 使用 `messages_sse`；Gemini Native 使用 `generate_content_sse`。能力域拆分 M2 起，新建账户未显式提交 `health_check_endpoint_mode` 时按能力域默认落值（AI 账户能力域拆分 v7 定案）：对话域沿用上述现行默认，图像域 `images_json`、音频域 `audio_speech`、视频域 `video_create`。2026-11-21 起媒体 / 输入型账户的该字段只是记录值：前端不再要求用户选择，后端保存时按连接器注册表派生；连接测试执行不依赖该值，存量账户库中现值不变。
 - **流式优先（2026-10-19 定案）**：检查形态默认值一律优先取流式形态。理由是真实流量以流式为主，非流式 2xx 可能被上游伪造或退化（实测样例：某中转对 `stream:false` 返回空 `choices` 的 SSE 帧仍回 HTTP 200），流式形态能更早暴露上游真实异常并复用同一份完成证据判定。该口径覆盖全部缺省生产面：前端建户表单、按能力域默认落值、OAuth 管理式建户、公开推送建户、导入适配器合成与导入缺省回退、人工测试形态顺序；显式提交的非流式形态仍然生效，存量账户现值不变。
-- 首选 mode 未启用时，先取 `supported_endpoint_modes` 中第一个已启用的流式 mode，再取第一个已启用 JSON mode，最后取第一个可检查 mode；没有任何可检查 mode 时拒绝保存，不做旧字段兼容或运行时协议猜测。
+- 首选 mode 未启用时的回落解析为双口径（2026-11-21 五域退役）：chat 域账户先取 `supported_endpoint_modes` 声明集中第一个已启用的流式 mode，再取第一个已启用 JSON mode，最后取第一个可检查 mode，没有任何可检查 mode 时拒绝保存，不做旧字段兼容或运行时协议猜测；五域账户无声明集，检查形态不做声明回落，按域默认形态集（`LaneModesForDomain`）× preset 规格优先级派生记录值（见 [AI账户上游接口能力设计](AI账户上游接口能力设计.md) §5）。
 - 历史库必须停服离线把字段从 `health_check_endpoint_family` 直接改为 `health_check_endpoint_mode`。GPT 全量写为 `responses_sse`；其他账户优先保留旧检查族对应的、已启用且可检查的 JSON / SSE mode，同族不可用时才回退到首个已启用可检查 mode。加密凭据中的 `supported_endpoint_modes` 必须先通过应用层 codec 解密改写，不能用普通 SQL 修改密文。
 
 历史库迁移使用同一套生产环境变量和加密密钥，并按以下顺序执行：
@@ -69,7 +69,7 @@ pnpm --filter juhe-ai-backend maintenance:migrate-account-health-check-endpoint-
 
 ## 3. 检查模型
 
-模型测试账户（能力域 `chat` 且声明真实对话生成形态）最终保存一个检查模型。账户表单编辑态与 API Key / OAuth 直接 Token 录入创建态必须选择非空 `supportedModels` 和其中的 `healthCheckModel`；chat 域托管 OAuth 的手动授权、Refresh Token（及 Grok SSO 导入）创建态不收集这两个字段，由后端 `CreateOAuthAccount` 派生（见 §4）。连接测试账户（图像 / 音频 / 视频域，以及只声明 embeddings / rerank / count_tokens 等输入型形态的 chat 账户）只要求选择 `supportedModels`（路由需要），表单不暴露检查模型与检查请求形态；保存时后端按「首个支持模型 + 域默认记录形态 + 唯一连接 preset」派生并落库。表单不会自动上游目录发现，用户可手动刷新补全候选。点击测试或确认时，模型测试缺少任一模型只提示并中止；连接测试不要求模型。
+模型测试账户（能力域 `chat` 且声明真实对话生成形态）最终保存一个检查模型。账户表单编辑态与 API Key / OAuth 直接 Token 录入创建态必须选择非空 `supportedModels` 和其中的 `healthCheckModel`；chat 域托管 OAuth 的手动授权、Refresh Token（及 Grok SSO 导入）创建态不收集这两个字段，由后端 `CreateOAuthAccount` 派生（见 §4）。连接测试账户（图像 / 音频 / 视频 / 向量 / 重排五域账户，以及只声明 embeddings / rerank / count_tokens 等输入型形态的 chat 账户）只要求选择 `supportedModels`（路由需要），表单不暴露检查模型与检查请求形态；保存时后端按「首个支持模型 + 域默认记录形态 + 唯一连接 preset」派生并落库。表单不会自动上游目录发现，用户可手动刷新补全候选。点击测试或确认时，模型测试缺少任一模型只提示并中止；连接测试不要求模型。
 
 - 模型测试的表单输入中的 `healthCheckModel` 不可为空，必须由用户从最终 `supportedModels` 中选择；不能依赖前端先请求模型目录或默认值补全。
 - `healthCheckModel` 必须属于账户最终的 `supportedModels`；连接测试账户的派生检查模型同样必须属于支持模型。
@@ -117,7 +117,7 @@ generic_http 账户（`vendor_code=NULL`）的人工测试候选与测试请求�
 
 人工测试使用账户或草稿配置作为请求输入，默认不参与账户控制状态：
 
-- 模型测试（§“测试方式分层”）选择模型与测试请求形态，真实调用上游；连接测试（媒体域与仅声明输入型形态的 chat 账户）不显示模型 / 请求形态选择，只验证 API Key、Base URL 与认证头可达，不生成任何产物。
+- 模型测试（§“测试方式分层”）选择模型与测试请求形态，真实调用上游；连接测试（五域账户与仅声明输入型形态的 chat 账户）不显示模型 / 请求形态选择，只验证 API Key、Base URL 与认证头可达，不生成任何产物。
 - 连接测试同样不写账户状态、健康事实、冷却或 Key 运行态；其判定与失败分类见 §17。
 
 状态不参与（模型测试与连接测试同口径）：
@@ -320,7 +320,7 @@ J1 账户健康探针统一返回 `complete_success`、`upstream_http_failure`�
 ## 15. 验证要求
 
 - 新增、编辑、草稿、已保存自有账户和授权实例的人工测试成功或失败后，账户、授权实例、Key、健康事实和运行态均不变化；新增或编辑草稿测试协议成功仅将非 `disabled` 的未保存表单预选为 `active`，保存前不写库。
-- 测试方式派生：媒体域与仅声明 embeddings / rerank / count_tokens 等形态的 chat 账户恒为 `connection`；含任一真实对话生成形态的 chat 账户为 `model`。
+- 测试方式派生：五域账户与仅声明 embeddings / rerank / count_tokens 等形态的 chat 账户恒为 `connection`；含任一真实对话生成形态的 chat 账户为 `model`。
 - 连接测试失败分类：401/403 永不判通过；2xx 或注册表预期拒绝码判通过；5xx / 网络 / 其他状态码判失败；不产生任何生成产物。
 - 新增 / 编辑模型测试默认使用表单检查模型，可切换目录候选且不回写表单；列表测试关闭重开后仍默认使用账户检查模型。
 - A 账户测试运行时可以打开和启动 B 账户测试，旧结果不能覆盖新弹窗。
@@ -337,18 +337,18 @@ J1 账户健康探针统一返回 `complete_success`、`upstream_http_failure`�
 
 ## 16. 媒体与输入型账户检查边界（能力域拆分 v7 定案，2026-11-21 扩展）
 
-来源：AI 账户能力域拆分计划 v7 定案（2026-10-12，账户能力域 `chat` / `video` / `audio` / `image`），2026-11-21 按测试方式分层扩展。本节固定媒体域与仅声明输入型形态的 chat 账户在检查体系中的参与范围。
+来源：AI 账户能力域拆分计划 v7 定案（2026-10-12，账户能力域 `chat` / `video` / `audio` / `image`），2026-11-21 按测试方式分层扩展。本节固定五域账户与仅声明输入型形态的 chat 账户在检查体系中的参与范围。
 
-- **按域默认落值**：新建账户 `health_check_endpoint_mode` 未显式提交时按域默认落值——对话 `chat_sse`（流式优先，2026-10-19 定案；原 `chat_json`）、图像 `images_json`、音频 `audio_speech`、视频 `video_create`。2026-11-21 起该值对连接测试账户只是记录值，前端不要求用户选择，后端按「域默认 + 连接器注册表连通性规格」派生；仅影响新建账户，存量账户库中现值一个不改。
+- **按域默认落值**：新建账户 `health_check_endpoint_mode` 未显式提交时按域默认落值——对话 `chat_sse`（流式优先，2026-10-19 定案；原 `chat_json`）、图像 `images_json`、音频 `audio_speech`、视频 `video_create`、向量 `embeddings_json`、重排 `rerank_json`（后两域 2026-11-21 向量/重排拆分批起新增，恒连接测试）。2026-11-21 起该值对连接测试账户只是记录值，前端不要求用户选择，后端按「域默认 + 连接器注册表连通性规格」派生；仅影响新建账户，存量账户库中现值一个不改。
 - **后台周期检查（J1）参与范围**：J1 只承载模型测试账户的 10 个真实对话生成形态（`chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`）。图像 `images_json` 已从 J1 候选白名单移除，音频 / 视频 / 实时会话 / 向量 / 重排等形态不再进入 J1；非对话账户统一由 jobs `account-connectivity-health` 连通性通道承载（§17）。2026-11-21 起 `volcengine_ark` 与 `qwen_dashscope` 的 chat 形态（api_key）准入 J1：探针协议复用 OpenAI v1（volcengine base 直拼 `/chat/completions`；qwen base 恒追加 `/compatible-mode/v1`，与网关出站归一逐字一致），preset→profile 走 jobs 侧 J1 专用映射（`profile_volcengine_openai_v1` / `profile_qwen_openai_v1`），共享 `ConnectionPresetProfileID` 不扩面，J3a 代理延迟与代理档案 target 不变；授权实例按来源账户的 `health_check_connection` 投影参与，J1 基线播种的连接 EXISTS 同步按资源账户判定。qwen/volcengine 的 J1 探针会真实调用上游并计费，属既有 J1 语义。
 - **激活检查（pending_test 首检）**：媒体与输入型账户不再依赖 J1 激活检查；开启后台自动探测时，新建 / 导入账户落 `pending_test`，由连通性健康检查成功后的状态 CAS 推进为 `active`（§17）。手动模式（总开关关闭）创建缺省仍按总开关设计落 `active`（真实流量即验收），不产生 `pending_test`。
 - **模型检测（J3b）参与范围**：按账户 endpoint mode 与 profile 协议兼容性判定参与资格，媒体形态天然不满足对话族候选条件，媒体域账户不参与模型检测（详见《模型检测设计》）。
 - **检查失败对派发的影响（现状事实，零改动）**：媒体同步 lane 受候选窗健康门（status / schedulable / cooldown + endpoint mode 门）；任务面（videos / audio jobs 查询、下载）账户亲和直连不查健康。
-- **存量账户行为变化**：2026-11-21 起存量媒体账户与仅声明输入型形态的 chat 账户开始进入连通性健康检查（此前不进入 J1，等于无后台验证）；这是本设计的明确行为变化，回滚二进制后这些账户的健康事实列保留但不更新。
+- **存量账户行为变化**：2026-11-21 起存量五域账户与仅声明输入型形态的 chat 账户开始进入连通性健康检查（此前不进入 J1，等于无后台验证）；这是本设计的明确行为变化，回滚二进制后这些账户的健康事实列保留但不更新。
 
 ## 17. 非对话能力账户连通性探测（2026-11-01 用户裁决，2026-11-21 扩展）
 
-媒体域账户（视频 / 图像 / 语音）与非对话能力 chat 账户（只声明 `embeddings_json` / `rerank_json` / `embed_content` / `count_tokens` / `message_token_counting` 等形态）的人工测试与后台健康检查统一使用**密钥连通性探测**：只验证 API Key 能否访问上游，不调用模型、不真实生成图片 / 音频 / 视频 / 任务。
+媒体域账户（视频 / 图像 / 语音）、embedding / rerank 独立域账户（2026-11-21 向量/重排拆分批起，两域恒连接测试）与 chat 域非对话能力账户（只声明 `embed_content` / `count_tokens` / `message_token_counting` 等输入型形态）的人工测试与后台健康检查统一使用**密钥连通性探测**：只验证 API Key 能否访问上游，不调用模型、不真实生成图片 / 音频 / 视频 / 任务。
 
 ### 17.1 连接器注册表规格
 
@@ -383,21 +383,21 @@ J1 账户健康探针统一返回 `complete_success`、`upstream_http_failure`�
 
 - 失败文案附脱敏上游消息（有界预览）；`diagnostics=limited` 时按既有规则统一脱敏。
 - 分级阶梯、多 Key 池诊断与 limited 脱敏沿用既有诊断链；连接测试不使用 `images_json` 的单次长预算档。
-- 图像 `/images/generations`、语音 `/audio/speech`、转写与向量规格属于同步推理端点，只发送 `model_only` / `empty_json` 最小请求，依赖上游参数校验拒绝（400/422/415）。若上游对最小请求直接放行并产生生成/计费，当前实现仍按 2xx 判连通；该残余风险登记在 T219，后续按响应证据收紧。
+- 图像 `/images/generations`、语音 `/audio/speech`、转写与向量规格属于同步推理端点，只发送 `model_only` / `empty_json` 最小请求，依赖上游参数校验拒绝（400/422/415）。若上游对最小请求直接放行并产生生成/计费，当前实现仍按 2xx 判连通（2026-11-22 用户裁决：接受现状，不再登记跟踪）。
 
 ### 17.3 人工测试
 
 - `test-options` 返回 `testKind=connection` 与空候选；测试弹窗不显示模型 / 请求形态选择，不出现「测试协议」概念。已保存账户（含授权实例）的测试方式统一按「有效连接声明形态」派生，与列表 `testKind` 同源；无连接行的老数据回落 `credentials.supported_endpoint_modes`。
 - `POST /accounts/{id}/test`、`POST /accounts/test-draft` 允许不带 `model` / `testEndpointMode`；任务行对应列写 NULL。连接测试草稿必须携带 `connectionPresetCode`（前端从表单协议档案映射；缺失时后端按 vendor 默认 preset 兜底，volcengine OpenSpeech/Ark 共用 vendor 的档案仍需显式提交）。
-- 连接测试草稿不要求 `healthCheckModel` / `healthCheckEndpointMode`，快照准备阶段按最终凭据声明集派生；模型测试草稿仍要求两者。探测规格缺失、连接 preset 缺失等配置错误落失败任务并保留原始文案，不得标记为“已取消”（只有调用方上下文取消走取消语义）。
+- 连接测试草稿不要求 `healthCheckModel` / `healthCheckEndpointMode`，快照准备阶段按最终凭据声明集派生（chat 域；五域账户无声明，按域默认记录形态派生）；模型测试草稿仍要求两者。探测规格缺失、连接 preset 缺失等配置错误落失败任务并保留原始文案，不得标记为“已取消”（只有调用方上下文取消走取消语义）。
 - 人工连接测试不写任何账户状态、健康事实或 Key 运行态（§5 契约零变化）。
 
 ### 17.4 后台连通性健康检查（jobs `account-connectivity-health`）
 
 独立 jobs 任务，与 J1 模型检查通道并行，不共享候选 / 状态 / 预算：
 
-- **候选**：`background_probe_enabled=1`；`status ∈ {active, pending_test, error}`；时间计划闸门允许；未过期；`next_health_check_at` 到期（`pending_test` 且从未检查过不受到期限制）；能力域为 `video` / `audio` / `image`，或 `chat` 域声明了连接且不含 10 个真实对话生成形态。授权实例按资源账户判定连接归属（`CASE WHEN authorization_instance_authorization_id IS NULL THEN id ELSE authorization_instance_source_account_id END`），实例自身没有连接行也能按来源连接入选。
-- **执行**：`proberepo` 装载账户视图（授权实例的凭据 / type / vendor / oauth_type / Key 运行态按来源账户投影，实例行 `"{}"` 占位凭据不再导致候选被跳过），`accountprobe.ManualConnectivityDiagnostics` 按注册表规格探测；单账户 2 分钟超时，批量与并发由 runner 收敛为「并发 ≤ 8、批量 ≤ 并发」，保证最坏一轮 = 一波 2 分钟，小于 job 调度 3 分钟 timeout。
+- **候选**：`background_probe_enabled=1`；`status ∈ {active, pending_test, error}`；时间计划闸门允许；未过期；`next_health_check_at` 到期（`pending_test` 且从未检查过不受到期限制）；能力域为 `video` / `audio` / `image` / `embedding` / `rerank`（2026-11-21 向量/重排拆分批起新域入候选集合），或 `chat` 域声明了连接且不含 10 个真实对话生成形态。授权实例按资源账户判定连接归属（`CASE WHEN authorization_instance_authorization_id IS NULL THEN id ELSE authorization_instance_source_account_id END`），实例自身没有连接行也能按来源连接入选。
+- **执行**：`proberepo` 装载账户视图（授权实例的凭据 / type / vendor / oauth_type / Key 运行态按来源账户投影，实例行 `"{}"` 占位凭据不再导致候选被跳过），`accountprobe.ManualConnectivityDiagnostics` 按注册表规格探测。**预算（2026-11-22 用户裁决）**：连接测试使用专用三级超时阶梯 `[10s, 20s, 30s]`（仅「真实上游尝试后超时」晋级下一级，单 Key 最坏 60s）——连接测试只是 API Key 级可达性验证，10s 级应有结果，不再回落对话诊断的 `[20s, 30s, 40s]`，也不使用 images_json 单次长预算档；runner 层单账户硬顶 `probeTimeout = 60s`（覆盖单 Key 阶梯总和；多 Key 池超出部分照旧在硬顶截断并按瞬态处理）。**并发（2026-11-22 用户裁决，同日三裁定稿）**：总并发 ≤ 512（与 J1/`ProbeConcurrency` 默认 512 对齐）、批量 ≤ 512（独立于并发的 timeout 算式钳制），并按上游分组限流——同一 `base_url` origin（`scheme://host:port`）并发 ≤ 60（同上游账户通常不多，避免波次严重串行），不同上游之间并行。最坏一轮（512 候选全同上游）= ceil(512/60) = 9 波 × 60s = 540s（叠加每波写库 ≈ 567s），小于 job 调度 15 分钟 timeout（`LeaseTTL` 同步 15 分钟）；跨上游场景峰值并发 512/轮，吞吐 512/分钟。人工连接测试（§17.3）与后台同链路同预算（单 Key 最坏 60s；多 Key 池账户人工路径无 runner 层硬顶，按 Key 串行累加）。
 - **成功**：写 `last_health_check_at` / `last_health_success_at`，清零失败计数；`pending_test` 或由连通性 401/403 造成的 `error` 原子恢复 `status='active'`、`schedulable=1`、清冷却与最近错误。下一次检查按 `accountHealthCheckIntervalHours`（默认 24h）+ `accountHealthCheckJitterMinutes` 安排。
 - **401 / 403**：写 `status='error'`、`schedulable=0`、`last_error_code='connectivity_auth_failed'` 与脱敏摘要；不写冷却（认证失效不是瞬态，不应进入冷却复测）。
 - **网络 / 5xx / 其他非认证失败**：只记录 `last_health_check_*` 与失败计数，不改 `status` / `schedulable` / 冷却，固定按最多 5 分钟复测（不再叠加 jitter，避免把 5 分钟上限放大到抖动设置上限），避免把上游瞬态误判为账户异常。

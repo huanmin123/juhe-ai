@@ -268,10 +268,11 @@ function importItemDomainTitle(item: AccountImportItem): string {
     : '服务端按导入包推导的能力域。'
 }
 
-// 媒体域账户无后台激活检查途径（生命周期定案 v7）：导入创建后落 pending_test
-// 需手动启用。按服务端回显的条目域追加提示；字段缺失或非媒体域不渲染（导入
-// 校验以服务端为准，前端不做域推导）。复用/跳过/失败条目不发生创建，不提示。
-const MEDIA_IMPORT_PENDING_NOTICE = '媒体域账户导入后为待检查状态，需手动启用'
+// 非对话域账户（媒体域 + 向量/重排域）无后台激活检查途径（生命周期定案 v7）：
+// 导入创建后落 pending_test 需手动启用。按服务端回显的条目域追加提示；字段缺失
+// 或对话域不渲染（导入校验以服务端为准，前端不做域推导）。复用/跳过/失败条目
+// 不发生创建，不提示。
+const MEDIA_IMPORT_PENDING_NOTICE = '媒体/向量/重排域账户导入后为待检查状态，需手动启用'
 
 function accountItemMessage(item: AccountImportItem): string {
   const base = itemMessage(item)

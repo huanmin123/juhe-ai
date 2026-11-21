@@ -9,9 +9,6 @@ import {
   aiPerformanceAccountOptionsParams,
   aiPerformanceParams,
   aiPerformanceSeriesParams,
-  authorizationGranteeGroupOptionsParams,
-  authorizationPrincipalOptionsParams,
-  boundedAuthorizationListParams,
   groupListParams,
   groupOptionParams,
   modelCheckRunListParams,
@@ -36,20 +33,6 @@ describe('stripSystemAccountParam', () => {
 
   it('无 systemAccountId 时原样浅拷贝', () => {
     expect(stripSystemAccountParam({ page: 1, keyword: 'k' })).toEqual({ page: 1, keyword: 'k' })
-  })
-})
-
-describe('boundedAuthorizationListParams', () => {
-  it('无参数时补默认 page=1、pageSize=500', () => {
-    expect(boundedAuthorizationListParams(undefined)).toEqual({ page: 1, pageSize: 500 })
-  })
-
-  it('保留已提供的分页值并合并其余字段', () => {
-    expect(boundedAuthorizationListParams({ page: 3, pageSize: 20, status: 'active' })).toEqual({ page: 3, pageSize: 20, status: 'active' })
-  })
-
-  it('仅提供 page 时 pageSize 回退默认值', () => {
-    expect(boundedAuthorizationListParams({ page: 2 })).toEqual({ page: 2, pageSize: 500 })
   })
 })
 
@@ -297,38 +280,6 @@ describe('teamListParams', () => {
 
   it('includeSystemAccount=false 时剥离 systemAccountId', () => {
     expect(teamListParams({ systemAccountId: 'sa-1', page: 2 }, false)).toEqual({ page: 2 })
-  })
-})
-
-describe('authorizationPrincipalOptionsParams', () => {
-  it('无参数时返回 undefined', () => {
-    expect(authorizationPrincipalOptionsParams(undefined)).toBeUndefined()
-  })
-
-  it('合并 ids/keyword/limit', () => {
-    expect(authorizationPrincipalOptionsParams({ ids: ['u-1'], keyword: ' 用户 ', limit: 8 })).toEqual({ ids: 'u-1', keyword: '用户', limit: 8 })
-  })
-})
-
-describe('authorizationGranteeGroupOptionsParams', () => {
-  it('总是携带 granteeSystemAccountId 并合并主选项参数', () => {
-    expect(authorizationGranteeGroupOptionsParams({ granteeSystemAccountId: 'sa-9', ids: ['g-1'], limit: 5 })).toEqual({
-      ids: 'g-1',
-      limit: 5,
-      granteeSystemAccountId: 'sa-9'
-    })
-  })
-
-  it('providerCode trim、preferDefault 布尔保留', () => {
-    expect(authorizationGranteeGroupOptionsParams({
-      granteeSystemAccountId: 'sa-9',
-      providerCode: ' openai ',
-      preferDefault: false
-    })).toEqual({
-      granteeSystemAccountId: 'sa-9',
-      providerCode: 'openai',
-      preferDefault: false
-    })
   })
 })
 

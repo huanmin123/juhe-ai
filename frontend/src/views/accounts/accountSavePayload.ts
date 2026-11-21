@@ -1,5 +1,5 @@
 import type { AccountCapabilityDomain } from './accountCapabilityDomains'
-import { accountUsesConnectionTest, capabilityDomainIsMedia } from './accountCapabilityDomains'
+import { accountUsesConnectionTest, capabilityDomainIsMedia, capabilityDomainSupportsDeclaration } from './accountCapabilityDomains'
 import type {
   AccountEditBasicDetail,
   AccountListItem,
@@ -56,10 +56,12 @@ export function validateAccountLockConfigForm(form: AccountFormModel): string | 
 // 连接集合载荷（设计 §8/§9.3）：创建时以账户当前表单的档案、Base URL 与
 // 接口能力推导唯一连接行；PATCH 更新链在显式提供时整集合替换（T94：编辑链
 // 与创建链同构携带，差量比较后仅在 Base URL/请求形态实际变化时进入请求）。
+// 五域退役（AI账户上游接口能力设计 §3）：非对话域连接行不写
+// account_endpoint_modes，载荷省略 endpointModes 键（chat 恒携带）。
 export type AccountConnectionPayload = {
   connectionPresetCode: string
   baseUrl: string
-  endpointModes: AccountFormModel['supportedEndpointModes']
+  endpointModes?: AccountFormModel['supportedEndpointModes']
   enabled: boolean
 }
 
@@ -303,13 +305,19 @@ export function validateAccountSaveForm(input: {
   if (scheduleValidation) return scheduleValidation
   const balanceValidation = validateAccountBalanceForm(form)
   if (balanceValidation) return balanceValidation
-  const endpointModeValidation = validateAccountEndpointModes({
-    modes: form.supportedEndpointModes,
-    type: form.type,
-    profile: formProviderProfile.profile ?? formProviderProfile.provider,
-    allowedModes: endpointModesForProfile(formProviderProfile.profile ?? formProviderProfile.provider, form.type)
-  })
-  if (endpointModeValidation) return endpointModeValidation
+  // 五域退役（AI账户上游接口能力设计 §3）：声明校验仅服务 chat 域账户；
+  // 五域跳过「至少一项」等全部声明校验。
+  if (capabilityDomainSupportsDeclaration(form.capabilityDomain)) {
+    const endpointModeValidation = validateAccountEndpointModes({
+      modes: form.supportedEndpointModes,
+      type: form.type,
+      profile: formProviderProfile.profile ?? formProviderProfile.provider,
+      // 词表按账户能力域收敛（chat 域不含向量/重排 mode），
+      // 与 allowedEndpointModesFor 的域×词表求交同一口径。
+      allowedModes: endpointModesForProfile(formProviderProfile.profile ?? formProviderProfile.provider, form.type, form.capabilityDomain)
+    })
+    if (endpointModeValidation) return endpointModeValidation
+  }
   const accountErrorPolicyValidation = validateAccountErrorPolicyRules(input.errorPolicyRules)
   if (!accountErrorPolicyValidation.valid) return accountErrorPolicyValidation.message || '账户错误处理策略配置不完整'
   const responseInspectionValidation = validateAccountResponseInspectionRules(input.responseInspectionRules)
@@ -324,7 +332,9 @@ export function validateAccountSaveForm(input: {
       mappingSourceModelOptionsReady: input.mappingSourceModelOptionsReady,
       mappingUpstreamModelOptions: input.mappingUpstreamModelOptions,
       mappingUpstreamModelOptionsReady: input.mappingUpstreamModelOptionsReady,
-      baselineMappings: input.editingAdvancedBaseline?.modelMappings
+      baselineMappings: input.editingAdvancedBaseline?.modelMappings,
+      // 五域映射不再按声明集做目标族能力校验（AI账户上游接口能力设计 §6.2）。
+      capabilityDomain: form.capabilityDomain
     }
   )
 }
@@ -365,7 +375,10 @@ export function buildAccountSavePayload(input: {
     ? [{
         connectionPresetCode,
         baseUrl: input.form.baseUrl.trim(),
-        endpointModes: [...input.form.supportedEndpointModes],
+        // 五域退役：非对话域连接行不写 account_endpoint_modes，载荷省略该键。
+        ...(capabilityDomainSupportsDeclaration(input.form.capabilityDomain)
+          ? { endpointModes: [...input.form.supportedEndpointModes] }
+          : {}),
         enabled: true
       }]
     : undefined
@@ -485,7 +498,9 @@ export function buildOAuthCreateCommonPayload(input: {
     notes: input.form.notes || undefined
   }
   const credentialsPatch: NonNullable<AccountOAuthCreateCommonPayload['credentialsPatch']> = {}
-  if (Array.isArray(credentials.supported_endpoint_modes)) {
+  // 五域退役（AI账户上游接口能力设计 §3）：非对话域（gemini native google_oauth
+  // 媒体域）OAuth 创建链不提交声明集 patch。
+  if (capabilityDomainSupportsDeclaration(input.form.capabilityDomain) && Array.isArray(credentials.supported_endpoint_modes)) {
     credentialsPatch.supported_endpoint_modes = [...credentials.supported_endpoint_modes] as AccountFormModel['supportedEndpointModes']
   }
   if (typeof credentials.service_tier_override === 'string') {
@@ -622,6 +637,8 @@ export function validateAccountModelMappings(
     mappingUpstreamModelOptionsReady?: boolean
     /** 编辑保存基线中的存量映射：行键与上游都未变的原样行放行，仅「基线中不存在或已变更」的行做候选窗口与支持模型校验（R6）。 */
     baselineMappings?: AccountFormModel['modelMappings']
+    /** 账户能力域：五域映射不做声明集目标族能力校验（结构校验保留）。 */
+    capabilityDomain?: AccountCapabilityDomain
   } = {}
 ): string | undefined {
   const seenSources = new Set<string>()
@@ -649,7 +666,7 @@ export function validateAccountModelMappings(
       sourceEndpointFamily,
       upstreamEndpointFamily,
       enabled: item.enabled,
-      context: { providerProfile, supportedEndpointModes }
+      context: { providerProfile, supportedEndpointModes, capabilityDomain: options.capabilityDomain }
     })
     if (protocolValidation) return protocolValidation
     if (sourceModel === upstreamModel && sourceEndpointFamily === upstreamEndpointFamily) {

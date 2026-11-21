@@ -1,6 +1,12 @@
 <template>
   <section class="form-section">
-    <a-form-item label="上游接口能力" tooltip="声明这个账号真实上游支持的接口形态。未勾选的上游请求不会进入该账号候选；OAuth 账号按来源能力只读。">
+    <!-- 2026-11-21 五域退役（AI账户上游接口能力设计 §3）：「上游接口能力」仅对话域
+         账户渲染；图像/音频/视频/向量/重排无此配置，上游不支持时返回上游原始错误。 -->
+    <a-form-item
+      v-if="declarationConfigVisible"
+      label="上游接口能力"
+      tooltip="声明这个账号真实上游支持的接口形态。未勾选的上游请求不会进入该账号候选；OAuth 账号按来源能力只读。"
+    >
       <div class="endpoint-mode-grid">
         <a-checkbox
           v-for="option in endpointModeOptions"
@@ -86,7 +92,8 @@ import {
 } from './accountModelMappingModelOptions'
 import { accountEndpointModeOptionsForProfile } from './accountEndpointModes'
 import {
-  allowedEndpointModesFor
+  allowedEndpointModesFor,
+  capabilityDomainSupportsDeclaration
 } from './accountCapabilityDomains'
 import {
   accountModelMappingProtocolOptions,
@@ -124,8 +131,7 @@ const modelMappingTooltip = computed(() => (
   '客户端协议与上游协议强制一致（含 Gemini 流式归一）；客户端模型可跨供应商选择，但必须支持所选协议；上游模型只能选择账户支持模型。'
 ))
 const endpointModeOptions = computed(() => {
-  // 2026-11-21 统一表单：勾选区按账户实际能力域渲染（chat 域仍为对话锚集合 ∩
-  // 供应商词表；媒体域为视频/音频/图像域允许集 ∩ 词表）。
+  // 2026-11-21 五域退役：勾选区仅对话域渲染（对话锚集合 ∩ 供应商词表）。
   const allowedModes = new Set(allowedEndpointModesFor({
     capabilityDomain: props.form.capabilityDomain,
     providerCode: props.form.providerCode,
@@ -134,6 +140,9 @@ const endpointModeOptions = computed(() => {
   }))
   return accountEndpointModeOptionsForProfile(activeProfile.value).filter((option) => allowedModes.has(option.value))
 })
+
+// 「上游接口能力」勾选区仅对话域可见（五域声明集退役，设计 §3）。
+const declarationConfigVisible = computed(() => capabilityDomainSupportsDeclaration(props.form.capabilityDomain))
 
 const endpointModesDisabled = computed(() => props.authorizedEditing || props.isOAuthForm)
 // T23：源模型下拉的截断提示条件——跨供应商目录的服务端截断标志。
@@ -198,7 +207,9 @@ function removeModelMapping(index: number): void {
 function modelMappingProtocolContext() {
   return {
     providerProfile: props.selectedProtocolProfile ?? props.form,
-    supportedEndpointModes: props.form.supportedEndpointModes
+    supportedEndpointModes: props.form.supportedEndpointModes,
+    // 五域映射不做声明集目标族能力门（结构门保留，设计 §6.2）。
+    capabilityDomain: props.form.capabilityDomain
   }
 }
 </script>

@@ -35,6 +35,7 @@ import (
 	"unicode/utf8"
 
 	contracts "github.com/huanminabc/juhe-ai/backend-go-contracts"
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 )
 
 // connectionURLContract 返回 (driver, account_type, oauth_type, preset, domain)
@@ -43,12 +44,23 @@ import (
 // registry 的公开 API 以单 mode 组合展开导出，同一 preset 的 template 全组合
 // 一致，取首个命中组合的副本。R8：allowed_base_path_suffixes 不再参与写面
 // 判定，不再返回。
+//
+// 2026-11-21 五域退役批（AI账户上游接口能力设计 §3）：registry 单 mode 组合
+// 收缩为 chat 域（五域连接组合保留在 AllowedConnectorCombos，不再产生带模板
+// 的声明行），五域连接的 URL 契约回落凭据域同源的 R8 公共协议面模板并集
+// （BasePathValidationTemplates）——保持「Base URL 是版本根、不得携带接口
+// 路径」的结构校验；preset 专属模板细则随声明面退役暂不可得，如需恢复由
+// registry 提供 preset 级模板访问口（shared 契约，本包不维护第二份清单）。
 func connectionURLContract(driver, accountType, oauthType, preset, domain string) (templates []string, ok bool) {
 	for _, combo := range contracts.AllowedEndpointModeCombos() {
 		if combo.Driver == driver && combo.AccountType == accountType &&
 			combo.OAuthType == oauthType && combo.Preset == preset && combo.Domain == domain {
 			return append([]string(nil), combo.OperationTemplates...), true
 		}
+	}
+	if accountscore.EndpointModesDeclarationRetired(domain) &&
+		contracts.IsAllowedConnectorCombo(driver, accountType, oauthType, preset, domain) {
+		return contracts.BasePathValidationTemplates(), true
 	}
 	return nil, false
 }

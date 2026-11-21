@@ -33,6 +33,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
 )
 
 func w13gPrivateUpstreamAllowed() bool {
@@ -762,5 +764,73 @@ func TestW13GUpstreamBaseURLPureArms(t *testing.T) {
 	}
 	if credentialsDeepEqual(Credentials{"a": 1}, Credentials{"a": 2}) {
 		t.Fatal("不同记录不应相等")
+	}
+}
+
+// TestW13GEndpointModesDeclarationRetirement 钉五域声明面退役的凭据归一化
+// 纯函数行为（AI账户上游接口能力设计 §3，2026-11-21）：image/audio/video/
+// embedding/rerank 域上下文提交 supported_endpoint_modes 一律剥离（不报错、
+// 不落键、不播种缺省集）；chat 上下文与 nil 上下文（草稿类调用方）保持既有
+// 归一化语义。DB 门控的端到端回归见 m2_capability_save_rules_test.go。
+func TestW13GEndpointModesDeclarationRetirement(t *testing.T) {
+	fiveDomains := []string{
+		accountscore.CapabilityDomainImage, accountscore.CapabilityDomainAudio,
+		accountscore.CapabilityDomainVideo, accountscore.CapabilityDomainEmbedding,
+		accountscore.CapabilityDomainRerank,
+	}
+	for _, domain := range fiveDomains {
+		normalized, err := NormalizeAccountCredentialsForWrite("api_key", Credentials{
+			"api_key":                  "sk-retire",
+			"base_url":                 "https://api.example.com",
+			"supported_endpoint_modes": []any{"audio_speech", "video_create"},
+		}, &EndpointModeDefaultContext{CapabilityDomain: domain})
+		if err != nil {
+			t.Fatalf("五域 %s 提交 modes 应忽略剥离不报错：%v", domain, err)
+		}
+		if _, ok := normalized["supported_endpoint_modes"]; ok {
+			t.Fatalf("五域 %s 凭据不应落声明键", domain)
+		}
+	}
+	// chat 上下文：合法值归一化保留（既有语义不变；modes 归一化需要已注册
+	// 驱动词表，走 w13gOpenAIContext 的 gpt 驱动上下文）。
+	chatContext := w13gOpenAIContext("gpt")
+	chatContext.CapabilityDomain = accountscore.CapabilityDomainChat
+	normalized, err := NormalizeAccountCredentialsForWrite("api_key", Credentials{
+		"api_key":                  "sk-chat",
+		"base_url":                 "https://api.example.com",
+		"supported_endpoint_modes": []any{"chat_json"},
+	}, chatContext)
+	if err != nil {
+		t.Fatalf("chat 提交 modes 应正常归一化：%v", err)
+	}
+	// 归一化出口经 canonicalize JSON round-trip，列表以 []interface{} 形态返回。
+	assertChatJSONSingle := func(label string, value any) {
+		list, ok := value.([]any)
+		if !ok || len(list) != 1 || list[0] != "chat_json" {
+			t.Fatalf("%s声明集应保留 chat_json：%#v", label, value)
+		}
+	}
+	assertChatJSONSingle("chat 上下文", normalized["supported_endpoint_modes"])
+	// nil 上下文（余额/手工测试草稿调用方）：行为不变（modes 归一化同样
+	// 需要 driver 词表，走 gpt 驱动上下文且不携带域）。
+	normalized, err = NormalizeAccountCredentialsForWrite("api_key", Credentials{
+		"api_key":                  "sk-default",
+		"base_url":                 "https://api.example.com",
+		"supported_endpoint_modes": []any{"chat_json"},
+	}, w13gOpenAIContext("gpt"))
+	if err != nil {
+		t.Fatalf("nil 上下文提交 modes 应正常归一化：%v", err)
+	}
+	assertChatJSONSingle("nil 上下文", normalized["supported_endpoint_modes"])
+	// 五域缺省不播种：不带 modes 的五域上下文归一化后无键。
+	normalized, err = NormalizeAccountCredentialsForWrite("api_key", Credentials{
+		"api_key":  "sk-seed",
+		"base_url": "https://api.example.com",
+	}, &EndpointModeDefaultContext{CapabilityDomain: accountscore.CapabilityDomainVideo})
+	if err != nil {
+		t.Fatalf("五域缺省归一化应成功：%v", err)
+	}
+	if _, ok := normalized["supported_endpoint_modes"]; ok {
+		t.Fatal("五域缺省不应播种声明集")
 	}
 }

@@ -13,13 +13,15 @@ import (
 func TestChainDriverVolcengineSpeechCredentialCandidateGate(t *testing.T) {
 	driver := newChainProviderDriver()
 	base := gatewaydispatch.AccountCandidate{
-		ID:                     "acc_volc_speech",
-		VendorCode:             "volcengine",
-		ProtocolCode:           "openai",
-		Type:                   "api_key",
-		BaseURL:                "https://openspeech.example",
-		SupportedEndpointModes: []string{"audio_speech", "audio_job_create"},
-		SupportedModels:        []string{"seed-tts-2.0", "volc.seedasr.auc"},
+		ID:           "acc_volc_speech",
+		VendorCode:   "volcengine",
+		ProtocolCode: "openai",
+		Type:         "api_key",
+		BaseURL:      "https://openspeech.example",
+		// 五域退役修订：火山语音账户落 audio 域（语音请求经域闸门放行后才到
+		// 凭据门；存量声明随 revision 30 清洗，投影恒空，fixture 不再依赖）。
+		CapabilityDomain: "audio",
+		SupportedModels:  []string{"seed-tts-2.0", "volc.seedasr.auc"},
 	}
 
 	speechReq := mappedURLTestRequest(t, http.MethodPost, "/v1/audio/speech",

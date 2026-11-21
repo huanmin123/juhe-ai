@@ -49,7 +49,6 @@ type ListItem struct {
 	Status                   string                `json:"status"`
 	Remark                   *string               `json:"remark,omitempty"`
 	ExpiresAt                *string               `json:"expiresAt,omitempty"`
-	Limits                   any                   `json:"limits,omitempty"`
 	ResourceAccountExpiresAt *string               `json:"resourceAccountExpiresAt,omitempty"`
 	EffectiveSourceType      string                `json:"effectiveSourceType"`
 	EffectiveSourceTeamID    *string               `json:"effectiveSourceTeamId,omitempty"`
@@ -185,9 +184,6 @@ func (s *Store) buildListItems(ctx context.Context, rows []grantRow, access acce
 		if row.ExpiresAt.Valid && row.ExpiresAt.String != "" {
 			value := row.ExpiresAt.String
 			item.ExpiresAt = &value
-		}
-		if canManage {
-			item.Limits = decodeAuthorizationLimits(grantLimitsText(row.LimitsJSON))
 		}
 		if canManage && account != nil && account.accountExpiresAt != "" {
 			value := account.accountExpiresAt

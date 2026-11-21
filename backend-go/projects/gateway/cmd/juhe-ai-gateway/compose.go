@@ -513,9 +513,6 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// gateway runtime cache through the K5 bus post-commit (batch edit,
 	// management patch, soft delete; Node invalidateGatewayRuntimeAfterBusinessWrite).
 	accountStore.SetCacheInvalidator(accountsBusInvalidator{bus: bus})
-	// Source material-change marker (§5.9): account PATCH/batch writes mark
-	// affected authorization sources needs_review in the same transaction.
-	accountStore.SetSourceRevisionMarker(authzStore)
 	// D-126 账户列表 usage 注水（W4-C）：totals 从 usage_stats_totals、
 	// statDate 从 usage_stats_daily 读，-nil source 保持零值降级。
 	accountUsageSource, err := accounts.NewStatsUsageSource(composed.statsDB)
@@ -557,16 +554,12 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// 句柄关闭执行（composition.Shutdown 顺序），Close 停止调度、取消在飞
 	// DELETE 并等待返回，保证队列不触碰已关闭的连接池。
 	composed.shutdowns = append(composed.shutdowns, balanceSnapshotCleaner.Close)
-	// BUG-0175 追加接线（W2-B 完工后移交的 compose 职责）：M11 账户实例归还
-	// 路由（POST /{id}/return-authorization）的终态授权归还写此前生产不可达
-	//（端口只有 m11_test 在用，组装根从未注入 → 归还路由恒 404）。接到
-	// authz Store.Return 后自动继承其写后失效扇出（AttachWriteInvalidator：
-	// group-stats 脏标记 + K5 gateway runtime / api-key validation /
-	// authorization quota 主题）。
-	accountStore.SetAuthorizationGrantReturner(authzGrantReturner{store: authzStore})
-	// 接收方确认模型：旧账户归还入口只允许“恰好一条非终态来源”，实际写入
-	// 走来源级状态机；多条来源必须去授权中心逐来源处理。
-	accountStore.SetAuthorizationSourceReturner(authzGrantReturner{store: authzStore})
+	// 账户域组装补注：M11 账户实例归还路由（POST /{id}/return-authorization）
+	// 已随 revision 31 授权大简化退役；账户域的终态授权写统一走授权中心
+	//（authz Store.Return），分组归还路由（POST /my-groups/{id}/
+	// return-authorization）继续承接归还入口并经 AttachWriteInvalidator 继承
+	// 写后失效扇出（group-stats 脏标记 + K5 gateway runtime / api-key
+	// validation / authorization quota 主题）。
 	// 审计补齐装配（verdict-ak/ap/aa）：授权统计 loader（列表三字段投影）+
 	// API Key 运行明细读取器（/{id}/api-key-runtime 的 items 数据源），见
 	// compose_account_reads.go。
@@ -791,8 +784,9 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 	// systemteams consumes: the shared groupdirtycursor marker for the
 	// group-stats arm and the K5 bus for the gateway runtime / API-key
 	// validation / authorization quota topics. Both ports are nil-tolerant;
-	// the accounts return-authorization route inherits the fan-out through
-	// the authz Store.Return port it already delegates to.
+	// the groups return-authorization route（POST /my-groups/{id}/
+	// return-authorization，M05）inherits the fan-out through the authz
+	// Store.Return port it already delegates to.
 	authzStore.AttachWriteInvalidator(groupStatsDirtyMarker, bus)
 	authzDeps := &authz.Deps{Store: authzStore, Sink: sink, Auth: authDeps}
 	authzDeps.Mount(kern)
@@ -962,7 +956,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		// ride the same in-process probe-request outbox row. With the chain
 		// disabled the port stays nil and the endpoint keeps its
 		// self-contained degraded contract.
-		resetBridge, resetBridgeErr := newAccountsRuntimeResetBridge(composed, settingValue, chainServices, cfg.Secret, healthProbeOutbox)
+		resetBridge, resetBridgeErr := newAccountsRuntimeResetBridge(composed, chainServices, cfg.Secret, healthProbeOutbox)
 		if resetBridgeErr != nil {
 			return nil, fmt.Errorf("compose accounts runtime reset bridge: %w", resetBridgeErr)
 		}
@@ -1051,7 +1045,6 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 			UserLimits:       chainServices.UserLimits,
 			ModelsRateLimit:  chainServices.ModelsRateLimit,
 			APIKeyQuota:      chainServices.APIKeyQuota,
-			AuthzQuota:       chainServices.AuthzQuota,
 			InflightQuota:    chainServices.InflightQuota,
 			Avoidance:        chainServices.Avoidance,
 			Affinity:         chainServices.Affinity,
