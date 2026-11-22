@@ -7,6 +7,7 @@ package playground
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -20,7 +21,7 @@ import (
 // 真实 runner；测试结束 Stop）。
 func newImageJobTestRoutes(t *testing.T) (*http.ServeMux, *Deps, *fakeImageJobStore, *fakeImageCost) {
 	t.Helper()
-	deps := playgroundFixtureDeps(t, false)
+	deps := playgroundFixtureDeps(t)
 	addImageCandidate(deps)
 	store := newFakeImageJobStore()
 	cost := &fakeImageCost{price: 0.05, ok: true}
@@ -84,12 +85,12 @@ func TestImageReferencesUpload(t *testing.T) {
 	}
 }
 
-// TestImageJobCreateValidation 任务创建校验面：模型不在候选 400、账户越界
+// TestImageJobCreateValidation 任务创建校验面：模型不在候选 400、Key 越界
 // 404、prompt 空/超限 400、词表外 400、referenceIds 越界 400、参考图归属失
 // 败 400 playground_reference_not_found。
 func TestImageJobCreateValidation(t *testing.T) {
 	mux, _, _, _ := newImageJobTestRoutes(t)
-	base := map[string]any{"accountId": "acc_1", "modelId": "gpt-image-2", "prompt": "一只赛博猫"}
+	base := map[string]any{"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "gpt-image-2", "prompt": "一只赛博猫"}
 
 	post := func(extra map[string]any) *httptest.ResponseRecorder {
 		payload := map[string]any{}
@@ -108,8 +109,8 @@ func TestImageJobCreateValidation(t *testing.T) {
 	if recorder := post(map[string]any{"modelId": "nope-image"}); recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "playground_model_not_available") {
 		t.Fatalf("模型不在候选应 400: %d %s", recorder.Code, recorder.Body.String())
 	}
-	if recorder := post(map[string]any{"accountId": "acc_other"}); recorder.Code != http.StatusNotFound || !strings.Contains(recorder.Body.String(), "playground_account_not_found") {
-		t.Fatalf("账户越界应 404: %d %s", recorder.Code, recorder.Body.String())
+	if recorder := post(map[string]any{"apiKeyId": "key_other"}); recorder.Code != http.StatusNotFound || !strings.Contains(recorder.Body.String(), "playground_key_not_found") {
+		t.Fatalf("Key 越界应 404: %d %s", recorder.Code, recorder.Body.String())
 	}
 	if recorder := post(map[string]any{"prompt": "   "}); recorder.Code != http.StatusBadRequest {
 		t.Fatalf("空 prompt 应 400: %d %s", recorder.Code, recorder.Body.String())
@@ -146,7 +147,7 @@ func TestImageJobCreateValidation(t *testing.T) {
 func TestImageJobCreateSizeMapping(t *testing.T) {
 	mux, _, store, _ := newImageJobTestRoutes(t)
 	create := func(extra map[string]any) string {
-		payload := map[string]any{"accountId": "acc_1", "modelId": "gpt-image-2", "prompt": "一只赛博猫"}
+		payload := map[string]any{"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "gpt-image-2", "prompt": "一只赛博猫"}
 		for key, value := range extra {
 			payload[key] = value
 		}
@@ -190,7 +191,7 @@ func TestImageJobCreateSizeMapping(t *testing.T) {
 	// 两者皆省略：执行器出站体不携带 size（独立夹具隔离——此前用例的任务失
 	// 败派发与本用例共享 mock，无法按序定位）。
 	soleDeps := func() *Deps {
-		deps := playgroundFixtureDeps(t, false)
+		deps := playgroundFixtureDeps(t)
 		addImageCandidate(deps)
 		soleStore := newFakeImageJobStore()
 		runner := NewImageJobRunner(deps, soleStore, nil)
@@ -203,7 +204,7 @@ func TestImageJobCreateSizeMapping(t *testing.T) {
 			Body: []byte(`{"data":[{"b64_json":"` + base64Of(pngOnePixel) + `"}]}`),
 		}}
 		recorder := doJSON(mux, "POST", "/__aisys__/api/playground/images/jobs", mustJSON(map[string]any{
-			"accountId": "acc_1", "modelId": "gpt-image-2", "prompt": "一只赛博猫",
+			"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "gpt-image-2", "prompt": "一只赛博猫",
 		}))
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("缺省用例创建状态码 = %d（body %s）", recorder.Code, recorder.Body.String())
@@ -235,9 +236,9 @@ func TestImageJobsListAndDetail(t *testing.T) {
 	store.mu.Lock()
 	now := time.Now().UnixMilli()
 	fixtures := []ImageJobRecord{
-		{ViewerID: "sys_user_1", ID: "job_q", Status: imageJobStatusQueued, AccountID: "acc_1", ModelID: "gpt-image-2", Prompt: "赛博猫", CreatedAt: now},
-		{ViewerID: "sys_user_1", ID: "job_r", Status: imageJobStatusRunning, AccountID: "acc_1", ModelID: "gpt-image-2", Prompt: "水彩猫", Quality: "fine", CreatedAt: now - 1000},
-		{ViewerID: "sys_user_1", ID: "job_x", Status: imageJobStatusCompleted, AccountID: "acc_1", ModelID: "gpt-image-2", Prompt: "过期猫", ExpiresAt: now - 2000, CompletedAt: now - 8000, CreatedAt: now - 9000},
+		{ViewerID: "sys_user_1", ID: "job_q", Status: imageJobStatusQueued, APIKeyID: playgroundKeyModelsFixtureID, ModelID: "gpt-image-2", Prompt: "赛博猫", CreatedAt: now},
+		{ViewerID: "sys_user_1", ID: "job_r", Status: imageJobStatusRunning, APIKeyID: playgroundKeyModelsFixtureID, ModelID: "gpt-image-2", Prompt: "水彩猫", Quality: "fine", CreatedAt: now - 1000},
+		{ViewerID: "sys_user_1", ID: "job_x", Status: imageJobStatusCompleted, APIKeyID: playgroundKeyModelsFixtureID, ModelID: "gpt-image-2", Prompt: "过期猫", ExpiresAt: now - 2000, CompletedAt: now - 8000, CreatedAt: now - 9000},
 	}
 	for _, record := range fixtures {
 		value := record
@@ -317,10 +318,79 @@ func TestImageJobsListAndDetail(t *testing.T) {
 	}
 }
 
+// TestImageJobDelete 手动删除（§3.4.6 v1.5）：终态（completed/failed）删除成
+// 功 204 无响应体且 store 收到正确 (viewer, jobId)；queued → 409
+// playground_job_not_deletable 且行保留；不存在/越权统一 404
+// playground_job_not_found；身份解析失败 → 既有 unauthorized 口径 401。
+func TestImageJobDelete(t *testing.T) {
+	mux, _, store, _ := newImageJobTestRoutes(t)
+	nowMilli := time.Now().UnixMilli()
+	store.mu.Lock()
+	store.records["job_done"] = &ImageJobRecord{ViewerID: "sys_user_1", ID: "job_done", Status: imageJobStatusCompleted, APIKeyID: playgroundKeyModelsFixtureID, ModelID: "gpt-image-2", Prompt: "成品图", CreatedAt: nowMilli}
+	store.records["job_dead"] = &ImageJobRecord{ViewerID: "sys_user_1", ID: "job_dead", Status: imageJobStatusFailed, APIKeyID: playgroundKeyModelsFixtureID, ModelID: "gpt-image-2", Prompt: "失败图", CreatedAt: nowMilli - 1000}
+	store.records["job_wait"] = &ImageJobRecord{ViewerID: "sys_user_1", ID: "job_wait", Status: imageJobStatusQueued, APIKeyID: playgroundKeyModelsFixtureID, ModelID: "gpt-image-2", Prompt: "排队图", CreatedAt: nowMilli - 2000}
+	store.records["job_other"] = &ImageJobRecord{ViewerID: "sys_user_2", ID: "job_other", Status: imageJobStatusCompleted, CreatedAt: nowMilli}
+	store.order = []string{"job_done", "job_dead", "job_wait", "job_other"}
+	store.mu.Unlock()
+
+	del := func(id string) *httptest.ResponseRecorder {
+		return doJSON(mux, "DELETE", "/__aisys__/api/playground/images/jobs/"+id, nil)
+	}
+	// completed → 204 无响应体，store 收到正确 (viewer, jobId) 且记录行移除。
+	recorder := del("job_done")
+	if recorder.Code != http.StatusNoContent || recorder.Body.Len() != 0 {
+		t.Fatalf("completed 删除应 204 无响应体: %d %q", recorder.Code, recorder.Body.String())
+	}
+	if len(store.deleteCalls) != 1 || store.deleteCalls[0] != [2]string{"sys_user_1", "job_done"} {
+		t.Fatalf("Delete 入参不符: %v", store.deleteCalls)
+	}
+	if _, ok := store.snapshot("job_done"); ok {
+		t.Fatal("删除后记录行应已移除")
+	}
+	// failed → 204。
+	recorder = del("job_dead")
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("failed 删除应 204: %d %s", recorder.Code, recorder.Body.String())
+	}
+	// queued → 409 playground_job_not_deletable，行仍在。
+	recorder = del("job_wait")
+	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "playground_job_not_deletable") {
+		t.Fatalf("queued 删除应 409 playground_job_not_deletable: %d %s", recorder.Code, recorder.Body.String())
+	}
+	if _, ok := store.snapshot("job_wait"); !ok {
+		t.Fatal("非终态删除被拒后记录行应保留")
+	}
+	// 越权/不存在 → 404 playground_job_not_found。
+	recorder = del("job_other")
+	if recorder.Code != http.StatusNotFound || !strings.Contains(recorder.Body.String(), "playground_job_not_found") {
+		t.Fatalf("越权删除应 404: %d %s", recorder.Code, recorder.Body.String())
+	}
+	recorder = del("no_such")
+	if recorder.Code != http.StatusNotFound || !strings.Contains(recorder.Body.String(), "playground_job_not_found") {
+		t.Fatalf("不存在删除应 404: %d %s", recorder.Code, recorder.Body.String())
+	}
+	// 身份解析失败 → 既有 unauthorized 口径（401「缺少登录身份」）。
+	deps := playgroundFixtureDeps(t)
+	addImageCandidate(deps)
+	authStore := newFakeImageJobStore()
+	deps.ImageJobs = authStore
+	authRunner := NewImageJobRunner(deps, authStore, nil)
+	t.Cleanup(authRunner.Stop)
+	deps.ImageRunner = authRunner
+	deps.ScopeResolver = func(*http.Request) (Scope, error) { return Scope{}, errors.New("no session") }
+	authMux := http.NewServeMux()
+	deps.Register(muxRegisterer{authMux}, "/__aisys__/api/playground")
+	recorder = doJSON(authMux, "DELETE", "/__aisys__/api/playground/images/jobs/job_done", nil)
+	if recorder.Code != http.StatusUnauthorized || !strings.Contains(recorder.Body.String(), "缺少登录身份") {
+		t.Fatalf("身份解析失败应 401: %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 // TestImageJobCardNormalization 卡片归一（fake store 数据驱动）：completed 未
 // 删给 images/references 的 {id,url}、expiresAt 有值；usage/costUsd completed
 // 含已删都有值（M1：历史记录价值，数据库有值就透出）；时间戳 unix 秒；
-// imageDeleted 读时判定（expires_at 已过 or images_expired）。
+// imageDeleted 读时判定（expires_at 已过 or images_expired）；apiKeyId 携带
+// 创建时 Key（§4.5），存量行（params 无该键）收敛空串。
 func TestImageJobCardNormalization(t *testing.T) {
 	mux, _, store, _ := newImageJobTestRoutes(t)
 	nowMilli := time.Now().UnixMilli()
@@ -329,7 +399,7 @@ func TestImageJobCardNormalization(t *testing.T) {
 	store.mu.Lock()
 	store.records["job_live"] = &ImageJobRecord{
 		ViewerID: "sys_user_1", ID: "job_live", Status: imageJobStatusCompleted,
-		AccountID: "acc_1", ModelID: "gpt-image-2", Prompt: "成品图", Size: "1024x1024",
+		APIKeyID: playgroundKeyModelsFixtureID, ModelID: "gpt-image-2", Prompt: "成品图", Size: "1024x1024",
 		Quality: "standard", OutputFormat: "png",
 		ReferenceIDs: []string{"ref_1", "ref_2"}, ResultIDs: expiredIDs,
 		InputTokens: 12, OutputTokens: 4096, TotalTokens: 4108, CostUSD: &cost,
@@ -338,17 +408,23 @@ func TestImageJobCardNormalization(t *testing.T) {
 	}
 	store.records["job_gone"] = &ImageJobRecord{
 		ViewerID: "sys_user_1", ID: "job_gone", Status: imageJobStatusCompleted,
-		AccountID: "acc_1", ModelID: "gpt-image-2", Prompt: "已删图",
+		APIKeyID: playgroundKeyModelsFixtureID, ModelID: "gpt-image-2", Prompt: "已删图",
 		ResultIDs: expiredIDs, InputTokens: 5, OutputTokens: 100, TotalTokens: 105, CostUSD: &cost,
 		ExpiresAt: nowMilli - 1000, CompletedAt: nowMilli - 8000, CreatedAt: nowMilli - 9000,
 	}
 	store.records["job_flagged"] = &ImageJobRecord{
 		ViewerID: "sys_user_1", ID: "job_flagged", Status: imageJobStatusCompleted,
-		AccountID: "acc_1", ModelID: "gpt-image-2", Prompt: "标记删除图",
+		APIKeyID: playgroundKeyModelsFixtureID, ModelID: "gpt-image-2", Prompt: "标记删除图",
 		ResultIDs: expiredIDs, ImagesExpired: true, InputTokens: 1, OutputTokens: 2, TotalTokens: 3,
 		CreatedAt: nowMilli - 500,
 	}
-	store.order = []string{"job_live", "job_gone", "job_flagged"}
+	// 存量行形态（真实 Key 化改版前创建）：记录无 APIKeyID。
+	store.records["job_legacy"] = &ImageJobRecord{
+		ViewerID: "sys_user_1", ID: "job_legacy", Status: imageJobStatusCompleted,
+		ModelID: "gpt-image-2", Prompt: "改版前旧图", ResultIDs: expiredIDs,
+		CreatedAt: nowMilli - 90000,
+	}
+	store.order = []string{"job_live", "job_gone", "job_flagged", "job_legacy"}
 	store.mu.Unlock()
 
 	cards := map[string]struct {
@@ -359,8 +435,9 @@ func TestImageJobCardNormalization(t *testing.T) {
 		hasCost     bool
 		expiresAt   int64
 		usageTotal  int64
+		apiKeyID    string
 	}{}
-	for _, id := range []string{"job_live", "job_gone", "job_flagged"} {
+	for _, id := range []string{"job_live", "job_gone", "job_flagged", "job_legacy"} {
 		recorder := doJSON(mux, "GET", "/__aisys__/api/playground/images/jobs/"+id, nil)
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("详情 %s 状态码 = %d", id, recorder.Code)
@@ -384,7 +461,8 @@ func TestImageJobCardNormalization(t *testing.T) {
 			hasCost     bool
 			expiresAt   int64
 			usageTotal  int64
-		}{card.ImageDeleted, len(card.Images), len(card.References), card.Usage != nil, card.CostUSD != nil, card.ExpiresAt, usageTotal}
+			apiKeyID    string
+		}{card.ImageDeleted, len(card.Images), len(card.References), card.Usage != nil, card.CostUSD != nil, card.ExpiresAt, usageTotal, card.APIKeyID}
 		if card.CreatedAt <= 1_000_000_000 || (card.ExpiresAt != 0 && card.ExpiresAt <= 1_000_000_000) {
 			t.Fatalf("时间戳应为 unix 秒: %+v", card)
 		}
@@ -406,13 +484,22 @@ func TestImageJobCardNormalization(t *testing.T) {
 	if !flagged.deleted || flagged.imagesCount != 0 || !flagged.hasUsage || flagged.usageTotal != 3 {
 		t.Fatalf("images_expired 判定不符: %+v", flagged)
 	}
+	// apiKeyId 透出（§4.5）：新行携带创建时 Key，存量行收敛空串（前端据此
+	// 展示「Key 已删除」占位）。
+	if live.apiKeyID != playgroundKeyModelsFixtureID {
+		t.Fatalf("卡片应携带创建时 apiKeyId: %q", live.apiKeyID)
+	}
+	legacy := cards["job_legacy"]
+	if legacy.apiKeyID != "" || legacy.deleted || legacy.imagesCount != 1 {
+		t.Fatalf("存量行卡片 apiKeyId 应为空串且正常展示: %+v", legacy)
+	}
 }
 
 // TestImageJobsCreateBusy 队列满载：POST /images/jobs 返回 503
 // playground_busy（显式拒绝，不无限积压），且已落库的任务行同步收敛为
 // failed（B3：不留 queued 僵尸行，错误文案随行存储）。
 func TestImageJobsCreateBusy(t *testing.T) {
-	deps := playgroundFixtureDeps(t, false)
+	deps := playgroundFixtureDeps(t)
 	addImageCandidate(deps)
 	store := newFakeImageJobStore()
 	deps.ImageJobs = store
@@ -422,7 +509,7 @@ func TestImageJobsCreateBusy(t *testing.T) {
 	deps.ImageRunner = runner
 	mux, _ := newTestRoutes(deps)
 	recorder := doJSON(mux, "POST", "/__aisys__/api/playground/images/jobs", mustJSON(map[string]any{
-		"accountId": "acc_1", "modelId": "gpt-image-2", "prompt": "一只赛博猫",
+		"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "gpt-image-2", "prompt": "一只赛博猫",
 	}))
 	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), "playground_busy") {
 		t.Fatalf("队列满应 503 playground_busy: %d %s", recorder.Code, recorder.Body.String())
@@ -451,7 +538,7 @@ func TestImageJobsCreateBusy(t *testing.T) {
 //  3. 覆盖内但原图 >10MB 的请求仍被领域校验拒绝（400 超过 10 MiB 上限）。
 func TestImageReferencesUploadThroughKernelBodyLimit(t *testing.T) {
 	gateway := kernel.New(kernel.Options{})
-	deps := playgroundFixtureDeps(t, false)
+	deps := playgroundFixtureDeps(t)
 	deps.RequireSession = func(h http.Handler) http.Handler { return h }
 	deps.ScopeResolver = func(*http.Request) (Scope, error) { return Scope{ViewerID: "sys_user_1"}, nil }
 	deps.Register(gateway, "/__aisys__/api/playground")

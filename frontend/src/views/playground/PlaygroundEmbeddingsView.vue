@@ -68,7 +68,6 @@
         <template v-else>
           <div class="playground-result-meta">
             <template v-if="resultModel">模型 {{ resultModel }}</template>
-            <template v-if="resultUsage"> · {{ resultUsage.promptTokens }} prompt / {{ resultUsage.totalTokens }} tokens</template>
             · 前端耗时 {{ elapsedMs }} ms
           </div>
 

@@ -246,8 +246,8 @@ export const menuRoutes: RouteRecordRaw[] = [
     path: '/my-teams',
     component: () => import('@/views/system-teams/SystemTeamsView.vue'),
     meta: {
-      title: '我的授权团队',
-      description: '查看自己加入的授权团队和团队成员。',
+      title: '我的团队',
+      description: '查看自己加入的团队和团队成员。',
       menuGroup: 'my-authorization',
       menuGroupTitle: '我的授权',
       viewScope: 'self'

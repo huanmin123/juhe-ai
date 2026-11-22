@@ -29,7 +29,7 @@
       <a-alert
         type="info"
         show-icon
-        message="收到的授权需要你主动领取：分组授权领取后直接生效；账户授权领取后绑入你的默认分组并生效。"
+        message="收到的授权需要你主动领取：分组授权领取后直接生效；账户授权领取时选择目标分组，绑定后生效。"
         style="margin-bottom: 12px"
       />
 
@@ -69,13 +69,24 @@
               </template>
               <template v-else-if="column.key === 'actions'">
                 <a-space wrap>
+                  <a-button
+                    v-if="record.canAccept && record.resourceType === 'account'"
+                    size="small"
+                    type="primary"
+                    @click="openClaim(record, 'accept')"
+                  >领取</a-button>
                   <a-popconfirm
-                    v-if="record.canAccept"
-                    :title="record.resourceType === 'account' ? '领取后绑入你的默认分组并生效，确定领取？' : '领取后该授权立即生效，确定领取？'"
+                    v-else-if="record.canAccept"
+                    title="领取后该授权立即生效，确定领取？"
                     @confirm="run(() => api.myAuthorizationCenter.accept(record.sourceId), '已领取，授权已生效')"
                   >
                     <a-button size="small" type="primary">领取</a-button>
                   </a-popconfirm>
+                  <a-button
+                    v-if="canChangeGroup(record)"
+                    size="small"
+                    @click="openClaim(record, 'changeGroup')"
+                  >换分组</a-button>
                   <a-popconfirm v-if="record.canReturn" title="归还后该来源立即不可用，确定归还？" @confirm="run(() => api.myAuthorizationCenter.return(record.sourceId), '已归还来源')">
                     <a-button size="small" danger>归还</a-button>
                   </a-popconfirm>
@@ -110,13 +121,24 @@
                   </div>
                 </div>
                 <a-space wrap style="margin-top: 10px">
+                  <a-button
+                    v-if="record.canAccept && record.resourceType === 'account'"
+                    size="small"
+                    type="primary"
+                    @click="openClaim(record, 'accept')"
+                  >领取</a-button>
                   <a-popconfirm
-                    v-if="record.canAccept"
-                    :title="record.resourceType === 'account' ? '领取后绑入你的默认分组并生效，确定领取？' : '领取后该授权立即生效，确定领取？'"
+                    v-else-if="record.canAccept"
+                    title="领取后该授权立即生效，确定领取？"
                     @confirm="run(() => api.myAuthorizationCenter.accept(record.sourceId), '已领取，授权已生效')"
                   >
                     <a-button size="small" type="primary">领取</a-button>
                   </a-popconfirm>
+                  <a-button
+                    v-if="canChangeGroup(record)"
+                    size="small"
+                    @click="openClaim(record, 'changeGroup')"
+                  >换分组</a-button>
                   <a-popconfirm v-if="record.canReturn" title="归还后该来源立即不可用，确定归还？" @confirm="run(() => api.myAuthorizationCenter.return(record.sourceId), '已归还来源')">
                     <a-button size="small" danger>归还</a-button>
                   </a-popconfirm>
@@ -297,6 +319,32 @@
         </a-form-item>
       </a-form>
     </a-modal>
+
+    <a-modal
+      v-model:open="claimOpen"
+      :title="claimTitle"
+      :confirm-loading="acting"
+      ok-text="确认"
+      :ok-button-props="{ disabled: claimGroupOptions.length === 0 }"
+      @ok="confirmClaim"
+    >
+      <a-form layout="vertical">
+        <a-form-item label="目标分组" required>
+          <a-select
+            v-model:value="claimGroupId"
+            :options="claimGroupOptions"
+            :loading="claimGroupLoading"
+            :placeholder="claimPlaceholder"
+          />
+        </a-form-item>
+        <a-alert
+          v-if="claimGroupOptions.length === 0 && !claimGroupLoading"
+          type="warning"
+          show-icon
+          message="你还没有可用的普通分组，请先在分组管理创建并启用分组"
+        />
+      </a-form>
+    </a-modal>
   </a-card>
 </template>
 
@@ -313,6 +361,7 @@ import type {
   AuthorizationSourceSummary
 } from '@/api/domains/authorizationGovernance'
 import { createAuthorizationSearchScheduler } from '@/views/authorizations/authorizationSearchScheduler'
+import { claimTargetGroupOptions, claimTargetGroupOptionsQuery, type ClaimTargetGroupOption } from '@/views/authorizations/authorizationClaimGroupOptions'
 import { authState } from '@/composables/useAuth'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 
@@ -361,12 +410,24 @@ const createForm = reactive<CreateFormState>({
   expiresAt: undefined
 })
 
+// 账户授权领取/换绑共用弹窗：领取模式必选目标分组（后端不再缺省回落默认分组），
+// 换绑模式面向已绑定的 active 账户来源。
+const claimOpen = ref(false)
+const claimMode = ref<'accept' | 'changeGroup'>('accept')
+const claimTarget = ref<AuthorizationSourceSummary>()
+const claimGroupId = ref<string>()
+const claimGroupLoading = ref(false)
+const claimGroupOptions = ref<ClaimTargetGroupOption[]>([])
+
 const createHint = computed(() => {
   if (createForm.granteeType === 'team') {
     return '发送后团队成员在「收到的授权」里各自领取：分组领取即生效，账户领取时选自己的分组一步进组。'
   }
   return '发送后对方在「收到的授权」里领取：分组领取即生效，账户领取时选自己的分组一步进组。'
 })
+
+const claimTitle = computed(() => (claimMode.value === 'accept' ? '领取账户授权' : '换绑分组'))
+const claimPlaceholder = computed(() => (claimMode.value === 'accept' ? '请选择领取后绑入的分组' : '请选择新的绑定分组'))
 
 const tabs = computed(() => {
   if (isManagementView.value) {
@@ -461,6 +522,12 @@ function canRevoke(record: AuthorizationOfferSummary): boolean {
   return isManagementView.value || record.resourceOwnerSystemAccountId === authState.currentUser.value?.id
 }
 
+// 换分组入口：仅账户授权、已绑定且来源 active、runtime active（grant 暂停/
+// 到期时 runtime 推导为 paused，后端 change-group 同口径拒绝，入口直接隐藏）。
+function canChangeGroup(record: AuthorizationSourceSummary): boolean {
+  return record.resourceType === 'account' && record.bound && record.status === 'active' && record.runtimeStatus === 'active'
+}
+
 async function refresh() {
   loading.value = true
   try {
@@ -524,6 +591,55 @@ async function confirmExtend() {
     })
     message.success('已延长授权')
     extendOpen.value = false
+    await refresh()
+  } catch (error) {
+    message.error(errorMessage(error))
+  } finally {
+    acting.value = false
+  }
+}
+
+async function openClaim(record: AuthorizationSourceSummary, mode: 'accept' | 'changeGroup') {
+  claimTarget.value = record
+  claimMode.value = mode
+  claimGroupId.value = undefined
+  claimGroupOptions.value = []
+  claimOpen.value = true
+  await loadClaimGroupOptions()
+}
+
+async function loadClaimGroupOptions() {
+  claimGroupLoading.value = true
+  try {
+    // purpose=account 让 options 返回完整投影（缺省 purpose=select 只投影
+    // {id,name}，claimTargetGroupOptions 的过滤字段会全部缺失）；manageableOnly
+    // 让名额不被授权分组/超级分组占用，groupKind=standard 后端先行过滤。
+    const groups = await api.myGroups.options(claimTargetGroupOptionsQuery())
+    claimGroupOptions.value = claimTargetGroupOptions(groups)
+  } catch (error) {
+    message.error(errorMessage(error))
+  } finally {
+    claimGroupLoading.value = false
+  }
+}
+
+async function confirmClaim() {
+  const target = claimTarget.value
+  if (!target) return
+  if (!claimGroupId.value) {
+    message.error(claimMode.value === 'accept' ? '请选择领取后绑入的分组' : '请选择新的绑定分组')
+    return
+  }
+  acting.value = true
+  try {
+    if (claimMode.value === 'accept') {
+      await api.myAuthorizationCenter.accept(target.sourceId, claimGroupId.value)
+      message.success('已领取，授权已生效')
+    } else {
+      await api.myAuthorizationCenter.changeGroup(target.sourceId, claimGroupId.value)
+      message.success('已换绑分组')
+    }
+    claimOpen.value = false
     await refresh()
   } catch (error) {
     message.error(errorMessage(error))

@@ -4,12 +4,15 @@ package playground
 //
 //	POST /images/references  参考图上传（落暂存孤儿态，绑定随任务创建）
 //	POST /images/jobs        创建生成任务（校验 → size 映射 → 落库 → 入队）
-//	GET  /images/jobs        生成历史列表（keyword/accountId/status/quality/
+//	GET  /images/jobs        生成历史列表（keyword/apiKeyId/status/quality/
 //	                         limit/before 游标）
 //	GET  /images/jobs/{id}   任务详情（轮询；不存在/越权 404）
+//	DELETE /images/jobs/{id} 手动删除任务（§3.4.6 v1.5：仅终态可删，记录行与
+//	                         产物字节同事务一并删；不存在/越权 404，非终态 409）
 //
-// 硬口径：单次恒 1 张无 n；响应 camelCase；错误码 playground_* 词表；记录行
-// 永不删，图像字节删除只属 jobs 清理任务（本层只做读时判定）。
+// 硬口径：单次恒 1 张无 n；响应 camelCase；错误码 playground_* 词表；图像字
+// 节到期删除只属 jobs 清理任务（本层读时判定），记录行删除仅 v1.5 手动删除
+// 入口。
 
 import (
 	"encoding/base64"
@@ -209,7 +212,6 @@ func (rt *playgroundRoutes) imageJobsCreateHandler(w http.ResponseWriter, r *htt
 	references := dedupeNonEmptyStrings(requested)
 	record, createErr := rt.imageJobs.Create(&ImageJobRecord{
 		ViewerID:     scope.ViewerID,
-		AccountID:    strings.TrimSpace(req.APIKeyID),
 		APIKeyID:     strings.TrimSpace(req.APIKeyID),
 		ProviderCode: providerCode,
 		ModelID:      strings.TrimSpace(req.ModelID),
@@ -266,6 +268,9 @@ type imageJobCreateResponse struct {
 
 // 错误哨兵判定辅助（errors.Is 统一收敛，避免调用方逐个比对）。
 func isErrImageJobNotFound(err error) bool { return errors.Is(err, errImageJobNotFound) }
+func isErrImageJobNotDeletable(err error) bool {
+	return errors.Is(err, errImageJobNotDeletable)
+}
 func isErrImageJobReferenceNotFound(err error) bool {
 	return errors.Is(err, errImageJobReferenceNotFound)
 }
@@ -290,10 +295,10 @@ func (rt *playgroundRoutes) imageJobsListHandler(w http.ResponseWriter, r *http.
 	rt.artifacts.cleanupExpired()
 	query := r.URL.Query()
 	filter := ImageJobFilter{
-		Keyword:   strings.TrimSpace(query.Get("keyword")),
-		AccountID: strings.TrimSpace(query.Get("apiKeyId")),
-		Status:    strings.TrimSpace(query.Get("status")),
-		Quality:   strings.TrimSpace(query.Get("quality")),
+		Keyword:  strings.TrimSpace(query.Get("keyword")),
+		APIKeyID: strings.TrimSpace(query.Get("apiKeyId")),
+		Status:   strings.TrimSpace(query.Get("status")),
+		Quality:  strings.TrimSpace(query.Get("quality")),
 	}
 	if filter.Status != "" && !imageJobStatuses[filter.Status] {
 		writeHTTPError(w, invalidRequest("status 词表外"))
@@ -349,6 +354,32 @@ func (rt *playgroundRoutes) imageJobGetHandler(w http.ResponseWriter, r *http.Re
 	writeOKPayload(w, card)
 }
 
+// imageJobDeleteHandler 服务 DELETE /images/jobs/{id}（§3.4.6 v1.5 手动删除：
+// 仅终态可删，任务记录行与产物字节同事务一并删，不可恢复；成功 204 无响应
+// 体；不存在/越权统一 404 playground_job_not_found，非终态 409
+// playground_job_not_deletable——生成中不做取消语义）。
+func (rt *playgroundRoutes) imageJobDeleteHandler(w http.ResponseWriter, r *http.Request) {
+	scope, err := rt.deps.ScopeResolver(r)
+	if err != nil {
+		writeHTTPError(w, unauthorizedError(err))
+		return
+	}
+	if !rt.imageJobsReady() {
+		writeHTTPError(w, imageJobsUnavailable())
+		return
+	}
+	jobID := strings.TrimSpace(r.PathValue("id"))
+	if jobID == "" {
+		writeHTTPError(w, invalidRequest("jobId 无效"))
+		return
+	}
+	if err := rt.imageJobs.Delete(scope.ViewerID, jobID); err != nil {
+		writeHTTPError(w, imageJobsError(err))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // imageJobsReady 报告图像任务面是否接线（store + runner 双槽；缺一显式降级）。
 func (rt *playgroundRoutes) imageJobsReady() bool {
 	return rt.imageJobs != nil && rt.imageRunner != nil
@@ -360,13 +391,15 @@ func imageJobsUnavailable() *HTTPError {
 }
 
 // imageJobsError 把任务存储错误映射 HTTP 错误面（身份非法 → 400，任务不存在
-// → 404，过滤词表外 → 400，存储未接线 → 503，其余 → 500）。
+// → 404，非终态不可删 → 409，过滤词表外 → 400，存储未接线 → 503，其余 → 500）。
 func imageJobsError(err error) *HTTPError {
 	switch {
 	case isErrArtifactViewerInvalid(err):
 		return invalidRequest("任务身份无效")
 	case isErrImageJobNotFound(err):
 		return &HTTPError{Status: http.StatusNotFound, Code: codeImageJobNotFound, Message: "任务不存在或不在当前用户范围内"}
+	case isErrImageJobNotDeletable(err):
+		return &HTTPError{Status: http.StatusConflict, Code: codeImageJobNotDeletable, Message: "生成中的任务不可删除，请等待完成或失败后再删除"}
 	case isErrImageJobFilterInvalid(err):
 		return invalidRequest("查询过滤词表外")
 	case isErrImageJobStoreUnavailable(err):

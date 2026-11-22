@@ -5,24 +5,17 @@
  * 保留、结果图与参考图按任务保留 7 天到期删字节（§3.4/§3.8），历史走 GET /images/jobs；
  * v1.3 起工作台四参数必选（固定默认 16:9/1K/标准/PNG）且演练场 UI 不展示 tokens/费用。
  * 2026-11-22 演练场 Key 化：目录改「先选 API Key 后选模型」两级联动（GET /playground/key-models），
- * 六域请求载荷 accountId → apiKeyId，SSE 归一事件只剩 delta/usage/error，工作台恢复预计扣费（imageEstimate）。
+ * 六域请求载荷 accountId → apiKeyId，SSE 归一事件只剩 delta/usage/error；v1.3「不展示费用」裁决继续有效。
  */
 
 /** 六值模型分类（设计 §4.5 v1.1）：chat/image/video/audio 四类 + embedding/rerank 向量域两值。 */
 export type PlaygroundModelKind = 'chat' | 'image' | 'video' | 'audio' | 'embedding' | 'rerank'
 
-/** Key→模型目录中的单个模型行（GET /playground/key-models 按所选 Key 返回，行已按目录协议归一分类）。 */
+/** Key→模型目录中的单个模型行（GET /playground/key-models 按所选 Key 返回，行已按目录协议归一分类）。v1.3「演练场不展示费用」裁决：不含 imageEstimate 计价投影。 */
 export interface PlaygroundModelOption {
   modelId: string
   kind: PlaygroundModelKind
   providerCode: string
-  /** image 模型行的计价投影（预计扣费用）：priceByTier 按分辨率档（1k/2k/4k）给出单张 USD，缺档回落 perImageUsd；两者皆缺 = 目录无价。 */
-  imageEstimate?: PlaygroundImageEstimate
-}
-
-export interface PlaygroundImageEstimate {
-  perImageUsd?: number | null
-  priceByTier?: Partial<Record<'1k' | '2k' | '4k', number>>
 }
 
 /** GET /playground/key-models 响应：所选 Key 可路由的模型行（已按 kind 归一），信封同 playground 其余 JSON 端点。 */
@@ -113,13 +106,13 @@ export interface PlaygroundImageJobsParams {
   before?: number
 }
 
-/** 图像任务卡片（设计 §3.4.4,列表与详情同形）：createdAt/completedAt/expiresAt 为 unix 秒。 */
+/** 图像任务卡片（设计 §3.4.4,列表与详情同形）：createdAt/completedAt/expiresAt 为 unix 秒。2026-11-22 Key 化（v1.4）：归属改创建时 Key（后端记 params.apiKeyId 投影到卡片行；account_id 为历史列写空串）。 */
 export interface PlaygroundImageJob {
   jobId: string
   status: PlaygroundImageJobStatus
   prompt: string
   model: string
-  accountId: string
+  apiKeyId: string
   aspectRatio?: PlaygroundImageAspectRatio
   resolution?: PlaygroundImageResolution
   quality?: PlaygroundImageQuality

@@ -1,10 +1,11 @@
 package playground
 
-// 图像任务执行器测试（设计 §3.4.2，v1.2）：Mock DispatchPort 回放上游响应 +
-// fakeImageJobStore/fakeImageCost 注入，断言派发请求构造（generations JSON
-// b64_json / edits multipart fields 前 image parts 后、purpose 头）、结果落
-// artifacts(kind='image_result')、usage 宽容解析、CostPort 注入与无价收敛、
-// 失败落 error_message（含上游原文摘要）、Submit 满载拒绝与启动恢复重入队。
+// 图像任务执行器测试（设计 §3.4.2，v1.2；真实 Key 化修订 §3.7）：Mock
+// DispatchPort 回放上游响应 + fakeImageJobStore/fakeImageCost 注入，断言派发
+// 请求构造（generations JSON b64_json / edits multipart fields 前 image parts
+// 后、创建时 Key 定位）、结果落 artifacts(kind='image_result')、usage 宽容解
+// 析、CostPort 注入与无价收敛、失败落 error_message（含上游原文摘要）、Submit
+// 满载拒绝与启动恢复重入队。
 // URL 回退下载经自定义 RoundTripper 回放，不触网。
 
 import (
@@ -24,7 +25,7 @@ import (
 // deps 与执行器（测试结束 Stop）。
 func startImageJobRunner(t *testing.T, store *fakeImageJobStore, cost ImageCostPort) (*Deps, *ImageJobRunner) {
 	t.Helper()
-	deps := playgroundFixtureDeps(t, false)
+	deps := playgroundFixtureDeps(t)
 	addImageCandidate(deps)
 	runner := NewImageJobRunner(deps, store, cost)
 	t.Cleanup(runner.Stop)
@@ -32,7 +33,7 @@ func startImageJobRunner(t *testing.T, store *fakeImageJobStore, cost ImageCostP
 }
 
 // TestImageJobRunnerGenerationsSuccess 文生图成功路径：POST /v1/images/generations
-// 请求体（model/prompt/size/response_format）与 purpose 头；结果落
+// 请求体（model/prompt/size/response_format）与创建时 Key 定位；结果落
 // artifacts(kind='image_result')；usage 解析 + cost 注入 + Complete 形状。
 func TestImageJobRunnerGenerationsSuccess(t *testing.T) {
 	store := newFakeImageJobStore()
@@ -43,7 +44,7 @@ func TestImageJobRunnerGenerationsSuccess(t *testing.T) {
 		Body: []byte(`{"data":[{"b64_json":"` + base64Of(pngOnePixel) + `"}],"usage":{"input_tokens":12,"output_tokens":4096,"total_tokens":4108}}`),
 	}}
 	created, err := store.Create(&ImageJobRecord{
-		ViewerID: "sys_user_1", AccountID: "acc_1", ModelID: "gpt-image-2",
+		ViewerID: "sys_user_1", APIKeyID: playgroundKeyModelsFixtureID, ProviderCode: "gpt", ModelID: "gpt-image-2",
 		Prompt: "一只赛博猫", AspectRatio: "1:1", Size: "1024x1024",
 		Quality: "standard", OutputFormat: "png",
 	})
@@ -62,11 +63,8 @@ func TestImageJobRunnerGenerationsSuccess(t *testing.T) {
 	if call.Request.Path != "/v1/images/generations" || call.Request.Method != "POST" {
 		t.Fatalf("派发目标 = %s %s", call.Request.Method, call.Request.Path)
 	}
-	if call.Request.Headers["x-juhe-ai-purpose"] != "playground_images" {
-		t.Fatalf("purpose 头 = %q", call.Request.Headers["x-juhe-ai-purpose"])
-	}
-	if call.Request.AccountID != "acc_1" || call.Request.OwnerID != "sys_user_1" {
-		t.Fatalf("固定派发定位不符: %+v", call.Request)
+	if call.Request.APIKeyID != playgroundKeyModelsFixtureID || call.Request.OwnerID != "sys_user_1" {
+		t.Fatalf("创建时 Key 派发定位不符: %+v", call.Request)
 	}
 	var outbound struct {
 		Model          string `json:"model"`
@@ -133,7 +131,7 @@ func TestImageJobRunnerEditsMultipart(t *testing.T) {
 		t.Fatal(refErr)
 	}
 	created, err := store.Create(&ImageJobRecord{
-		ViewerID: "sys_user_1", AccountID: "acc_1", ModelID: "gpt-image-2",
+		ViewerID: "sys_user_1", APIKeyID: playgroundKeyModelsFixtureID, ProviderCode: "gpt", ModelID: "gpt-image-2",
 		Prompt: "改成水彩风", Size: "1024x1536", ReferenceIDs: []string{refA, refB},
 		Quality: "fine", OutputFormat: "webp",
 	})
@@ -227,7 +225,7 @@ func TestImageJobRunnerURLFallbackDownload(t *testing.T) {
 		}, nil
 	})}
 	created, err := store.Create(&ImageJobRecord{
-		ViewerID: "sys_user_1", AccountID: "acc_1", ModelID: "grok-imagine-image",
+		ViewerID: "sys_user_1", APIKeyID: playgroundKeyModelsFixtureID, ProviderCode: "gpt", ModelID: "grok-imagine-image",
 		Prompt: "一只赛博猫", Size: "1024x1024",
 	})
 	if err != nil {
@@ -258,7 +256,7 @@ func TestImageJobRunnerUpstreamErrorFails(t *testing.T) {
 		Body:   []byte(`{"error":{"message":"rate limited by upstream"}}`),
 	}}
 	created, err := store.Create(&ImageJobRecord{
-		ViewerID: "sys_user_1", AccountID: "acc_1", ModelID: "gpt-image-2", Prompt: "一只赛博猫",
+		ViewerID: "sys_user_1", APIKeyID: playgroundKeyModelsFixtureID, ProviderCode: "gpt", ModelID: "gpt-image-2", Prompt: "一只赛博猫",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -288,7 +286,7 @@ func TestImageJobRunnerCostMissingIsNull(t *testing.T) {
 		Body: []byte(`{"data":[{"b64_json":"` + base64Of(pngOnePixel) + `"}]}`),
 	}}
 	created, err := store.Create(&ImageJobRecord{
-		ViewerID: "sys_user_1", AccountID: "acc_1", ModelID: "gpt-image-2", Prompt: "一只赛博猫",
+		ViewerID: "sys_user_1", APIKeyID: playgroundKeyModelsFixtureID, ProviderCode: "gpt", ModelID: "gpt-image-2", Prompt: "一只赛博猫",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -310,10 +308,36 @@ func TestImageJobRunnerCostMissingIsNull(t *testing.T) {
 	}
 }
 
+// TestImageJobRunnerLegacyRowWithoutKeyFails 存量任务缺 apiKeyId（真实 Key 化
+// 改版前创建）：执行按失败收敛（不派发、错误信息说明原因），不静默改派行为。
+func TestImageJobRunnerLegacyRowWithoutKeyFails(t *testing.T) {
+	store := newFakeImageJobStore()
+	deps, runner := startImageJobRunner(t, store, nil)
+	created, err := store.Create(&ImageJobRecord{
+		ViewerID: "sys_user_1", ModelID: "gpt-image-2", Prompt: "改版前旧任务",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.Submit(created); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.waitTerminal(t, 5*time.Second); got != created.ID {
+		t.Fatalf("终态任务 = %q", got)
+	}
+	record, _ := store.snapshot(created.ID)
+	if record.Status != imageJobStatusFailed || !strings.Contains(record.ErrorMessage, "任务缺少所选 API Key") {
+		t.Fatalf("存量任务应失败收敛并说明原因: %+v", record)
+	}
+	if len(deps.Dispatch.(*mockDispatch).calls) != 0 {
+		t.Fatalf("缺 Key 任务不得派发（%d 次）", len(deps.Dispatch.(*mockDispatch).calls))
+	}
+}
+
 // TestImageJobRunnerSubmitBusy 队列满载显式拒绝（503 playground_busy 语义，
 // 不无限积压）。
 func TestImageJobRunnerSubmitBusy(t *testing.T) {
-	deps := playgroundFixtureDeps(t, false)
+	deps := playgroundFixtureDeps(t)
 	store := newFakeImageJobStore()
 	runner := &ImageJobRunner{
 		deps:  deps,
@@ -343,12 +367,12 @@ func TestImageJobRunnerRecoverAtBoot(t *testing.T) {
 	store.mu.Lock()
 	store.records["run_dead"] = &ImageJobRecord{
 		ViewerID: "sys_user_1", ID: "run_dead", Status: imageJobStatusRunning,
-		AccountID: "acc_1", ModelID: "gpt-image-2", Prompt: "中断图",
+		APIKeyID: playgroundKeyModelsFixtureID, ProviderCode: "gpt", ModelID: "gpt-image-2", Prompt: "中断图",
 	}
 	store.order = append(store.order, "run_dead")
 	store.mu.Unlock()
 	created, err := store.Create(&ImageJobRecord{
-		ViewerID: "sys_user_1", AccountID: "acc_1", ModelID: "gpt-image-2", Prompt: "续跑图", Size: "1024x1024",
+		ViewerID: "sys_user_1", APIKeyID: playgroundKeyModelsFixtureID, ProviderCode: "gpt", ModelID: "gpt-image-2", Prompt: "续跑图", Size: "1024x1024",
 	})
 	if err != nil {
 		t.Fatal(err)

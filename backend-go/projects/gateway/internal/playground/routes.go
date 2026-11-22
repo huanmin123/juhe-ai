@@ -12,6 +12,8 @@ package playground
 //	POST /images/jobs             创建生成任务（§3.4.2，v1.2 异步）
 //	GET  /images/jobs             生成历史列表（§3.4.3）
 //	GET  /images/jobs/{id}        任务详情轮询（§3.4.4）
+//	DELETE /images/jobs/{id}      手动删除任务（§3.4.6，v1.5：仅终态可删，
+//	                              记录行与产物字节同事务一并删）
 //	POST /videos                  异步视频创建（任务引用落暂存）
 //	GET  /videos/{jobId}          视频任务轮询
 //	GET  /videos/{jobId}/content  视频产物字节流（jobId 代理，不落盘）
@@ -77,6 +79,7 @@ func (d *Deps) Register(k Registerer, prefix string) {
 	mount("POST", "/images/jobs", rt.imageJobsCreateHandler)
 	mount("GET", "/images/jobs", rt.imageJobsListHandler)
 	mount("GET", "/images/jobs/{id}", rt.imageJobGetHandler)
+	mount("DELETE", "/images/jobs/{id}", rt.imageJobDeleteHandler)
 	mount("POST", "/videos", rt.videosCreateHandler)
 	mount("GET", "/videos/{jobId}", rt.videosPollHandler)
 	mount("GET", "/videos/{jobId}/content", rt.videosContentHandler)
@@ -122,8 +125,8 @@ func (rt *playgroundRoutes) keyModelsHandler(w http.ResponseWriter, r *http.Requ
 	writeOKPayload(w, keyModelsResponse{Models: rows})
 }
 
-// keyModelsResponse 是 GET /key-models 响应（设计 §3.2：行形状
-// {modelId, kind, providerCode, imageEstimate?}）。
+// keyModelsResponse 是 GET /key-models 响应（设计 §3.2 真实 Key 化修订：
+// 行形状 {modelId, kind, providerCode}，v1.3 UI 口径无计价字段）。
 type keyModelsResponse struct {
 	Models []KeyModelRow `json:"models"`
 }

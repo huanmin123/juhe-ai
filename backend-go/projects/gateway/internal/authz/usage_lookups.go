@@ -82,6 +82,56 @@ func (s *Store) loadPrincipalMap(ctx context.Context, accountIDs []string) (map[
 	return result, rows.Err()
 }
 
+// loadGranteeSourceTeamMap 反查直连窗口行的来源团队：用户明细页无筛选读的是
+// 直连日表行（team_filter_id=''），该键不含团队维度，团队名按授权行当前
+// effective_source 投影（个人来源授权无团队，保持为空）。resource_authorizations
+// 以 (resource_type, resource_id, grantee_system_account_id) 全列唯一，每个
+// 三元组至多命中一行。
+func (s *Store) loadGranteeSourceTeamMap(ctx context.Context, rows []usageWindowRow) (map[string]string, error) {
+	result := map[string]string{}
+	type granteeResource struct {
+		grantee, resourceType, resourceID string
+	}
+	seen := map[granteeResource]bool{}
+	keys := make([]granteeResource, 0, len(rows))
+	for _, row := range rows {
+		if row.TeamFilterID != "" || row.GranteeFilterID == "" || row.ResourceFilterID == "" {
+			continue
+		}
+		key := granteeResource{row.GranteeFilterID, row.ResourceFilterType, row.ResourceFilterID}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		keys = append(keys, key)
+	}
+	if len(keys) == 0 {
+		return result, nil
+	}
+	tuples := strings.TrimRight(strings.Repeat("(?, ?, ?), ", len(keys)), ", ")
+	args := make([]any, 0, len(keys)*3)
+	for _, key := range keys {
+		args = append(args, key.grantee, key.resourceType, key.resourceID)
+	}
+	query := `SELECT grantee_system_account_id, resource_type, resource_id, COALESCE(effective_source_team_id, '')
+		FROM ` + s.table("resource_authorizations") + `
+		WHERE effective_source_type = 'team' AND effective_source_team_id <> ''
+			AND (grantee_system_account_id, resource_type, resource_id) IN (` + tuples + `)`
+	dbRows, err := s.db.QueryContext(ctx, s.bind(query), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer dbRows.Close()
+	for dbRows.Next() {
+		var grantee, resourceType, resourceID, teamID string
+		if err := dbRows.Scan(&grantee, &resourceType, &resourceID, &teamID); err != nil {
+			return nil, err
+		}
+		result[grantee+":"+resourceType+":"+resourceID] = teamID
+	}
+	return result, dbRows.Err()
+}
+
 // loadOwnerNameMap mirrors loadAuthorizationResourceOwners:
 // loadSystemAccountNameMapByIds over every resource owner id.
 func (s *Store) loadOwnerNameMap(ctx context.Context, resources map[string]resourceInfo) (map[string]string, error) {

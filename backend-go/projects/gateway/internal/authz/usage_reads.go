@@ -491,10 +491,6 @@ func (s *Store) userUsageRows(ctx context.Context, filters UsageFilters, access 
 	if err != nil {
 		return nil, err
 	}
-	teams, err := s.loadTeamNameMap(ctx, windowRowTeamIDs(windowRows))
-	if err != nil {
-		return nil, err
-	}
 	resources, err := s.loadResourceInfoMap(ctx, windowRows)
 	if err != nil {
 		return nil, err
@@ -503,16 +499,35 @@ func (s *Store) userUsageRows(ctx context.Context, filters UsageFilters, access 
 	if err != nil {
 		return nil, err
 	}
+	// 直连行（team_filter_id=''）的所属团队按授权当前 effective_source 反查：
+	// 直连日表键不含团队维度，团队来源授权的消耗在无筛选视图也应有团队名；
+	// 反查出的团队 id 并入名称表收集（windowRowTeamIDs 只收集窗口行自带键）。
+	sourceTeams, err := s.loadGranteeSourceTeamMap(ctx, windowRows)
+	if err != nil {
+		return nil, err
+	}
+	teamIDs := windowRowTeamIDs(windowRows)
+	for _, teamID := range sourceTeams {
+		teamIDs = append(teamIDs, teamID)
+	}
+	teams, err := s.loadTeamNameMap(ctx, teamIDs)
+	if err != nil {
+		return nil, err
+	}
 	items := make([]UserUsageRow, 0, len(windowRows))
 	for _, row := range windowRows {
 		account := accounts[row.GranteeFilterID]
 		resource := resources[resourceKey(row.ResourceFilterType, row.ResourceFilterID)]
+		teamKey := row.TeamFilterID
+		if teamKey == "" {
+			teamKey = sourceTeams[row.GranteeFilterID+":"+row.ResourceFilterType+":"+row.ResourceFilterID]
+		}
 		item := UserUsageRow{
 			ID:           strings.Join(nonEmpty([]string{row.GranteeFilterID, row.ResourceFilterType, row.ResourceFilterID}), ":"),
 			UserName:     account.displayName,
 			ResourceType: row.ResourceFilterType,
 			ResourceName: resource.name,
-			TeamNames:    userUsageTeamNames(row.TeamFilterID, teams),
+			TeamNames:    userUsageTeamNames(teamKey, teams),
 			Usage:        rowSummary(row),
 		}
 		if account.username != "" {

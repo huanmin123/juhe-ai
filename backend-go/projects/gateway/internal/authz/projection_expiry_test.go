@@ -16,6 +16,7 @@ func TestReacceptWithoutExpiryClearsStaleRuntimeExpiry(t *testing.T) {
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "grantee", "active")
 	f.seedProvisionSource(t, "res-expiry-reset", "owner", "expiry reset", "gpt")
+	seedGranteeDefaultGroup(t, f, "grantee", "gpt")
 	future := f.now.UTC().Add(30 * 24 * time.Hour).Format(time.RFC3339Nano)
 	past := f.now.UTC().Add(-24 * time.Hour).Format(time.RFC3339Nano)
 
@@ -27,7 +28,7 @@ func TestReacceptWithoutExpiryClearsStaleRuntimeExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create first offer: %v", err)
 	}
-	if _, err := f.acceptSourceForTest(t, "grantee", offer.SourceID); err != nil {
+	if _, err := f.acceptSourceForTest(t, "grantee", offer.SourceID, "grp-default-grantee"); err != nil {
 		t.Fatalf("accept first offer: %v", err)
 	}
 	runtimeID := accountRuntimeIDFor(t, f, "res-expiry-reset", "grantee")
@@ -56,7 +57,7 @@ func TestReacceptWithoutExpiryClearsStaleRuntimeExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create replacement offer: %v", err)
 	}
-	if _, err := f.acceptSourceForTest(t, "grantee", newOffer.SourceID); err != nil {
+	if _, err := f.acceptSourceForTest(t, "grantee", newOffer.SourceID, "grp-default-grantee"); err != nil {
 		t.Fatalf("accept replacement offer: %v", err)
 	}
 	if err := f.db.QueryRow(fixtureBind(`SELECT expires_at FROM resource_authorizations WHERE id = ?`), runtimeID).

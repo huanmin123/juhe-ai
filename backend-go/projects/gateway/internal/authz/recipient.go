@@ -10,11 +10,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 )
 
 // AcceptInput carries the claim request. TargetGroupID selects the grantee's
-// own group that receives an account authorization; empty falls back to the
-// grantee's default group for the account's vendor.
+// own enabled standard group that receives an account authorization; it is
+// required — binding completes the claim and there is no default-group
+// fallback (2026-11-22 用户裁决).
 type AcceptInput struct {
 	TargetGroupID string
 }
@@ -169,15 +171,18 @@ func (s *Store) ClaimSource(ctx context.Context, actorID, sourceID string, input
 	instanceID := ""
 	bound := false
 	if grant.ResourceType == "account" {
+		// Binding completes the claim (2026-11-22 用户裁决): the grantee must
+		// choose their own target group; there is no default-group fallback.
+		target := strings.TrimSpace(input.TargetGroupID)
+		if target == "" {
+			return nil, failCode("target_group_required", "请选择领取后绑入的分组")
+		}
 		provision := authorizedInstanceProvision{
 			RuntimeAuthorizationID: runtime.ID,
 			SourceAccountID:        grant.ResourceID,
 			OwnerID:                grant.OwnerID,
 			GranteeID:              runtime.GranteeID,
-		}
-		if input.TargetGroupID != "" {
-			target := input.TargetGroupID
-			provision.TargetGroupID = &target
+			TargetGroupID:          &target,
 		}
 		instance, err := s.ensureAccountAuthorizationInstance(ctx, tx, provision, parseTimeOrNow(now), now)
 		if err != nil {
@@ -190,8 +195,9 @@ func (s *Store) ClaimSource(ctx context.Context, actorID, sourceID string, input
 			return nil, err
 		}
 		// One step claim: create the instance and bind it into the grantee's
-		// own group; an empty target falls back to the grantee's default group.
-		if err := s.bindInstanceToGranteeGroup(ctx, tx, instance, provision, now); err != nil {
+		// own chosen group; the empty target is rejected before provisioning.
+		// 领取恒发生状态变化，无条件走提交后的失效扇出。
+		if _, err := s.bindInstanceToGranteeGroup(ctx, tx, instance, provision, now); err != nil {
 			return nil, err
 		}
 		instanceID = instance.id
@@ -229,6 +235,82 @@ func (s *Store) ClaimSource(ctx context.Context, actorID, sourceID string, input
 // AcceptSource keeps the historical entry point name for existing callers.
 func (s *Store) AcceptSource(ctx context.Context, actorID, sourceID string, input AcceptInput, now string) (*AcceptResult, error) {
 	return s.ClaimSource(ctx, actorID, sourceID, input, now)
+}
+
+// ChangeSourceGroup rebinds a claimed account authorization source into
+// another of the grantee's own enabled standard groups (§5.2 换绑段，2026-11-22
+// 用户裁决，仅账户授权支持). Same group is a no-op and a different group moves
+// the binding with the claim move semantics, preserving the instance's local
+// dispatch flags. Source-side field sync is intentionally skipped: rebinding
+// must not reactivate an instance the grantee disabled. Group authorizations
+// have no binding concept, so they are rejected here.
+func (s *Store) ChangeSourceGroup(ctx context.Context, actorID, sourceID, targetGroupID, now string) (*AcceptResult, error) {
+	target := strings.TrimSpace(targetGroupID)
+	if target == "" {
+		return nil, failCode("target_group_required", "请选择换绑的目标分组")
+	}
+	ctx = ensureCtx(ctx)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	source, runtime, grant, err := s.loadRuntimeForSourceAccept(ctx, tx, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	if runtime.GranteeID != actorID {
+		return nil, failf("授权不存在")
+	}
+	if grant.ResourceType != "account" {
+		return nil, failCode("state_conflict", "分组授权没有绑定分组，无需换绑")
+	}
+	if grant.Status == StatusPaused {
+		return nil, failCode("state_conflict", "授权已暂停，请等待授权方恢复后再换绑分组")
+	}
+	if source.Status != StatusActive {
+		return nil, failCode("state_conflict", "该来源当前不可换绑分组")
+	}
+	owned, err := s.ensureResourceStillOwned(ctx, tx, grant.ResourceType, grant.ResourceID, grant.OwnerID)
+	if err != nil {
+		return nil, err
+	}
+	if !owned {
+		if err := s.revokeSourceForResourceChange(ctx, tx, source, runtime, grant, actorID, now); err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		s.invalidateGovernance(ctx, invalidationReasonRevoked)
+		return nil, failCode("resource_changed", "授权资源已变化，本次授权已撤销")
+	}
+	provision := authorizedInstanceProvision{
+		RuntimeAuthorizationID: runtime.ID,
+		SourceAccountID:        grant.ResourceID,
+		OwnerID:                grant.OwnerID,
+		GranteeID:              runtime.GranteeID,
+		TargetGroupID:          &target,
+	}
+	instance, err := s.ensureAccountAuthorizationInstance(ctx, tx, provision, parseTimeOrNow(now), now)
+	if err != nil {
+		return nil, err
+	}
+	if instance == nil || instance.id == "" {
+		return nil, failCode("source_unavailable", "来源账户不可用，无法换绑分组")
+	}
+	changed, err := s.bindInstanceToGranteeGroup(ctx, tx, instance, provision, now)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	// 同组 no-op 不改变任何绑定行：保持幂等无操作静默（不触发失效扇出）。
+	if changed {
+		s.invalidateGovernance(ctx, invalidationReasonUpdated)
+	}
+	return &AcceptResult{SourceID: source.ID, Status: StatusActive, InstanceID: instance.id, Bound: true}, nil
 }
 
 func (s *Store) revokeSourceForResourceChange(ctx context.Context, tx *sql.Tx, source *sourceRecord,

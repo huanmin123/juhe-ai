@@ -883,6 +883,42 @@ func (w *businessWriter) seedGroups(tx *sql.Tx, guard businessGuard, users []moc
 			groupKind: "super", enabled: true,
 			members: []string{CleanupIDPrefix + "group_main", CleanupIDPrefix + "group_backup"}},
 	}
+	// 规模化分组样本（2026-11-22 分页验证）：26 个普通分组供规模化团队各独占
+	// 授权一个资源。scale_23/scale_24 归属研发/运维样本用户（团队照常独占授权）；
+	// scale_25/scale_26 归属财务/观察用户且其团队不含管理员——授权中心 inbound
+	// （grantee=admin）补量样本复用这两个分组，避开团队授权成员行占用的
+	// (resource, grantee) 唯一键（idx_resource_authorizations_user_unique 全列
+	// 唯一，终态行同样占键）。
+	for i := 1; i <= 36; i++ {
+		owner := guard.adminID
+		desc := "Mockdata 分页验证规模化分组，供规模化团队独占授权"
+		switch i {
+		case 23:
+			owner = CleanupIDPrefix + "user_dev"
+			desc = "Mockdata 分页验证规模化分组（研发用户归属），团队独占授权"
+		case 24:
+			owner = CleanupIDPrefix + "user_ops"
+			desc = "Mockdata 分页验证规模化分组（运维用户归属），团队独占授权"
+		default:
+			if i >= 25 {
+				// scale_25..36 归属样本用户且其团队不含管理员：分组资源只被团队
+				// 授权的 dev/tester 成员行占用，inbound（grantee=admin）补量样本
+				// 复用时不会撞 (resource, grantee) 全列唯一键。
+				owners := []string{
+					CleanupIDPrefix + "user_finance", CleanupIDPrefix + "user_viewer",
+					CleanupIDPrefix + "user_dev", CleanupIDPrefix + "user_ops",
+					CleanupIDPrefix + "user_tester",
+				}
+				owner = owners[(i-25)%len(owners)]
+				desc = "Mockdata 分页验证规模化分组（样本用户归属，团队无管理员在册），供 inbound 补量"
+			}
+		}
+		seeds = append(seeds, mockGroupSeed{
+			id:    fmt.Sprintf("%sgroup_scale_%02d", CleanupIDPrefix, i),
+			name:  fmt.Sprintf("%s规模化分组%02d", CleanupNamePrefix, i),
+			owner: owner, enabled: true, desc: desc,
+		})
+	}
 	// 每个配套用户 1 个默认分组（is_default 唯一索引要求 (owner) 至多一行）。
 	for _, user := range users {
 		seeds = append(seeds, mockGroupSeed{
@@ -2169,7 +2205,7 @@ func (w *businessWriter) seedTeams(tx *sql.Tx, guard businessGuard, users []mock
 		{id: CleanupIDPrefix + "team_dev", name: CleanupNamePrefix + "研发协作团队",
 			desc: "Mockdata 研发协作团队，承接团队级分组授权", status: "active",
 			// guard.adminID（当前环境的超级管理员）入队：授权中心 self 视角
-			// 「我的授权团队」按成员身份过滤，管理员不在任何团队时该页永远为空。
+			// 「我的团队」按成员身份过滤，管理员不在任何团队时该页永远为空。
 			members: []string{CleanupIDPrefix + "user_admin", dev, tester, ops, guard.adminID}},
 		{id: CleanupIDPrefix + "team_ops", name: CleanupNamePrefix + "运维保障团队",
 			desc: "Mockdata 运维保障团队，承接备用分组授权", status: "active",
@@ -2177,6 +2213,22 @@ func (w *businessWriter) seedTeams(tx *sql.Tx, guard businessGuard, users []mock
 		{id: CleanupIDPrefix + "team_disabled", name: CleanupNamePrefix + "停用历史团队",
 			desc: "Mockdata 停用团队，用于状态展示", status: "disabled",
 			members: []string{finance}},
+	}
+	// 规模化团队样本（2026-11-22 分页验证）：36 个 active 团队，除 scale_25..36
+	// 外管理员+研发+测试三人在册，让「我的团队」（admin 视角）与团队级消耗
+	// 明细分页都有单页以上的数据量。scale_25..36 团队不含管理员：其分组资源留给
+	// inbound（grantee=admin）个人授权，避免撞 (resource, grantee) 全列唯一键。
+	for i := 1; i <= 36; i++ {
+		members := []string{guard.adminID, dev, tester}
+		if i >= 25 {
+			members = []string{dev, tester}
+		}
+		seeds = append(seeds, mockTeamSeed{
+			id:   fmt.Sprintf("%steam_scale_%02d", CleanupIDPrefix, i),
+			name: fmt.Sprintf("%s规模化团队%02d", CleanupNamePrefix, i),
+			desc: "Mockdata 分页验证规模化团队", status: "active",
+			members: members,
+		})
 	}
 	now := w.stamp()
 	ids := map[string]string{}
@@ -2258,6 +2310,16 @@ func (w *businessWriter) seedAuthorizations(tx *sql.Tx, guard businessGuard, use
 	teamMembers := map[string][]string{
 		devTeam: {dev, tester, ops},
 		opsTeam: {ops, viewer},
+	}
+	// 规模化团队（scale_01..scale_36）：与规模化分组一一独占配对；scale_01..24
+	// 管理员+研发+测试三人在册，scale_25..36 不含管理员（分组资源留给 inbound
+	// 补量样本）。
+	for i := 1; i <= 36; i++ {
+		members := []string{admin, dev, tester}
+		if i >= 25 {
+			members = []string{dev, tester}
+		}
+		teamMembers[teams[fmt.Sprintf("scale_%02d", i)]] = members
 	}
 	seeds := []mockAuthSeed{
 		{key: "dev_group_admin", resourceType: "group", resourceID: groups["dev_granted"], owner: dev,
@@ -2382,6 +2444,69 @@ func (w *businessWriter) seedAuthorizations(tx *sql.Tx, guard businessGuard, use
 		{key: "super_group_tester_pending", resourceType: "group", resourceID: groups["super"],
 			owner: admin, grantee: tester, status: mockAuthorizationPending, expiresIn: 7 * 24 * time.Hour,
 			remark: CleanupNamePrefix + "测试用户待领取超级分组授权（7 天内有效）"},
+	}
+	// 规模化团队授权样本（2026-11-22 分页验证）：36 个规模化团队各独占授权一个
+	// 规模化分组（owner=分组真实归属人，全员领取 active）。成员扇出的 active 运
+	// 行时行（effective_source_type='team'）由 usage 域动态读取并生成成员调用场
+	// 景，聚合出团队/用户消耗明细的分页数据量。scale_23..36 的分组归属样本用户，
+	// 授权 owner 随之对齐。
+	for i := 1; i <= 36; i++ {
+		owner := admin
+		switch i {
+		case 23:
+			owner = dev
+		case 24:
+			owner = ops
+		default:
+			if i >= 25 {
+				owners := []string{finance, viewer, dev, ops, tester}
+				owner = owners[(i-25)%len(owners)]
+			}
+		}
+		seeds = append(seeds, mockAuthSeed{
+			key:          fmt.Sprintf("scale_group_team_%02d", i),
+			resourceType: "group", resourceID: groups[fmt.Sprintf("scale_%02d", i)],
+			owner: owner, team: teams[fmt.Sprintf("scale_%02d", i)],
+			status: mockAuthorizationActive,
+			remark: fmt.Sprintf("%s规模化团队%02d独占授权规模化分组", CleanupNamePrefix, i),
+		})
+	}
+	// 授权中心 inbound（grantee=admin）补量样本（2026-11-22 分页验证）：非 admin
+	// 归属的分组/账户授权组合。owner 必须与资源真实归属人一致；与既有同资源
+	// 样本错开状态（终态不受 open 唯一索引约束，open 组合保证 (resource, grantee)
+	// 不重复）。
+	type scaleInboundSeed struct {
+		key          string
+		resourceType string
+		resourceID   string
+		owner        string
+		status       string
+		expiresIn    time.Duration
+	}
+	// inbound 样本资源键必须全局未占用（idx_resource_authorizations_user_unique
+	// 全列唯一、终态行同样占键）：default_dev/default_ops/default_finance 从未授
+	// 给 admin；scale_25..36 的键只被不含管理员的团队授权成员行（dev/tester）占
+	// 用。既有样本已占用的键（dev/ops/tester_granted、default_tester/default_viewer、
+	// acc_dev_shared/acc_ops_shared/acc_tester_shared/acc_ops_invite）不得复用。
+	scaleInbounds := []scaleInboundSeed{
+		{key: "scale_in_default_dev", resourceType: "group", resourceID: groups["default_dev"], owner: dev, status: mockAuthorizationActive},
+		{key: "scale_in_default_ops", resourceType: "group", resourceID: groups["default_ops"], owner: ops, status: mockAuthorizationActive},
+		{key: "scale_in_default_finance", resourceType: "group", resourceID: groups["default_finance"], owner: finance, status: mockAuthorizationPending},
+	}
+	for i := 25; i <= 36; i++ {
+		owners := []string{finance, viewer, dev, ops, tester}
+		scaleInbounds = append(scaleInbounds, scaleInboundSeed{
+			key: fmt.Sprintf("scale_in_scale%02d", i), resourceType: "group",
+			resourceID: groups[fmt.Sprintf("scale_%02d", i)],
+			owner:      owners[(i-25)%len(owners)], status: mockAuthorizationActive,
+		})
+	}
+	for _, in := range scaleInbounds {
+		seeds = append(seeds, mockAuthSeed{
+			key: in.key, resourceType: in.resourceType, resourceID: in.resourceID,
+			owner: in.owner, grantee: admin, status: in.status, expiresIn: in.expiresIn,
+			remark: CleanupNamePrefix + "inbound 分页补量样本",
+		})
 	}
 	now := w.stamp()
 	var instances []mockInstanceSeed

@@ -18,12 +18,13 @@ import (
 // 码，设计 §1.1「功能不设开关」——未接线返回错误而非静默空行为）。
 // codeArtifactNotFound / codeArtifactStoreFailed 是产物暂存面（§3.8）的专码：
 // content 定位失败 404、暂存读写失败 500。codeImageJobNotFound /
-// codeImageJobBusy / codeImageJobReferenceNotFound / codeImageJobStoreFailed
-// 是图像任务面（§3.4 v1.2）的专码：任务不存在/越权 404、进程内队列满 503、
-// 参考图归属失败 400、任务存储读写失败 500。
+// codeImageJobBusy / codeImageJobReferenceNotFound / codeImageJobNotDeletable /
+// codeImageJobStoreFailed 是图像任务面（§3.4 v1.2，v1.5 追加删除语义 §3.4.6）
+// 的专码：任务不存在/越权 404、进程内队列满 503、参考图归属失败 400、非终态
+// 不可删 409、任务存储读写失败 500。
 const (
 	codeInvalidRequest            = "playground_invalid_request"
-	codeAccountNotFound           = "playground_account_not_found"
+	codeKeyNotFound               = "playground_key_not_found"
 	codeModelNotAvailable         = "playground_model_not_available"
 	codeDispatchFailed            = "playground_dispatch_failed"
 	codeEndpointDegraded          = "playground_endpoint_unavailable"
@@ -32,6 +33,7 @@ const (
 	codeImageJobNotFound          = "playground_job_not_found"
 	codeImageJobBusy              = "playground_busy"
 	codeImageJobReferenceNotFound = "playground_reference_not_found"
+	codeImageJobNotDeletable      = "playground_job_not_deletable"
 	codeImageJobStoreFailed       = "playground_job_store_failed"
 )
 
@@ -71,15 +73,12 @@ func modelNotAvailable(message string) *HTTPError {
 	return &HTTPError{Status: http.StatusBadRequest, Code: codeModelNotAvailable, Message: message}
 }
 
-func accountNotFound() *HTTPError {
-	return &HTTPError{Status: http.StatusNotFound, Code: codeAccountNotFound, Message: "账户不存在或不在当前用户可见范围内"}
-}
-
 // KeyNotFound 是所选 API Key 不存在或非请求者本人的统一映射（真实 Key 化修订：
-// fail-closed 归属校验的 404 出口，不泄露 Key 存在性；admin 选他人 Key 同样
-// 拒绝）。cmd 层派发/候选适配器经本构造返回端口级错误。
+// fail-closed 归属校验的 404 出口，错误码 playground_key_not_found，不泄露 Key
+// 存在性；admin 选他人 Key 同样拒绝）。cmd 层派发/候选适配器经本构造返回端口
+// 级错误。
 func KeyNotFound() *HTTPError {
-	return &HTTPError{Status: http.StatusNotFound, Code: codeAccountNotFound, Message: "API Key 不存在或不在当前用户范围内"}
+	return &HTTPError{Status: http.StatusNotFound, Code: codeKeyNotFound, Message: "API Key 不存在或不在当前用户范围内"}
 }
 
 // dispatchError 把派发端口错误映射为 HTTP 错误面：端口级 *HTTPError（Key 归属
@@ -99,6 +98,13 @@ func dispatchError(scene string, err error) *HTTPError {
 
 func dispatchFailed(message string) *HTTPError {
 	return &HTTPError{Status: http.StatusBadGateway, Code: codeDispatchFailed, Message: message}
+}
+
+// DispatchFailed 是通用派发失败（502，文案收敛为通用措辞）：底层 db/解密等
+// 实现细节不外透用户面，细节由 cmd 适配层走进程日志（m2 收敛口径）。供 cmd
+// 派发适配器在 Key 解密失败等实现侧错误上返回。
+func DispatchFailed() *HTTPError {
+	return dispatchFailed("演练场派发失败，请稍后重试")
 }
 
 // writeHTTPError 渲染扁平 {message, code} JSON（chat messageCodePayload 同款，

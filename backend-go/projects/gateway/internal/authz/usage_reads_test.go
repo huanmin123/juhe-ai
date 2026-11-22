@@ -620,7 +620,7 @@ func TestListItemProjectionContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.acceptSourceForTest(t, "grantee", pendingTeamSourceFor(t, f, teamOffer.GrantID, "team_proj", "grantee")); err != nil {
+	if _, err := f.acceptSourceForTest(t, "grantee", pendingTeamSourceFor(t, f, teamOffer.GrantID, "team_proj", "grantee"), ""); err != nil {
 		t.Fatal(err)
 	}
 	// A second owner's grant the scoped admin must not manage.

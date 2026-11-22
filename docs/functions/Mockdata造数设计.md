@@ -101,7 +101,7 @@ CoverageReport JSON（`--verify-mockdata-coverage` stdout）：`driver` / `dsn` 
 
 | 域 | schema / 表 | 造数内容 | 状态 |
 | --- | --- | --- | --- |
-| `business` | `juhe_business` | 配套用户 7 个（1 个普通管理员 + 6 个角色用户）、13 个普通分组（含 1 个超级分组；分组类型统一 `personal`，样本含单键可选策略）、25+ AI 账户样本（含状态与类型覆盖、连接面三表、支持模型与入口映射）、路由策略与 API Key 18 条（含本地网关明文 Key，Key 样本含单 IP 并发限制字段）、38 条授权样本（含团队来源与授权实例账户）、团队、代理与代理池样本（池/成员/租约）、公告、模型目录样本、响应检查策略、外部来源系统与 Token、账户测试任务三态、熔断/锁/Key 运行态、媒体任务（video 六状态 + 音频三样本）、题库三态 | 已交付 |
+| `business` | `juhe_business` | 配套用户 7 个（1 个普通管理员 + 6 个角色用户）、47 个分组（13 个形态样本含 1 个超级分组 + 24 个规模化分组 admin 归属 + 12 个规模化分组样本用户归属；分组类型统一 `personal`，样本含单键可选策略）、25+ AI 账户样本（含状态与类型覆盖、连接面三表、支持模型与入口映射）、路由策略与 API Key 18 条（含本地网关明文 Key，Key 样本含单 IP 并发限制）、96 条授权样本（38 条形态样本含团队来源与授权实例账户 + 36 条规模化团队独占分组授权 + 22 条 inbound 分页补量）、39 个团队（3 个形态样本 + 36 个规模化团队）、代理与代理池样本（池/成员/租约）、公告、模型目录样本、响应检查策略、外部来源系统与 Token、账户测试任务三态、熔断/锁/Key 运行态、媒体任务（video 六状态 + 音频三样本）、题库三态 | 已交付 |
 | `usage` | `juhe_usage`：`usage_records` 日分区 | 按天插入使用记录并 ensure 日分区；含三条上游响应模型定向样本与音频/视频计量样本；退役的 shard 目录四表不再写入 | 已交付 |
 | `stats` | `juhe_stats`（`background_task_runs`、`account_usage_snapshots`、dirty 标记） | 原始写入面（`background_task_runs` 由本域独占）；派生聚合表不伪造 | 已交付 |
 | `observability` | `juhe_dataset` 维护面（`public_api_logs`、记录清理目标）+ 属主表（`audit_logs` / `operation_logs`） | 公开接口日志、清理目标；属主表缺失时域内跳过；`runtime_logs` 族已随 F1 下架，不再造数 | 已交付 |
@@ -144,6 +144,9 @@ CoverageReport JSON（`--verify-mockdata-coverage` stdout）：`driver` / `dsn` 
 ## 6. 验证点
 
 `--mockdata` 退出码 0 即造数成功；`--verify-mockdata-coverage` exit 0 表示覆盖 Ready、exit 3 表示未 Ready（剩余空表与 NotCovered 清单见 stdout JSON）。常见非故障状态是按处置方式分类：属主存储缺失（`OwnerStoresPending` 非空）——审计/操作、账户健康由 gateway/jobs 首次启动建库，`juhe_j3b` 由受控 bootstrap 流程预置 schema，之后重跑即可转为硬门槛；白名单空表（瞬时队列/运行态游标）按表名与理由逐项登记。执行完成后建议检查：
+
+- 规模化分页样本（2026-11-22 用户裁决：四个授权页面都必须超过 20 条能翻页）：36 个规模化团队（`mockdata_team_scale_01..36`）与 36 个规模化分组（`mockdata_group_scale_01..36`）一一独占配对授权。scale_01..24 团队成员含超管（admin/dev/tester 三人），支撑「我的团队」（admin 视角 25 行）；scale_25..36 团队不含管理员——它们的分组资源留给 inbound（grantee=admin）补量样本，因为 `idx_resource_authorizations_user_unique` 是全列唯一索引（终态行同样占键），团队授权成员行占用 (resource, grantee) 键后同资源不能再个人授权给 admin。团队授权全员领取 active，成员扇出的运行时行由 usage 域动态读取生成调用场景，聚合出「团队消耗明细」（36 行）与「用户消耗明细」（成员×资源 72+ 行）的分页数据量；inbound 补量 22 条让授权中心 inbound/outbound/管理态都超过 20 行。规模化资源键约束：新增同形态样本时必须保证 (resource_type, resource_id, grantee_system_account_id) 全库唯一（含终态），复用既有键前先查 `resource_authorizations` 占用。
+- **直造授权日表**（stats 域 `seedAuthzUsageDaily`，2026-11-22）：授权消耗明细页（团队/用户）在线等 jobs 聚合出不来数——jobs 单次 Job 超时 20s 装不下全量重放，游标不推进、明细页持续为空。因此 stats 域在 `seedAuthzUsageDaily` 中直接向 `authorization_team_usage_summary_daily` / `authorization_user_usage_summary_daily` 写入确定性伪随机样本（fnv-1a 演进 LCG）：组合来自 business 域落库的 active 团队授权（团队维 (team, resource)、用户维每成员一行），视角集合 = global + 每个成员的 self 视角（成员视角只保留其所在团队的组合，与 `usageScopeKey` 的 admin→global、用户模式→ViewerID 口径对齐），跨度 Days 天、键形与真实聚合完全一致（`stat_date` "2006-01-02"、`last_used_at` RFC3339 且 clamp 在当日之内不越过 now）。将来真实聚合同键 UPSERT 覆盖，不产生第二种事实。
 
 - business 相关页面应有可见数据：AI 账户、分组、API Key、路由策略、授权、团队、代理、公告、供应商与模型目录、响应检查、外部来源、题库、媒体任务。
 - 使用记录、审计、操作日志等页面在对应域接线后，可按 `mockdata` 或 `造数` 关键字检索。

@@ -115,25 +115,3 @@ func TestConvertUsageRecordInputPreservesBillingFacts(t *testing.T) {
 		t.Fatalf("pricing snapshot must be typed *CostBreakdown after bridge, got %T", converted.PricingSnapshot)
 	}
 }
-
-func TestConvertUsageRecordInputDropsSuppressUsage(t *testing.T) {
-	input := gatewayusage.UsageRecordInput{
-		ID:            "usage_suppressed",
-		TraceID:       "trace_suppressed",
-		TrafficSource: "gateway",
-		SuppressUsage: true,
-		Success:       true,
-	}
-	converted, err := convertUsageRecordInput(input)
-	if err != nil {
-		t.Fatalf("convert: %v", err)
-	}
-	// SuppressUsage 带 json:"-"，只用于进程内闸口（recorder/dispatch 在更早处
-	// 丢弃）；类型别名后字段仍在内存记录上，但不会进入 writer 的落库列。
-	if converted.ID != input.ID || converted.TraceID != input.TraceID {
-		t.Fatalf("identity lost: %+v", converted)
-	}
-	if !converted.SuppressUsage {
-		t.Fatal("SuppressUsage must survive the same-type bridge")
-	}
-}

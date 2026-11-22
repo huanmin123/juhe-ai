@@ -2,7 +2,8 @@ package playground
 
 // 演练场路由测试共用 Mock 基建：注册器用标准库 ServeMux 直接模拟 kernel 键格
 // 式（"METHOD /path"），派发端口按回放队列产出固定响应并记录入站请求供断言，
-// 账户/目录端口为表驱动固定视图——全部断言走真实 handler，不经私有方法捷径。
+// Key 模型候选端口为表驱动固定视图——全部断言走真实 handler，不经私有方法
+// 捷径（Key 归属校验在 cmd 适配层，端口 mock 以表内无该 Key 表达同一语义）。
 
 import (
 	"bytes"
@@ -33,7 +34,7 @@ func newTestRoutes(deps *Deps) (*http.ServeMux, *Deps) {
 		deps.RequireSession = func(h http.Handler) http.Handler { return h }
 	}
 	deps.ScopeResolver = func(*http.Request) (Scope, error) {
-		return Scope{ViewerID: "sys_user_1", IsAdmin: false}, nil
+		return Scope{ViewerID: "sys_user_1"}, nil
 	}
 	mux := http.NewServeMux()
 	deps.Register(muxRegisterer{mux}, "/__aisys__/api/playground")
@@ -93,75 +94,38 @@ func sseBody(lines ...string) []byte {
 	return []byte(strings.Join(lines, "\n") + "\n\n")
 }
 
-// staticAccounts 是账户端口 Mock（固定表 + 可注入错误）。
-type staticAccounts struct {
-	options []AccountOption
-	err     error
+// mockKeyModels 是 Key 模型候选端口 Mock：按 apiKeyID 返回固定候选行并记录
+// 调用（表内无该 Key = Key 不存在/非本人语义，handler 收 404）。
+type mockKeyModels struct {
+	rows  map[string][]KeyModelRow
+	calls [][2]string // [viewerID, apiKeyID]
+	err   *HTTPError
 }
 
-func (s *staticAccounts) ListAccountOptions(context.Context, Scope) ([]AccountOption, error) {
-	if s.err != nil {
-		return nil, s.err
+func (m *mockKeyModels) ListKeyModels(_ context.Context, viewerID, apiKeyID string) ([]KeyModelRow, *HTTPError) {
+	m.calls = append(m.calls, [2]string{viewerID, apiKeyID})
+	if m.err != nil {
+		return nil, m.err
 	}
-	return s.options, nil
-}
-
-// staticLookup 是账户解析 Mock：表内命中返回启用账户，未命中 (nil, nil)（与
-// accounts.Store FindChatAccount 的范围外同型语义一致）。
-type staticLookup struct {
-	refs map[string]*AccountRef
-}
-
-func (s *staticLookup) FindAccount(_ context.Context, _ Scope, accountID string) (*AccountRef, error) {
-	ref, ok := s.refs[accountID]
+	rows, ok := m.rows[apiKeyID]
 	if !ok {
-		return nil, nil
+		return nil, KeyNotFound()
 	}
-	return ref, nil
+	return rows, nil
 }
 
-// staticTransport 是 chat-pinned 运行时视图 Mock（按账户 ID 固定返回）。
-type staticTransport struct {
-	views map[string][]TransportAccount
-}
-
-func (s *staticTransport) ListPinnedAccountsForGroup(groupID, systemAccountID, accountID string) []TransportAccount {
-	return s.views[accountID]
-}
-
-// staticCatalog 是目录端口 Mock（provider 码/账户 ID → 固定行）。
-type staticCatalog struct {
-	byProvider map[string][]CatalogItem
-	byAccount  map[string][]CatalogItem
-}
-
-func (s *staticCatalog) ListProviderCatalog(providerCode, _ string) []CatalogItem {
-	return s.byProvider[providerCode]
-}
-
-func (s *staticCatalog) ListAccountSupportedModels(accountID, _ string) []CatalogItem {
-	return s.byAccount[accountID]
-}
-
-// fixedFetch 是 fetch_url Mock（固定正文或错误，按序回放）。
-type fixedFetch struct {
-	results []FetchResult
-	errs    []error
-	index   int
-}
-
-func (f *fixedFetch) Fetch(context.Context, string) (FetchResult, error) {
-	if f.index < len(f.errs) && f.errs[f.index] != nil {
-		result := FetchResult{}
-		f.index++
-		return result, f.errs[f.index-1]
+// keyRowsOf 把 (modelId, kind) 对折叠成候选行（providerCode 恒 gpt——测试只关
+// 注 kind 校验，providerCode 投影在 cmd 适配层）。
+func keyRowsOf(pairs ...any) []KeyModelRow {
+	rows := make([]KeyModelRow, 0, len(pairs)/2)
+	for i := 0; i+1 < len(pairs); i += 2 {
+		rows = append(rows, KeyModelRow{
+			ModelID:      pairs[i].(string),
+			Kind:         pairs[i+1].(ModelKind),
+			ProviderCode: "gpt",
+		})
 	}
-	if f.index >= len(f.results) {
-		return FetchResult{Text: "(mock 无更多回放)"}, nil
-	}
-	result := f.results[f.index]
-	f.index++
-	return result, nil
+	return rows
 }
 
 // doJSON 发送 JSON 请求并返回 recorder。
@@ -177,11 +141,13 @@ func doJSON(mux *http.ServeMux, method, target string, body []byte) *httptest.Re
 // 断言聚焦 handler/执行器行为）。terminal 通道在 Complete/Fail 时投递任务 ID
 // 供执行器测试同步等待。
 type fakeImageJobStore struct {
-	mu       sync.Mutex
-	records  map[string]*ImageJobRecord
-	order    []string
-	terminal chan string
-	listErr  error
+	mu          sync.Mutex
+	records     map[string]*ImageJobRecord
+	order       []string
+	terminal    chan string
+	listErr     error
+	deleteErr   error
+	deleteCalls [][2]string // Delete 入参 [viewerID, jobID] 调用记录
 }
 
 func newFakeImageJobStore() *fakeImageJobStore {
@@ -338,6 +304,33 @@ func (s *fakeImageJobStore) List(viewerID string, filter ImageJobFilter) (ImageJ
 	return page, nil
 }
 
+// Delete implements ImageJobStore. deleteErr 非 nil 时优先返回（注入存储故障
+// 面）；默认按 pgImageJobStore 真实语义执行：不存在/越权 errImageJobNotFound、
+// 非终态 errImageJobNotDeletable、终态移除记录行（§3.4.6 v1.5 手动删除）。
+func (s *fakeImageJobStore) Delete(viewerID, jobID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deleteCalls = append(s.deleteCalls, [2]string{viewerID, jobID})
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
+	record, ok := s.records[jobID]
+	if !ok || record.ViewerID != viewerID {
+		return errImageJobNotFound
+	}
+	if record.Status == imageJobStatusQueued || record.Status == imageJobStatusRunning {
+		return errImageJobNotDeletable
+	}
+	delete(s.records, jobID)
+	for index, id := range s.order {
+		if id == jobID {
+			s.order = append(s.order[:index], s.order[index+1:]...)
+			break
+		}
+	}
+	return nil
+}
+
 func (s *fakeImageJobStore) RecoverAtBoot() ([]ImageJobRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -405,4 +398,27 @@ var wavBytes = append(append([]byte("RIFF"), []byte{0x24, 0x00, 0x00, 0x00}...),
 // base64Of 是测试内 base64 编码辅助（StdEncoding，与 decodeBase64Image 对齐）。
 func base64Of(data []byte) string {
 	return base64.StdEncoding.EncodeToString(data)
+}
+
+// playgroundKeyModelsFixtureID 是基础夹具的 Key ID（Key 归属校验在 cmd 适配
+// 层，端口 mock 按 ID 表达候选面）。
+const playgroundKeyModelsFixtureID = "key_1"
+
+// playgroundFixtureDeps 装配「一个 Key + chat 目录行」的最小依赖（Artifacts 指
+// 向每测试独立的文件系统替身——生产为 PG 实现，单测保留真实文件写读以覆盖
+// 覆盖替换/懒清理）。候选扩展由用例直接改 mockKeyModels.rows。
+func playgroundFixtureDeps(t *testing.T) *Deps {
+	t.Helper()
+	return &Deps{
+		Dispatch: &mockDispatch{},
+		KeyModels: &mockKeyModels{rows: map[string][]KeyModelRow{
+			playgroundKeyModelsFixtureID: keyRowsOf("gpt-5.4", KindChat, "gpt-image-2", KindImage),
+		}},
+		Artifacts: newFSArtifactStore(t.TempDir()),
+	}
+}
+
+// fixtureKeyModels 取基础夹具的候选端口（类型断言捷径，用例补行用）。
+func fixtureKeyModels(deps *Deps) *mockKeyModels {
+	return deps.KeyModels.(*mockKeyModels)
 }

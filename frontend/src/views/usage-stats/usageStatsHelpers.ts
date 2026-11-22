@@ -19,7 +19,12 @@ export function buildAccountUsageSummaryCards(options: {
   ]
 }
 
-export function cacheReadRate(summary?: AccountUsageSummary, providerCode?: string): number {
+// 缓存率读数只依赖三个 token 字段；收窄为结构子集以接纳概览/授权等聚合 summary（第 9.4 节）。
+export type CacheRateUsageSummary = Partial<
+  Pick<AccountUsageSummary, 'inputTokens' | 'cacheReadTokens' | 'cacheWriteTokens'>
+>
+
+export function cacheReadRate(summary?: CacheRateUsageSummary, providerCode?: string): number {
   const inputTokens = positiveUsageNumber(summary?.inputTokens)
   const cacheReadTokens = positiveUsageNumber(summary?.cacheReadTokens)
   if (cacheReadTokens <= 0) return 0

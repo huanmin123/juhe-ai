@@ -115,8 +115,8 @@ const (
 //     logreads.ReadsDeps (X04 404 项补齐). runtime-logs 已随 F1 下架。
 //   - /__aisys__/api/playground: mounted with the chain (演练场设计 §3.1,
 //     composePlaygroundFamily): the dispatch executor + the runtime cache
-//     catalog loaders + the accounts.Store lookups, adapted onto the
-//     playground ports.
+//     Key/union-catalog loaders + the apikeys.Store secret lookup, adapted
+//     onto the playground ports.
 //   - /__aipublic__ external-integrations legacy family -> aipublic.Deps.Mount
 //     (X04: bearer-token auth + per-source penalty-window rate limiting +
 //     scope checks; the admin management family stays in policyreads).
@@ -1160,7 +1160,7 @@ func composeSystemAPI(cfg runtimeConfig, postgresPools *pgpool.Registry, operati
 		// runtime cache 目录 loader 与 accounts.Store 账户查询（cmd 适配层包装
 		// 见 chain_playground_mount.go），挂载 /__aisys__/api/playground 路由族；
 		// 产物暂存走业务库 playground_artifacts 表（§3.8，2026-11-09 起）。
-		if playgroundErr := composePlaygroundFamily(composed, chainServices, chain, accountStore); playgroundErr != nil {
+		if playgroundErr := composePlaygroundFamily(composed, chainServices, chain, apiKeyStore); playgroundErr != nil {
 			return nil, fmt.Errorf("compose playground family: %w", playgroundErr)
 		}
 		// The fixed-window redis store backs the system-api limiter

@@ -220,7 +220,7 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, page, pageSize
 	if scopedID != "" {
 		clauses = append(clauses, `EXISTS (
 			SELECT 1 FROM `+s.table("system_team_members")+` m
-			WHERE m.team_id = t.id AND m.system_account_id = ?))`)
+			WHERE m.team_id = t.id AND m.system_account_id = ?)`)
 		args = append(args, scopedID)
 	}
 	if keyword != "" {

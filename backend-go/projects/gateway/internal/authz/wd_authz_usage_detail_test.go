@@ -124,7 +124,7 @@ func TestWdUsageDetailTeamGrantWithWindowAndFallback(t *testing.T) {
 	f.seedTeamWithMember(t, "team_d", "member1")
 	f.seedTeamWithMember(t, "team_d", "member2")
 	f.seedGroup(t, "grp_t", "owner")
-	grantID := wdOfferTeamGrant(t, f, "group", "grp_t", "owner", "team_d", []string{"member1", "member2"})
+	grantID := wdOfferTeamGrant(t, f, "group", "grp_t", "owner", "team_d", []string{"member1", "member2"}, "")
 	// 每个成员的运行时行 + 窗口行（member2 更晚的 lastUsedAt 排前）。
 	id1 := wdRuntimeID(t, f, "group", "grp_t", "member1")
 	id2 := wdRuntimeID(t, f, "group", "grp_t", "member2")
@@ -180,7 +180,7 @@ func TestWdUsageDetailTeamDailyRangeAggregation(t *testing.T) {
 	f.seedAccount(t, "member1", "active")
 	f.seedTeamWithMember(t, "team_w", "member1")
 	f.seedGroup(t, "grp_w", "owner")
-	grantID := wdOfferTeamGrant(t, f, "group", "grp_w", "owner", "team_w", []string{"member1"})
+	grantID := wdOfferTeamGrant(t, f, "group", "grp_w", "owner", "team_w", []string{"member1"}, "")
 	// 3 天窗内的两行日摘要（09-02 / 09-04），窗外一行不参与聚合。
 	insertTeamDailyRow(t, f, "owner", "2026-09-02", "team_w", "group", "grp_w", 2, 20, 10, 0.25, "2026-09-02T01:00:00.000Z")
 	insertTeamDailyRow(t, f, "owner", "2026-09-04", "team_w", "group", "grp_w", 3, 30, 15, 0.5, "2026-09-04T05:00:00.000Z")
@@ -217,9 +217,9 @@ func TestWdUsageDetailTeamAccountFallbackViaInstances(t *testing.T) {
 	f.seedTeamWithMember(t, "team_acc", "member1")
 	// 资源账户必须先存在：发起账户授权校验授权资源存在。
 	f.execResourceAccount(t, "acc_wd", "owner")
-	// 接收方默认分组：账户授权领取一步装载实例并绑定。
+	// 接收方默认分组：账户授权领取必选目标分组，一步装载实例并绑定。
 	f.seedGranteeGroup(t, "tg_wd_m1", "member1", "", 1, 1)
-	grantID := wdOfferTeamGrant(t, f, "account", "acc_wd", "owner", "team_acc", []string{"member1"})
+	grantID := wdOfferTeamGrant(t, f, "account", "acc_wd", "owner", "team_acc", []string{"member1"}, "tg_wd_m1")
 	runtimeID := wdRuntimeID(t, f, "account", "acc_wd", "member1")
 	// 领取装载的授权实例账户（克隆）：authorization id → 实例账户 id。
 	var instanceID string

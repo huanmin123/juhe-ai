@@ -146,7 +146,7 @@ func TestEnqueueMediaJobTerminalUsageInvalidMediaPricingZeroCost(t *testing.T) {
 		media:               true,
 		mediaPricingInvalid: true,
 	}
-	chain.enqueueMediaJobTerminalUsage(context.Background(), "trace-1", "api-owner-1", false, record, account, ir, settlement)
+	chain.enqueueMediaJobTerminalUsage(context.Background(), "trace-1", "api-owner-1", record, account, ir, settlement)
 
 	records := recorder.Records()
 	if len(records) != 1 {
@@ -185,7 +185,7 @@ func TestEnqueueMediaJobTerminalUsageMediaMeteringMissingZeroCost(t *testing.T) 
 		usageMissing: true,
 		media:        true,
 	}
-	chain.enqueueMediaJobTerminalUsage(context.Background(), "trace-1", "api-owner-1", false, record, account, ir, settlement)
+	chain.enqueueMediaJobTerminalUsage(context.Background(), "trace-1", "api-owner-1", record, account, ir, settlement)
 
 	records := recorder.Records()
 	if len(records) != 1 {

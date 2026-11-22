@@ -3,7 +3,6 @@ package gatewayusage
 import (
 	"context"
 	"errors"
-	"sync"
 	"testing"
 	"time"
 )
@@ -401,73 +400,6 @@ func TestFinalizationQueueDropOnFull(t *testing.T) {
 	if !queue.WaitForIdle(2000) {
 		t.Fatal("queue did not become idle")
 	}
-}
-
-// TestDispatchUsageRecordSuppressedNeverReachesRecorder 钉住使用日志抑制
-// （AI 问答免 Key 直调内部通道 §3.1）：抑制标记在 DispatchUsageRecord 入口
-// 直接丢弃，recorder 永远看不到该记录；对照记录正常投递。
-func TestDispatchUsageRecordSuppressedNeverReachesRecorder(t *testing.T) {
-	gate := &gatedRecorder{entered: make(chan struct{}, 8), release: make(chan struct{})}
-	dispatch := NewFinalizationDispatch(gate, 1, 1)
-
-	suppressed := completedRecord("trace-suppressed")
-	suppressed.SuppressUsage = true
-	if err := dispatch.DispatchUsageRecord(context.Background(), suppressed, 100); err != nil {
-		t.Fatalf("suppressed err = %v", err)
-	}
-	if err := dispatch.DispatchUsageRecord(context.Background(), completedRecord("trace-control"), 100); err != nil {
-		t.Fatalf("control err = %v", err)
-	}
-	close(gate.release)
-	if !dispatch.WaitForIdle(2000) {
-		t.Fatal("not idle")
-	}
-	if !gate.seenTrace("trace-control") {
-		t.Fatalf("对照组记录必须正常投递: %v", gate.seenSnapshot())
-	}
-	if gate.seenTrace("trace-suppressed") {
-		t.Fatalf("抑制记录不得到达 recorder: %v", gate.seenSnapshot())
-	}
-}
-
-// gatedRecorder is a UsageRecorder port mock with controllable delivery.
-type gatedRecorder struct {
-	entered chan struct{}
-	release chan struct{}
-	mu      sync.Mutex
-	seen    map[string]bool
-}
-
-func (g *gatedRecorder) EnqueueUsageRecord(ctx Ctx, input UsageRecordInput) error {
-	g.entered <- struct{}{}
-	<-g.release
-	g.mu.Lock()
-	if g.seen == nil {
-		g.seen = map[string]bool{}
-	}
-	g.seen[input.TraceID] = true
-	g.mu.Unlock()
-	return nil
-}
-
-func (g *gatedRecorder) seenTrace(trace string) bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.seen[trace]
-}
-
-func (g *gatedRecorder) seenSnapshot() map[string]bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	out := make(map[string]bool, len(g.seen))
-	for key, value := range g.seen {
-		out[key] = value
-	}
-	return out
-}
-
-func completedRecord(trace string) UsageRecordInput {
-	return UsageRecordInput{TraceID: trace, TrafficSource: TrafficSourceGateway, Success: true}
 }
 
 func TestRecorderPortFailureDoesNotBlockDispatch(t *testing.T) {

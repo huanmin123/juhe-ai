@@ -281,7 +281,7 @@ const memberColumns = computed(() => {
 const selectedTeam = computed(() => teams.value.find((team) => team.id === selectedTeamId.value) ?? selectedTeamSnapshot.value)
 const activeTeamMembers = computed(() => selectedTeamMembers.value?.items ?? [])
 const usedMemberIds = computed(() => activeTeamMembers.value.map((item) => item.systemAccountId))
-const emptyTeamDescription = computed(() => isManagementView.value ? '还没有授权团队，先创建一个授权团队并添加成员。' : '你还没有加入任何授权团队。')
+const emptyTeamDescription = computed(() => isManagementView.value ? '还没有授权团队，先创建一个授权团队并添加成员。' : '你还没有加入任何团队。')
 const teamActions = computed<RowActionItem[]>(() => isManagementView.value
   ? [
       { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' },
@@ -626,7 +626,7 @@ function hasDuplicateTeamName(name: string, excludeId?: string): boolean {
 
 function ensureManagementAction(): boolean {
   if (isManagementView.value) return true
-  message.warning('当前是只读视图，不能维护授权团队')
+  message.warning('当前是只读视图，不能维护团队')
   return false
 }
 

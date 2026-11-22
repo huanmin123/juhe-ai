@@ -432,8 +432,9 @@ func streamBridgeDownstreamProtocolOf(downstreamProtocol string) bool {
 // 受限重放与异常终局处置设计 §3.1 窗口资格）：缺省启用（文本主路径），显式
 // 排除——①媒体创建域请求（与 settleResponseStreamServerRetry 媒体域切断同源
 // 判定）；②桥接流（EOF 合成收尾契约）；③AI 问答 web_search hosted tool 子调用
-// （身份头 x-juhe-ai-purpose: chat_web_search，internal/chat/generation_websearch.go
-// 的既有读取）：副作用请求即使尚未输出也禁止隐式重放（调研文档 L123 硬禁令）。
+// （身份头 x-juhe-ai-purpose: chat_web_search；原 internal/chat 生成链的读取点
+// 已随该包退役，头部消费语义由本闸门与 gatewayresponse 保留）：副作用请求即
+// 使尚未输出也禁止隐式重放（调研文档 L123 硬禁令）。
 // nil 上下文按对话域处理；ParseError 隔离与异常终局判定不受本判定影响。
 func preCommitReplayWindowDisabledOf(req *gatewaypreauth.GatewayRequest, context *gatewaypreauth.DispatchContext) bool {
 	if dispatchDomainStatelessMediaOf(context) {

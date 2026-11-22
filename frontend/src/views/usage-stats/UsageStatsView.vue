@@ -31,31 +31,15 @@
             @change="handleDateRangeChange"
             @open-change="handleDateRangeOpenChange"
           />
-          <a-segmented v-model:value="selectedMetric" class="usage-stats-metric-segmented" :disabled="loading" :options="metricOptions" @change="handleMetricChange" />
-          <AccountManagePanelPopover
-            :collection-items="panelCollectionItems"
-            :options="accountOptionRows"
-            :collection-max="maxTrendAccounts"
-            :max-added-accounts="maxTrendAccounts"
-            :loading="accountOptionsLoading"
-            :disabled="loading"
-            :count-text="`${accountFilterItems.length}/${maxTrendAccounts}`"
-            @open-change="handleAccountPanelOpenChange"
-            @add="addTrendAccount"
-            @remove="removeAddedTrendAccount"
-            @toggle="toggleTrendAccount"
-            @search="handleAccountOptionsSearch"
-            @reset-defaults="resetTrendAccountDefaults"
-          />
-        </div>
-        <div class="page-toolbar-actions">
-          <a-button @click="resetFilters">重置</a-button>
-          <a-button :loading="loading" @click="refreshUsageStats">
-            <template #icon>
-              <ReloadOutlined />
-            </template>
-            刷新
-          </a-button>
+          <div class="page-toolbar-actions usage-stats-inline-actions">
+            <a-button @click="resetFilters">重置</a-button>
+            <a-button :loading="loading" @click="refreshUsageStats">
+              <template #icon>
+                <ReloadOutlined />
+              </template>
+              刷新
+            </a-button>
+          </div>
         </div>
       </div>
       <!-- 手机端紧凑条：指标切换常驻，用户/日期/添加账户收进底部抽屉 -->
@@ -157,7 +141,25 @@
       :empty-description="trendEmptyDescription"
     >
       <template #title-extra>
-        <StatsPerspectiveSwitch value="account" :disabled="loading" />
+        <div class="usage-trend-card-controls">
+          <StatsPerspectiveSwitch value="account" :disabled="loading" />
+          <a-segmented v-model:value="selectedMetric" class="usage-stats-metric-segmented" :disabled="loading" :options="metricOptions" @change="handleMetricChange" />
+          <AccountManagePanelPopover
+            :collection-items="panelCollectionItems"
+            :options="accountOptionRows"
+            :collection-max="maxTrendAccounts"
+            :max-added-accounts="maxTrendAccounts"
+            :loading="accountOptionsLoading"
+            :disabled="loading"
+            :count-text="`${accountFilterItems.length}/${maxTrendAccounts}`"
+            @open-change="handleAccountPanelOpenChange"
+            @add="addTrendAccount"
+            @remove="removeAddedTrendAccount"
+            @toggle="toggleTrendAccount"
+            @search="handleAccountOptionsSearch"
+            @reset-defaults="resetTrendAccountDefaults"
+          />
+        </div>
       </template>
       <div ref="trendChartRef" class="chart-panel" />
     </StatsChartCard>
@@ -779,14 +781,15 @@ watch(mobileFilterOpen, (open) => {
 
 .usage-stats-toolbar {
   margin: 0;
+  gap: 8px;
 }
 
 .usage-stats-filters {
   display: flex;
-  flex: 1 1 820px;
+  flex: 1 1 auto;
   flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   min-width: 0;
 }
 
@@ -795,7 +798,10 @@ watch(mobileFilterOpen, (open) => {
 }
 
 .usage-stats-range-picker {
-  width: 250px;
+  flex: 0 1 240px;
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .usage-stats-metric-segmented {
@@ -803,8 +809,23 @@ watch(mobileFilterOpen, (open) => {
   max-width: 100%;
 }
 
+/* 趋势卡头部控件组：视角切换 + 指标切换 + 账户面板，均只作用于本卡 */
+.usage-trend-card-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 .usage-stats-account-panel-inline {
   width: 100%;
+}
+
+/* 按钮组并入筛选行尾：宽屏单行右贴，窄屏随筛选换行到行尾，不单独占行 */
+.usage-stats-inline-actions {
+  margin-left: auto;
+  flex: 0 0 auto;
 }
 
 /* 手机端紧凑筛选条（桌面隐藏） */

@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f6f8">
+  <title>视频生成 · 演练场本地原型</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="workbench.css">
+  <script src="workbench.js" defer></script>
+</head>
+<body>
+  <header class="app-header">
+    <a class="brand" href="#workbench" aria-label="聚合 AI 演练场">
+      <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 256 256"><defs><linearGradient id="prototype-brand-gradient" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22282b"/><stop offset="1" stop-color="#53696b"/></linearGradient></defs><circle cx="128" cy="128" r="128" fill="url(#prototype-brand-gradient)"/><g transform="translate(136 124) scale(.52) translate(-136 -124)"><path fill="#fff" d="M208 144a15.78 15.78 0 0 1-10.42 14.94L146 178l-19 51.62a15.92 15.92 0 0 1-29.88 0L78 178l-51.62-19a15.92 15.92 0 0 1 0-29.88L78 110l19-51.62a15.92 15.92 0 0 1 29.88 0L146 110l51.62 19A15.78 15.78 0 0 1 208 144m-56-96h16v16a8 8 0 0 0 16 0V48h16a8 8 0 0 0 0-16h-16V16a8 8 0 0 0-16 0v16h-16a8 8 0 0 0 0 16m88 32h-8v-8a8 8 0 0 0-16 0v8h-8a8 8 0 0 0 0 16h8v8a8 8 0 0 0 16 0v-8h8a8 8 0 0 0 0-16"/></g></svg></span>
+      <span class="brand-name">聚合 AI</span>
+    </a>
+    <div class="header-divider"></div>
+    <nav class="breadcrumb" aria-label="当前位置"><span>演练场</span><span class="crumb-separator">/</span><strong>视频生成</strong></nav>
+    <div class="header-spacer"></div>
+    <span class="prototype-badge"><span></span>本地演示</span>
+    <button class="icon-button mobile-menu" type="button" aria-label="打开视频集" title="打开视频集" data-action="open-sets">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
+  </header>
+
+  <main id="workbench" class="page-shell">
+    <div class="demo-note" role="status">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7.2"/><path d="M10 9v4M10 6.1h.01"/></svg>
+      <span>本地演示，已选示例 Key；型号、能力和结果均为示意，不会调用模型或产生费用。上传素材仅当前标签页可用，正式使用需要有效的视频 Key。</span>
+      <button class="demo-note-close" type="button" aria-label="关闭提示" data-action="dismiss-note">×</button>
+    </div>
+
+    <div class="workspace-heading">
+      <div class="set-heading">
+        <button class="set-picker" type="button" data-action="open-sets" aria-haspopup="dialog" aria-label="切换视频集">
+          <span class="set-picker-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M4 5.5h6l2 2h8v11H4z"/><path d="M4 8h16"/></svg>
+          </span>
+          <span class="set-picker-copy"><small>当前视频集</small><strong id="set-name">未命名视频集</strong></span>
+          <svg class="chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg>
+        </button>
+        <button class="icon-button rename-button" type="button" title="重命名视频集" aria-label="重命名视频集" data-action="rename-set">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 5 5 5M4 20l4.2-.8L19 8.4 15.6 5 4.8 15.8z"/></svg>
+        </button>
+        <span id="saved-state" class="saved-state"><span></span>已保存在本机</span>
+      </div>
+      <div class="heading-actions">
+        <button class="button button-primary" type="button" data-action="new-set">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+          新建视频集
+        </button>
+      </div>
+    </div>
+
+    <div class="workspace-grid">
+      <section class="creation-column" aria-label="创建视频分镜">
+        <div class="editor-panel">
+          <div class="panel-title-row">
+            <div>
+              <h1>描述一个镜头</h1>
+              <p>先写下你想要的画面，已有素材可以稍后加入。</p>
+            </div>
+            <span class="shot-count" id="shot-count">第 1 镜</span>
+          </div>
+
+          <label class="field-label" for="prompt-input">画面描述</label>
+          <div class="prompt-wrap">
+            <textarea id="prompt-input" maxlength="4000" placeholder="例如：小船穿过清晨的薄雾，镜头贴近水面缓慢向前。"></textarea>
+            <div class="prompt-footer"><span>镜头中发生什么？可以描述人物、动作、环境和运镜。</span><span id="prompt-count">0 / 4000</span></div>
+          </div>
+          <div class="prompt-reference-bar">
+            <button class="text-button" type="button" data-action="open-asset-mentions">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.07.07l2-2a5 5 0 0 0-7.07-7.07l-1.15 1.15M14 11a5 5 0 0 0-7.07-.07l-2 2A5 5 0 0 0 12 20l1.15-1.15"/></svg>
+              插入 @素材
+            </button>
+            <span>只绑定本镜的外观参考图；手打或粘贴 @文字不会自动绑定</span>
+          </div>
+          <div id="asset-mention-picker" class="mention-picker" hidden>
+            <div class="mention-heading"><strong>选择要指名的素材</strong><button class="icon-button" type="button" title="关闭素材候选" aria-label="关闭素材候选" data-action="close-asset-mentions">×</button></div>
+            <div id="mention-options" class="mention-options" role="listbox" aria-label="可引用素材"></div>
+            <div id="mention-empty" class="mention-empty" hidden>当前没有可指名的外观参考图。请先把图片加入本镜，并将用途设为“外观参考”。</div>
+            <div class="mention-footnote">首帧、尾帧、声音及“仅供剪辑”的素材不会出现在这里；未点名的参考素材仍会随本镜发送。</div>
+          </div>
+          <div id="prompt-reference-summary" class="prompt-reference-summary" hidden></div>
+          <div id="prompt-reference-conflicts" class="prompt-reference-conflicts" hidden></div>
+
+          <div class="asset-input-row">
+            <button class="add-asset-button" type="button" data-action="add-asset">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+              添加已有素材
+            </button>
+            <button class="text-button" type="button" data-action="pick-sample">从示例视频集选择</button>
+            <input id="file-input" type="file" accept="image/png,image/jpeg,image/webp,audio/wav,audio/x-wav,audio/mpeg,audio/mp3" multiple hidden>
+          </div>
+
+          <div id="selected-assets" class="selected-assets" aria-live="polite"></div>
+
+          <div class="form-divider"></div>
+
+          <div class="field-group-heading">
+            <span>生成设置</span>
+            <span class="field-group-hint">更换模型会保留提示词和素材</span>
+          </div>
+          <div class="settings-grid">
+            <label class="select-field model-field"><span>视频模型</span>
+              <select id="model-select" aria-label="视频模型">
+                <option value="seedance25">Seedance 2.5</option>
+                <option value="seedance20">Seedance 2.0</option>
+                <option value="wan27">Wan 2.7 T2V</option>
+              </select>
+            </label>
+            <label class="select-field"><span>时长</span>
+              <select id="duration-select" aria-label="视频时长">
+                <option value="5">5 秒</option><option value="8">8 秒</option><option value="10">10 秒</option><option value="15">15 秒</option><option value="30">30 秒</option>
+              </select>
+            </label>
+            <label class="select-field"><span>画幅</span>
+              <select id="ratio-select" aria-label="视频画幅"><option>16:9</option><option>9:16</option><option>1:1</option></select>
+            </label>
+            <label class="select-field"><span>分辨率</span>
+              <select id="resolution-select" aria-label="视频分辨率"><option>720p</option><option>480p</option><option>1080p</option></select>
+            </label>
+          </div>
+
+          <div id="model-notice" class="model-notice" hidden><span></span><button class="button button-small" type="button" data-action="apply-model-defaults" hidden>应用推荐值</button></div>
+          <div id="asset-conflict" class="conflict-notice" hidden>
+            <div class="conflict-copy"><strong>提交前需处理当前组合</strong><span id="conflict-summary"></span></div>
+            <button class="button button-small" type="button" data-action="resolve-conflicts">处理素材冲突</button>
+          </div>
+
+          <div id="audio-setting" class="audio-setting">
+            <div class="audio-copy"><strong>生成时添加声音</strong><span>开启后由模型生成同步音效与人声</span></div>
+            <label class="switch" for="audio-toggle"><input id="audio-toggle" type="checkbox"><span class="switch-track"></span><span class="sr-only">生成时添加声音</span></label>
+          </div>
+
+          <div class="editor-footer">
+            <div class="editor-footnote"><span class="footnote-dot"></span><span id="footnote-text">首次生成将自动建立视频集。可以在之后重命名。</span></div>
+            <button class="button button-primary generate-button" type="button" id="generate-button" data-action="generate">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7z"/></svg>
+              <span id="generate-label">生成分镜</span>
+            </button>
+          </div>
+        </div>
+
+        <section class="shots-section" aria-label="分镜列表">
+          <div class="shots-heading"><div><h2>本集分镜</h2><span id="shots-subtitle">生成的镜头会按顺序排列在这里</span></div><button class="button button-secondary button-small" type="button" data-action="new-shot" id="new-shot-button" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>下一镜</button></div>
+          <div id="shots-list" class="shots-list"></div>
+          <div id="shots-empty" class="empty-state"><span class="empty-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="2"/><path d="m10 9 5 3-5 3z"/></svg></span><strong>还没有生成分镜</strong><span>输入提示词后，生成结果会显示在这里。</span></div>
+        </section>
+      </section>
+
+      <aside class="side-column">
+        <section class="side-panel sample-panel">
+          <div class="side-panel-heading"><div><h2>样片预览</h2><span>项目内固定示例 · 非实时生成</span></div><span class="sample-indicator"><span></span>示例</span></div>
+          <button class="sample-poster" type="button" data-action="play-sample" aria-label="播放本地样片">
+            <img src="assets/harbor.jpg" alt="清晨海湾与山影的本地示例画面">
+            <span class="sample-play"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7z"/></svg></span>
+          </button>
+          <div class="sample-details"><strong>清晨的海湾</strong><span>5 秒 · 16:9 · 示例尾帧可用于下一镜</span></div>
+          <button class="sample-tail-action" type="button" data-action="use-sample-tail"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="m9 8 7 4-7 4z"/></svg>用示例尾帧创建下一镜</button>
+        </section>
+        <section class="side-panel asset-panel">
+          <div class="side-panel-heading"><div><h2>本集素材</h2><span id="asset-count">0 项</span></div><button class="icon-button" type="button" title="添加素材" aria-label="添加素材" data-action="add-asset"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button></div>
+          <div id="library-assets" class="library-assets"><div class="library-empty">当前视频集还没有素材</div></div>
+          <button class="library-add" type="button" data-action="add-asset"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>上传图片或音频</button>
+        </section>
+        <section class="side-panel guide-panel">
+          <div class="side-panel-heading"><div><h2>素材用途</h2></div></div>
+          <div class="role-guide"><span class="role-swatch role-first">首</span><div><strong>首帧</strong><span>指定视频从哪张画面开始</span></div></div>
+          <div class="role-guide"><span class="role-swatch role-reference">参</span><div><strong>外观参考</strong><span>帮助模型保持人物或场景特征</span></div></div>
+          <div class="role-guide"><span class="role-swatch role-audio">音</span><div><strong>声音参考</strong><span>作为生成输入。用途依具体模型而定</span></div></div>
+          <div class="role-guide"><span class="role-swatch role-edit">剪</span><div><strong>仅供剪辑</strong><span>保存并下载，不发送给视频模型</span></div></div>
+          <div class="guide-divider"></div>
+          <div class="guide-callout"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7.2"/><path d="M10 9v4M10 6.1h.01"/></svg><span>首帧与多模态参考属于不同生成方式。系统会在提交前检查当前模型能否使用已选素材。</span></div>
+        </section>
+        <div class="prototype-caption"><span></span>本地演示素材 · 不代表实际生成质量</div>
+      </aside>
+    </div>
+  </main>
+
+  <div class="dialog-backdrop" id="dialog-backdrop" hidden>
+    <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+      <div class="dialog-heading"><div><h2 id="dialog-title">选择视频集</h2><span id="dialog-subtitle">切换视频集或继续体验示例内容</span></div><button class="icon-button" type="button" aria-label="关闭" title="关闭" data-action="close-dialog"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
+      <div id="set-list" class="set-list"></div>
+      <div class="dialog-footer"><button class="button button-secondary" type="button" data-action="close-dialog">返回工作台</button><button class="button button-primary" type="button" data-action="new-set"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>新建视频集</button></div>
+    </section>
+  </div>
+
+  <div class="dialog-backdrop" id="preview-backdrop" hidden>
+    <section class="preview-dialog" role="dialog" aria-modal="true" aria-labelledby="preview-title">
+      <div class="dialog-heading"><div><h2 id="preview-title">分镜预览</h2><span id="preview-subtitle">本地样片</span></div><button class="icon-button" type="button" aria-label="关闭预览" title="关闭预览" data-action="close-preview"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
+      <video id="preview-video" class="preview-video" controls playsinline></video>
+      <div class="preview-info"><span id="preview-prompt"></span><a id="preview-download" class="button button-secondary" download="juhe-video-sample.mp4"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M5 17v3h14v-3"/></svg>下载样片</a></div>
+    </section>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <audio id="audio-preview" hidden></audio>
+</body>
+</html>

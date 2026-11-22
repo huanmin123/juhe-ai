@@ -58,7 +58,7 @@ func TestReconcileExpiredGrantsResyncsRuntime(t *testing.T) {
 	f.seedAccount(t, "grantee", "active")
 	f.seedProvisionSource(t, "res-1", "owner", "reconcile expiry", "gpt")
 	seedGranteeDefaultGroup(t, f, "grantee", "gpt")
-	grantID := f.claimAccountOffer(t, "res-1", "grantee", "")
+	grantID := f.claimAccountOffer(t, "res-1", "grantee", "grp-default-grantee")
 	runtimeID := accountRuntimeIDFor(t, f, "res-1", "grantee")
 	var runtimeStatus string
 	if err := f.db.QueryRow(fixtureBind(`SELECT status FROM resource_authorizations WHERE id = ?`), runtimeID).Scan(&runtimeStatus); err != nil {
@@ -156,7 +156,7 @@ func TestReconcileExpiredGrantKeepsActiveTeamSource(t *testing.T) {
 		WHERE grant_id = ? AND source_type = 'team' AND status = 'pending'`), teamOffer.GrantID).Scan(&teamSourceID); err != nil {
 		t.Fatalf("load team source: %v", err)
 	}
-	if _, err := f.acceptSourceForTest(t, "grantee", teamSourceID); err != nil {
+	if _, err := f.acceptSourceForTest(t, "grantee", teamSourceID, ""); err != nil {
 		t.Fatalf("accept team source: %v", err)
 	}
 	runtimeID := ""

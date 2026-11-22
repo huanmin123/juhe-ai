@@ -48,7 +48,7 @@ func TestMediaJobsRepoInsertWritesTerminalCostAndPricingSnapshot(t *testing.T) {
 	if err := repo.Insert(ctx, record); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	loaded, err := repo.GetByIDAndOwner(ctx, record.ID, "sys_1")
+	loaded, err := repo.GetByOwnerAndID(ctx, record.ID, "sys_1")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}

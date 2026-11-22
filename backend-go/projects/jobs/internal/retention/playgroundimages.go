@@ -16,7 +16,8 @@ package retention
 //     image_result+image_reference 行（结果图与参考图一起删；failed 行
 //     实际只有参考图），随后置任务行 images_expired=true。images_expired
 //     语义为「图像资源已清理」标记，两类目标行共用（completed 图像到期 /
-//     failed 参考图超窗）；任务记录行永不删除，卡片按 §3.4.5 显示「已删除
+//     failed 参考图超窗）；到期清理不删任务记录行（记录行仅经演练场设计
+//     §3.4.6 v1.5 手动删除入口移除），卡片按 §3.4.5 显示「已删除
 //     图像」与历史参数；UPDATE 带未置位守卫，并发重复处理时置位只生效
 //     一次（幂等防竞态），删除天然幂等；
 //   - 阶段二（退役遗留与孤儿，各一条批量语句）：v1.0 覆盖式暂存退役遗留
@@ -240,7 +241,7 @@ type PlaygroundImagesSQLStore struct {
 //
 // 两条扫描而非一条 OR：failed 臂无索引路径，合并 OR 后 planner 无法
 // BitmapOr，整条谓词退化为 Seq Scan+Filter，反而破坏到期臂既有的部分索引
-// 利用（任务记录行永不删除，表随时间增长）。故先索引扫描到期臂，不足
+// 利用（到期清理不删任务记录行，表随时间增长）。故先索引扫描到期臂，不足
 // 一批才补扫 failed 臂（每轮至多一次顺序过滤，是该臂无索引下的最小代价；
 // 为 failed 臂建索引属 maintenance schema 变更，不在 jobs 侧范围）。两臂
 // 结果按键去重取并集（正常写入约定 failed 行 expires_at=0 不与到期臂

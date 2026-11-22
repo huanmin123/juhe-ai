@@ -48,24 +48,16 @@ func artifactUserDirFiles(t *testing.T, root, viewer string) []string {
 
 // addImageCandidate 给 fixture 补一个可路由的生图候选。
 func addImageCandidate(deps *Deps) {
-	catalog := deps.ProviderCatalog.(*staticCatalog)
-	catalog.byProvider["gpt"] = append(catalog.byProvider["gpt"], CatalogItem{Model: "gpt-image-2", SupportedAPIProtocols: []string{"image_generation"}})
-	transportView := deps.TransportAccounts.(*staticTransport)
-	// 五域退役修订：图像候选按域路由（image 域账户才列生图模型）。
-	transportView.views["acc_1"][0].CapabilityDomain = "image"
-	transportView.views["acc_1"][0].SupportedEndpointModes = append(transportView.views["acc_1"][0].SupportedEndpointModes, "images_json")
+	keyModels := fixtureKeyModels(deps)
+	keyModels.rows[playgroundKeyModelsFixtureID] = append(keyModels.rows[playgroundKeyModelsFixtureID], KeyModelRow{ModelID: "gpt-image-2", Kind: KindImage, ProviderCode: "gpt"})
 }
 
 // TestSpeechArtifactReplacedOnRegenerate 语音产物落盘 + 覆盖替换：二次合成后
 // 旧音频消失、单条留存。
 func TestSpeechArtifactReplacedOnRegenerate(t *testing.T) {
-	deps := playgroundFixtureDeps(t, false)
-	catalog := deps.ProviderCatalog.(*staticCatalog)
-	catalog.byProvider["gpt"] = append(catalog.byProvider["gpt"], CatalogItem{Model: "speech-2.8-hd", SupportedAPIProtocols: []string{"audio_speech"}})
-	transportView := deps.TransportAccounts.(*staticTransport)
-	// 五域退役修订：语音候选按域路由。
-	transportView.views["acc_1"][0].CapabilityDomain = "audio"
-	transportView.views["acc_1"][0].SupportedEndpointModes = []string{"chat_sse", "audio_speech"}
+	deps := playgroundFixtureDeps(t)
+	keyModels := fixtureKeyModels(deps)
+	keyModels.rows[playgroundKeyModelsFixtureID] = append(keyModels.rows[playgroundKeyModelsFixtureID], keyRowsOf("speech-2.8-hd", KindAudio)...)
 	dispatch := deps.Dispatch.(*mockDispatch)
 	dispatch.script = []scriptedResponse{
 		{Header: http.Header{"Content-Type": []string{"audio/wav"}}, Body: wavBytes},
@@ -73,7 +65,7 @@ func TestSpeechArtifactReplacedOnRegenerate(t *testing.T) {
 	}
 	mux, _ := newTestRoutes(deps)
 	payload, _ := json.Marshal(map[string]any{
-		"accountId": "acc_1", "modelId": "speech-2.8-hd", "input": "演练场语音合成", "format": "wav",
+		"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "speech-2.8-hd", "input": "演练场语音合成", "format": "wav",
 	})
 	synthesize := func() string {
 		recorder := doJSON(mux, "POST", "/__aisys__/api/playground/speech", payload)
@@ -107,16 +99,12 @@ func TestSpeechArtifactReplacedOnRegenerate(t *testing.T) {
 }
 
 // TestVideosTaskRefSingleEntry 视频任务引用落盘 + 单条覆盖：两次创建后只剩一
-// 条 JSON，字段为最新 jobId/accountId/modelId/status/createdAt；创建响应形状
+// 条 JSON，字段为最新 jobId/apiKeyId/modelId/status/createdAt；创建响应形状
 // 不变（{jobId}）。
 func TestVideosTaskRefSingleEntry(t *testing.T) {
-	deps := playgroundFixtureDeps(t, false)
-	catalog := deps.ProviderCatalog.(*staticCatalog)
-	catalog.byProvider["gpt"] = append(catalog.byProvider["gpt"], CatalogItem{Model: "grok-imagine-video-1.5", SupportedAPIProtocols: []string{"video"}})
-	transportView := deps.TransportAccounts.(*staticTransport)
-	// 五域退役修订：视频候选按域路由。
-	transportView.views["acc_1"][0].CapabilityDomain = "video"
-	transportView.views["acc_1"][0].SupportedEndpointModes = []string{"chat_sse", "video_create"}
+	deps := playgroundFixtureDeps(t)
+	keyModels := fixtureKeyModels(deps)
+	keyModels.rows[playgroundKeyModelsFixtureID] = append(keyModels.rows[playgroundKeyModelsFixtureID], keyRowsOf("grok-imagine-video-1.5", KindVideo)...)
 	dispatch := deps.Dispatch.(*mockDispatch)
 	dispatch.script = []scriptedResponse{
 		{Body: []byte(`{"task_id":"job_v1","status":"queued"}`)},
@@ -124,7 +112,7 @@ func TestVideosTaskRefSingleEntry(t *testing.T) {
 	}
 	mux, _ := newTestRoutes(deps)
 	payload, _ := json.Marshal(map[string]any{
-		"accountId": "acc_1", "modelId": "grok-imagine-video-1.5", "prompt": "一只猫在跳舞",
+		"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "grok-imagine-video-1.5", "prompt": "一只猫在跳舞",
 	})
 	for _, wantJobID := range []string{"job_v1", "job_v2"} {
 		recorder := doJSON(mux, "POST", "/__aisys__/api/playground/videos", payload)
@@ -146,7 +134,7 @@ func TestVideosTaskRefSingleEntry(t *testing.T) {
 	}
 	var ref struct {
 		JobID     string `json:"jobId"`
-		AccountID string `json:"accountId"`
+		APIKeyID  string `json:"apiKeyId"`
 		ModelID   string `json:"modelId"`
 		Status    string `json:"status"`
 		CreatedAt int64  `json:"createdAt"`
@@ -158,7 +146,7 @@ func TestVideosTaskRefSingleEntry(t *testing.T) {
 	if err := json.Unmarshal(data, &ref); err != nil {
 		t.Fatalf("任务引用解析失败: %v", err)
 	}
-	if ref.JobID != "job_v2" || ref.AccountID != "acc_1" || ref.ModelID != "grok-imagine-video-1.5" || ref.Status != "queued" || ref.CreatedAt <= 0 {
+	if ref.JobID != "job_v2" || ref.APIKeyID != playgroundKeyModelsFixtureID || ref.ModelID != "grok-imagine-video-1.5" || ref.Status != "queued" || ref.CreatedAt <= 0 {
 		t.Fatalf("任务引用字段不符: %+v", ref)
 	}
 }
@@ -167,29 +155,21 @@ func TestVideosTaskRefSingleEntry(t *testing.T) {
 // 字段断言；空暂存时 speech/video 为 null；响应不再有 images 字段（图片历史
 // 改走 GET /images/jobs，§3.8）。
 func TestArtifactsListingShape(t *testing.T) {
-	deps := playgroundFixtureDeps(t, false)
-	catalog := deps.ProviderCatalog.(*staticCatalog)
-	catalog.byProvider["gpt"] = append(catalog.byProvider["gpt"],
-		CatalogItem{Model: "speech-2.8-hd", SupportedAPIProtocols: []string{"audio_speech"}},
-		CatalogItem{Model: "grok-imagine-video-1.5", SupportedAPIProtocols: []string{"video"}},
-	)
-	transportView := deps.TransportAccounts.(*staticTransport)
+	deps := playgroundFixtureDeps(t)
+	keyModels := fixtureKeyModels(deps)
+	keyModels.rows[playgroundKeyModelsFixtureID] = append(keyModels.rows[playgroundKeyModelsFixtureID], keyRowsOf("speech-2.8-hd", KindAudio, "grok-imagine-video-1.5", KindVideo)...)
 	dispatch := deps.Dispatch.(*mockDispatch)
 	mux, _ := newTestRoutes(deps)
-	// generateImages 退役后单账户逐段服务多域产物，每步前翻能力域（五域退役
-	// 修订：候选按域路由）。
-	transportView.views["acc_1"][0].CapabilityDomain = "audio"
 	dispatch.script = []scriptedResponse{{Header: http.Header{"Content-Type": []string{"audio/wav"}}, Body: wavBytes}}
 	recorder := doJSON(mux, "POST", "/__aisys__/api/playground/speech", mustJSON(map[string]any{
-		"accountId": "acc_1", "modelId": "speech-2.8-hd", "input": "演练场语音", "format": "wav",
+		"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "speech-2.8-hd", "input": "演练场语音", "format": "wav",
 	}))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("语音状态码 = %d（body %s）", recorder.Code, recorder.Body.String())
 	}
-	transportView.views["acc_1"][0].CapabilityDomain = "video"
 	dispatch.script = []scriptedResponse{{Body: []byte(`{"task_id":"job_v1","status":"queued"}`)}}
 	recorder = doJSON(mux, "POST", "/__aisys__/api/playground/videos", mustJSON(map[string]any{
-		"accountId": "acc_1", "modelId": "grok-imagine-video-1.5", "prompt": "一只猫在跳舞",
+		"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "grok-imagine-video-1.5", "prompt": "一只猫在跳舞",
 	}))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("视频创建状态码 = %d（body %s）", recorder.Code, recorder.Body.String())
@@ -209,7 +189,7 @@ func TestArtifactsListingShape(t *testing.T) {
 			} `json:"speech"`
 			Video *struct {
 				JobID     string `json:"jobId"`
-				AccountID string `json:"accountId"`
+				APIKeyID  string `json:"apiKeyId"`
 				ModelID   string `json:"modelId"`
 				Status    string `json:"status"`
 				CreatedAt int64  `json:"createdAt"`
@@ -225,7 +205,7 @@ func TestArtifactsListingShape(t *testing.T) {
 	if listing.Data.Speech == nil || listing.Data.Speech.MimeType != "audio/wav" || listing.Data.Speech.ID == "" || listing.Data.Speech.CreatedAt <= 0 {
 		t.Fatalf("speech 清单不符: %+v", listing.Data.Speech)
 	}
-	if listing.Data.Video == nil || listing.Data.Video.JobID != "job_v1" || listing.Data.Video.AccountID != "acc_1" ||
+	if listing.Data.Video == nil || listing.Data.Video.JobID != "job_v1" || listing.Data.Video.APIKeyID != playgroundKeyModelsFixtureID ||
 		listing.Data.Video.ModelID != "grok-imagine-video-1.5" || listing.Data.Video.Status != "queued" || listing.Data.Video.CreatedAt <= 0 {
 		t.Fatalf("video 清单不符: %+v", listing.Data.Video)
 	}
@@ -234,7 +214,7 @@ func TestArtifactsListingShape(t *testing.T) {
 	}
 
 	// 空暂存：speech/video null。
-	emptyDeps := playgroundFixtureDeps(t, false)
+	emptyDeps := playgroundFixtureDeps(t)
 	emptyMux, _ := newTestRoutes(emptyDeps)
 	recorder = doJSON(emptyMux, "GET", "/__aisys__/api/playground/artifacts", nil)
 	if recorder.Code != http.StatusOK {
@@ -249,25 +229,19 @@ func TestArtifactsListingShape(t *testing.T) {
 // TestArtifactContentOwnershipAndInvalidID content 归属与校验面：参考图上传
 // 后本户可取、他户 404、非法 id 400、任务引用 JSON 不经此端点（404）。
 func TestArtifactContentOwnershipAndInvalidID(t *testing.T) {
-	deps := playgroundFixtureDeps(t, false)
-	catalog := deps.ProviderCatalog.(*staticCatalog)
-	catalog.byProvider["gpt"] = append(catalog.byProvider["gpt"],
-		CatalogItem{Model: "speech-2.8-hd", SupportedAPIProtocols: []string{"audio_speech"}},
-		CatalogItem{Model: "grok-imagine-video-1.5", SupportedAPIProtocols: []string{"video"}},
-	)
-	transportView := deps.TransportAccounts.(*staticTransport)
-	transportView.views["acc_1"][0].SupportedEndpointModes = []string{"chat_sse", "video_create", "audio_speech"}
+	deps := playgroundFixtureDeps(t)
+	keyModels := fixtureKeyModels(deps)
+	keyModels.rows[playgroundKeyModelsFixtureID] = append(keyModels.rows[playgroundKeyModelsFixtureID], keyRowsOf("speech-2.8-hd", KindAudio, "grok-imagine-video-1.5", KindVideo)...)
 	dispatch := deps.Dispatch.(*mockDispatch)
 	viewer := "sys_user_1"
 	deps.RequireSession = func(h http.Handler) http.Handler { return h }
 	deps.ScopeResolver = func(*http.Request) (Scope, error) {
-		return Scope{ViewerID: viewer, IsAdmin: false}, nil
+		return Scope{ViewerID: viewer}, nil
 	}
 	mux := http.NewServeMux()
 	deps.Register(muxRegisterer{mux}, "/__aisys__/api/playground")
 
 	// 参考图上传（POST /images/references，§3.4.1）。
-	transportView.views["acc_1"][0].CapabilityDomain = "image"
 	recorder := doJSON(mux, "POST", "/__aisys__/api/playground/images/references", mustJSON(map[string]any{
 		"dataBase64": base64Of(pngOnePixel),
 	}))
@@ -287,10 +261,9 @@ func TestArtifactContentOwnershipAndInvalidID(t *testing.T) {
 		t.Fatalf("参考图响应形状不符: %+v", reference.Data)
 	}
 	// 语音产物。
-	transportView.views["acc_1"][0].CapabilityDomain = "audio"
 	dispatch.script = []scriptedResponse{{Header: http.Header{"Content-Type": []string{"audio/wav"}}, Body: wavBytes}}
 	recorder = doJSON(mux, "POST", "/__aisys__/api/playground/speech", mustJSON(map[string]any{
-		"accountId": "acc_1", "modelId": "speech-2.8-hd", "input": "演练场语音", "format": "wav",
+		"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "speech-2.8-hd", "input": "演练场语音", "format": "wav",
 	}))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("语音状态码 = %d（body %s）", recorder.Code, recorder.Body.String())
@@ -304,10 +277,9 @@ func TestArtifactContentOwnershipAndInvalidID(t *testing.T) {
 		t.Fatalf("语音响应解析失败: %v", err)
 	}
 	// 视频任务引用。
-	transportView.views["acc_1"][0].CapabilityDomain = "video"
 	dispatch.script = []scriptedResponse{{Body: []byte(`{"task_id":"job_v1","status":"queued"}`)}}
 	recorder = doJSON(mux, "POST", "/__aisys__/api/playground/videos", mustJSON(map[string]any{
-		"accountId": "acc_1", "modelId": "grok-imagine-video-1.5", "prompt": "一只猫在跳舞",
+		"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "grok-imagine-video-1.5", "prompt": "一只猫在跳舞",
 	}))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("视频创建状态码 = %d", recorder.Code)
@@ -362,7 +334,7 @@ func TestArtifactContentOwnershipAndInvalidID(t *testing.T) {
 // mtime -25h）删除、新鲜文件保留、清空后的用户目录删除（文件替身把图像文件
 // 一并按孤儿口径清理，job 绑定语义由 PG 测试覆盖）。
 func TestCleanupExpiredRemovesStaleAndEmptyDirs(t *testing.T) {
-	deps := playgroundFixtureDeps(t, false)
+	deps := playgroundFixtureDeps(t)
 	mux, _ := newTestRoutes(deps)
 	staleTime := time.Now().Add(-25 * time.Hour)
 	stalePath := filepath.Join(artifactTestRoot(t, deps), "sys_user_1", "1700000000000000000-deadbeefdeadbeef.png")
@@ -450,7 +422,7 @@ func TestSanitizeArtifactID(t *testing.T) {
 // TestArtifactsEndpointsDegradedWithoutRoot 暂存/任务面未接线：产物端点与图
 // 像任务端点显式 503 降级，不进入派发路径（功能不设开关，非静默空行为）。
 func TestArtifactsEndpointsDegradedWithoutRoot(t *testing.T) {
-	deps := playgroundFixtureDeps(t, false)
+	deps := playgroundFixtureDeps(t)
 	deps.Artifacts = nil
 	deps.ImageJobs = nil
 	mux, _ := newTestRoutes(deps)
@@ -462,7 +434,7 @@ func TestArtifactsEndpointsDegradedWithoutRoot(t *testing.T) {
 		t.Fatalf("参考图上传应 503 降级: %d %s", recorder.Code, recorder.Body.String())
 	}
 	recorder = doJSON(mux, "POST", "/__aisys__/api/playground/images/jobs", mustJSON(map[string]any{
-		"accountId": "acc_1", "modelId": "gpt-image-2", "prompt": "一只猫",
+		"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "gpt-image-2", "prompt": "一只猫",
 	}))
 	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), "playground_endpoint_unavailable") {
 		t.Fatalf("任务创建应 503 降级: %d %s", recorder.Code, recorder.Body.String())
@@ -489,7 +461,7 @@ func TestArtifactsEndpointsDegradedWithoutRoot(t *testing.T) {
 // ServeContent 的字节与 Last-Modified 落实（参考图上传真实落盘，读取路径可
 // Range 请求）。
 func TestArtifactContentNotFoundAndServing(t *testing.T) {
-	deps := playgroundFixtureDeps(t, false)
+	deps := playgroundFixtureDeps(t)
 	addImageCandidate(deps)
 	mux, _ := newTestRoutes(deps)
 	recorder := doJSON(mux, "POST", "/__aisys__/api/playground/images/references", mustJSON(map[string]any{

@@ -3,11 +3,11 @@ package playground
 // 演练场图像生成任务存储（设计 §3.4/§5.1，v1.2 异步生图工作台）。
 //
 // 任务记录行落 juhe_business.playground_image_jobs（maintenance schema 已预
-// 置，主键 (system_account_id,id)，记录行永不删除）；结果图与参考图仍存
-// playground_artifacts（kind=image_result/image_reference），经 job_id 列关
-// 联任务。图像字节保留 7 天（§3.4.5 用户裁决），到期由 jobs 项目定时任务删
-// 字节并置 images_expired——本 store 只做读时判定与记录行状态机，不删任何
-// 记录行。
+// 置，主键 (system_account_id,id)）；结果图与参考图仍存 playground_artifacts
+// （kind=image_result/image_reference），经 job_id 列关联任务。图像字节保留
+// 7 天（§3.4.5 用户裁决），到期由 jobs 项目定时任务删字节并置
+// images_expired——本 store 只做读时判定与记录行状态机；记录行删除仅
+// §3.4.6 v1.5 手动删除入口（终态任务行与产物字节同事务一并删）。
 //
 // 状态机（§3.4.2 执行器口径）：
 //
@@ -47,10 +47,13 @@ const (
 const imageJobRetention = 7 * 24 * time.Hour
 
 // 图像任务存储错误哨兵（handler 层映射：任务不存在/越权 → 404
-// playground_job_not_found；参考图归属失败 → 400 playground_reference_not_found；
-// 存储未接线 → 503；status 过滤词表外 → 400；其余 → 500）。
+// playground_job_not_found；非终态不可删（§3.4.6 v1.5）→ 409
+// playground_job_not_deletable；参考图归属失败 → 400
+// playground_reference_not_found；存储未接线 → 503；status 过滤词表外 → 400；
+// 其余 → 500）。
 var (
 	errImageJobNotFound          = errors.New("playground image job not found")
+	errImageJobNotDeletable      = errors.New("playground image job not deletable")
 	errImageJobReferenceNotFound = errors.New("playground image job reference not found")
 	errImageJobStoreUnavailable  = errors.New("playground image job store unavailable")
 	errImageJobFilterInvalid     = errors.New("playground image job filter invalid")
@@ -66,7 +69,6 @@ type ImageJobRecord struct {
 	ViewerID      string
 	ID            string
 	Status        string
-	AccountID     string
 	APIKeyID      string
 	ProviderCode  string
 	ModelID       string
@@ -103,11 +105,13 @@ type ImageJobUsage struct {
 // ImageJobCard 是任务卡片（§3.4.3/§3.4.4 列表与详情同形）。created 形状归一
 // 见 imageJobCardOf。
 type ImageJobCard struct {
-	JobID          string             `json:"jobId"`
-	Status         string             `json:"status"`
-	Prompt         string             `json:"prompt"`
-	Model          string             `json:"model"`
-	AccountID      string             `json:"accountId"`
+	JobID  string `json:"jobId"`
+	Status string `json:"status"`
+	Prompt string `json:"prompt"`
+	Model  string `json:"model"`
+	// APIKeyID 是创建时所选 API Key（§4.5：卡片行携带，供前端回填弹窗与
+	// 「Key 已删除」占位；来源 params jsonb 的 apiKeyId，存量行为空串）。
+	APIKeyID       string             `json:"apiKeyId"`
 	AspectRatio    string             `json:"aspectRatio"`
 	Resolution     string             `json:"resolution"`
 	Quality        string             `json:"quality"`
@@ -129,12 +133,12 @@ type ImageJobCard struct {
 // 值 + expired/active 派生态；Limit 默认 24、上限 100；Before 为 created_at
 // UnixMilli 游标（严格小于，按创建时间倒序）。
 type ImageJobFilter struct {
-	Keyword   string
-	AccountID string
-	Status    string
-	Quality   string
-	Limit     int
-	Before    int64
+	Keyword  string
+	APIKeyID string // 按 params jsonb 的 apiKeyId 过滤（创建时 Key）
+	Status   string
+	Quality  string
+	Limit    int
+	Before   int64
 }
 
 // ImageJobPage 是列表响应（§3.4.3：{jobs, nextCursor}；nextCursor 缺省 = 无
@@ -164,6 +168,11 @@ type ImageJobStore interface {
 	Get(viewerID, jobID string) (ImageJobCard, error)
 	// List 按过滤条件返回卡片页（created_at DESC；多取一条探测 nextCursor）。
 	List(viewerID string, filter ImageJobFilter) (ImageJobPage, error)
+	// Delete 手动删除任务（§3.4.6 v1.5）：仅终态（completed 含图像已删/failed）
+	// 可删，任务行与产物字节（image_result + image_reference）在同一事务内一并
+	// 删除；不存在/越权返回 errImageJobNotFound，非终态（queued/running）返回
+	// errImageJobNotDeletable。
+	Delete(viewerID, jobID string) error
 	// RecoverAtBoot 返回全部 queued 行（供重启后重新入队）并把全部 running 行
 	// 置 failed（"网关重启，任务中断"；goroutine 已随进程死亡，不可续）。
 	RecoverAtBoot() ([]ImageJobRecord, error)
@@ -225,11 +234,13 @@ func (s *pgImageJobStore) Create(job *ImageJobRecord) (ImageJobRecord, error) {
 		return ImageJobRecord{}, err
 	}
 	defer tx.Rollback()
+	// account_id 是历史列（v1.4 口径恒空串）：Key 归属随 params.apiKeyId 落
+	// jsonb，无 schema 迁移。
 	if _, err := tx.ExecContext(context.Background(),
 		`INSERT INTO `+playgroundImageJobsTable+`
 			(system_account_id,id,status,account_id,model_id,prompt,params,reference_artifact_ids,expires_at,created_at,updated_at)
-			VALUES ($1,$2,'`+imageJobStatusQueued+`',$3,$4,$5,$6::jsonb,$7::jsonb,0,$8,$8)`,
-		job.ViewerID, jobID, job.AccountID, job.ModelID, job.Prompt, string(params), string(referenceJSON), now); err != nil {
+			VALUES ($1,$2,'`+imageJobStatusQueued+`','',$3,$4,$5::jsonb,$6::jsonb,0,$7,$7)`,
+		job.ViewerID, jobID, job.ModelID, job.Prompt, string(params), string(referenceJSON), now); err != nil {
 		return ImageJobRecord{}, err
 	}
 	if len(references) > 0 {
@@ -324,7 +335,7 @@ func (s *pgImageJobStore) Fail(viewerID, jobID, message string) error {
 }
 
 // imageJobRowScan 是记录行查询的共享列清单与扫描目标。
-const imageJobRowColumns = `system_account_id,id,status,account_id,model_id,prompt,params,
+const imageJobRowColumns = `system_account_id,id,status,model_id,prompt,params,
 	result_artifact_ids,reference_artifact_ids,input_tokens,output_tokens,total_tokens,cost_usd,
 	error_message,images_expired,expires_at,created_at,updated_at,completed_at`
 
@@ -334,7 +345,7 @@ func scanImageJobRow(scan func(dest ...any) error) (ImageJobRecord, error) {
 	var record ImageJobRecord
 	var params, resultJSON, referenceJSON []byte
 	var costUSD sql.NullFloat64
-	if err := scan(&record.ViewerID, &record.ID, &record.Status, &record.AccountID, &record.ModelID,
+	if err := scan(&record.ViewerID, &record.ID, &record.Status, &record.ModelID,
 		&record.Prompt, &params, &resultJSON, &referenceJSON,
 		&record.InputTokens, &record.OutputTokens, &record.TotalTokens, &costUSD,
 		&record.ErrorMessage, &record.ImagesExpired, &record.ExpiresAt,
@@ -421,8 +432,9 @@ func (s *pgImageJobStore) List(viewerID string, filter ImageJobFilter) (ImageJob
 	if filter.Keyword != "" {
 		query += ` AND prompt ILIKE '%'||` + arg(escapeLikePattern(filter.Keyword)) + `||'%' ESCAPE '\'`
 	}
-	if filter.AccountID != "" {
-		query += ` AND account_id = ` + arg(filter.AccountID)
+	if filter.APIKeyID != "" {
+		// v1.4 口径：按创建时 Key 过滤（account_id 历史列恒空，归属在 params）。
+		query += ` AND params->>'apiKeyId' = ` + arg(filter.APIKeyID)
 	}
 	now := time.Now().UnixMilli()
 	switch filter.Status {
@@ -481,6 +493,49 @@ func (s *pgImageJobStore) List(viewerID string, filter ImageJobFilter) (ImageJob
 // 单趟替换、替换产物不重扫，转义符替换不会二次转义）。
 func escapeLikePattern(value string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(value)
+}
+
+// Delete implements ImageJobStore. 手动删除（§3.4.6 v1.5）：事务内先按
+// (system_account_id, id) 读状态——ErrNoRows → errImageJobNotFound（不存在/
+// 越权统一口径，不泄露他户任务存在性）；queued/running →
+// errImageJobNotDeletable（生成中不做取消语义，等终态后可删）；然后任务行与
+// 产物字节（image_result + image_reference，经 job_id 列关联）在同一事务内
+// 一并删除——区别于到期清理的「删字节留记录」，不可恢复。
+func (s *pgImageJobStore) Delete(viewerID, jobID string) error {
+	if err := validateArtifactViewer(viewerID); err != nil {
+		return err
+	}
+	if !s.available() {
+		return errImageJobStoreUnavailable
+	}
+	tx, err := s.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var status string
+	if err := tx.QueryRowContext(context.Background(),
+		`SELECT status FROM `+playgroundImageJobsTable+` WHERE system_account_id=$1 AND id=$2`,
+		viewerID, jobID).Scan(&status); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errImageJobNotFound
+		}
+		return err
+	}
+	if status == imageJobStatusQueued || status == imageJobStatusRunning {
+		return errImageJobNotDeletable
+	}
+	if _, err := tx.ExecContext(context.Background(),
+		`DELETE FROM `+playgroundArtifactsTable+` WHERE system_account_id=$1 AND job_id=$2 AND kind IN ('image_result','image_reference')`,
+		viewerID, jobID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(context.Background(),
+		`DELETE FROM `+playgroundImageJobsTable+` WHERE system_account_id=$1 AND id=$2`,
+		viewerID, jobID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // RecoverAtBoot implements ImageJobStore. 单事务内先读 queued 再把 running 全
@@ -542,7 +597,7 @@ func imageJobCardOf(record ImageJobRecord, now time.Time) ImageJobCard {
 		Status:         record.Status,
 		Prompt:         record.Prompt,
 		Model:          record.ModelID,
-		AccountID:      record.AccountID,
+		APIKeyID:       record.APIKeyID,
 		AspectRatio:    record.AspectRatio,
 		Resolution:     record.Resolution,
 		Quality:        record.Quality,

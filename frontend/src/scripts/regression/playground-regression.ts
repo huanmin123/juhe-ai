@@ -14,7 +14,9 @@ import { firstModelIdOf, resolveModelsForKind } from '../../views/playground/use
 // embeddings/rerank 请求形状（apiKeyId 载荷）与 unwrap、零会话持久化断言（消息与
 // 向量/重排结果只存页面内存，无 localStorage / 无会话 API / 无 /my-chat 引用）；
 // v1.2 图像工作台：快速入口、占位卡片、3s 轮询 + 熔断、删除倒计时、已删除图像
-// 读时派生、终态回填、active 筛选与参考图上传（同步 images 已退役断言）。
+// 读时派生、终态回填、active 筛选与参考图上传（同步 images 已退役断言）；
+// v1.5 卡片操作区（复审二改定案）：状态徽标维持 v1.3 原位叠加缩略图左上、仅下载/
+// 删除移出图像区为操作行图标按钮（删除 a-popconfirm 二次确认 + imagesJobRemove DELETE，§3.4.6）。
 
 // —— 1) 路由与菜单注册 ——
 const routerSource = readFileSync(new URL('../../router/index.ts', import.meta.url), 'utf8')
@@ -86,6 +88,10 @@ for (const endpoint of ['imagesReferences', 'imagesCreateJob', 'imagesJobs', 'im
   assert.match(playgroundApiSource, new RegExp(`${endpoint}\\s*[:(]`), `图像工作台 API 域必须提供 ${endpoint}（v1.2 §3.4）`)
 }
 assert.doesNotMatch(playgroundApiSource, /\bimages:\s*(async|\()/, 'v1.0 同步 images() 已退役（§8），API 域不得再有该函数')
+// v1.5 手动删除（§3.4.6）：DELETE /playground/images/jobs/{id}，jobId 经 encodeURIComponent，
+// 成功 204 无响应体（断言锚定整行形状，天然排除 unwrap 包裹）。
+assert.match(playgroundApiSource, /imagesJobRemove\s*[:(]/, '图像工作台 API 域必须提供 imagesJobRemove（v1.5 §3.4.6 手动删除）')
+assert.match(playgroundApiSource, /imagesJobRemove: \(jobId: string\) => http\.delete\(`\/playground\/images\/jobs\/\$\{encodeURIComponent\(jobId\)\}`\)/, 'imagesJobRemove 必须 DELETE /playground/images/jobs/{id}（jobId 经 encodeURIComponent，成功 204 无响应体不 unwrap，§3.4.6）')
 
 // 视频页轮询熔断（源码形态断言，视图组件无组件测试）：连续失败 ≥5 次停止
 // 轮询并置终态错误提示（手动刷新重试）。
@@ -113,6 +119,32 @@ assert.match(imageViewSource, /function handleCardClick\(job: PlaygroundImageJob
 assert.match(imageViewSource, /job\.status === 'completed' \|\| job\.status === 'failed'/, '回填弹窗仅对终态卡片开放（isCardClickable）')
 assert.match(imageViewSource, /\{ label: '生成中', value: 'active' \}/, '「生成中」筛选必须用契约派生态 active（= queued+running 一次覆盖），不得只筛 running')
 
+// —— 2.0.2) v1.5 卡片操作区（§4.2/§3.4.6 用户裁决 + 复审二改定案）：状态徽标维持
+// v1.3 原位叠加缩略图左上（定位样式照旧），仅下载/删除移出图像区为信息区末行操作行
+// 图标按钮（删除带 danger 并经 a-popconfirm 二次确认），成功后停轮清计数、本地移除
+// 卡片并 toast；信息区三块（提示词 → 标签 → 元信息+操作行），不新增独立状态行。
+const imageViewThumbBlock = imageViewSource.slice(imageViewSource.indexOf('<div class="image-card-thumb">'), imageViewSource.indexOf('image-card-body'))
+assert.match(imageViewThumbBlock, /<div class="image-card-thumb">[\s\S]{0,300}<span class="playground-status"/, '状态徽标必须维持 v1.3 原位叠加缩略图左上（thumb 块首元素，仅容许注释间隔，§4.2 v1.5 复审二改定案）')
+assert.match(imageViewSource, /\.image-card-thumb > \.playground-status \{[\s\S]{0,160}position: absolute[\s\S]{0,120}top: 8px;[\s\S]{0,40}left: 8px;/, '缩略图状态角标必须保持左上角叠加定位（position absolute top/left 8px，v1.3 原位）')
+assert.doesNotMatch(imageViewThumbBlock, /image-card-download|DownloadOutlined|DeleteOutlined|a-popconfirm/, 'v1.5 缩略图区只承载图像/占位与状态角标叠加，下载/删除按钮一律移出图像区')
+assert.doesNotMatch(imageViewSource, /image-card-download/, 'v1.5 旧缩略图悬浮下载按钮及其样式已退役（下载改操作行图标按钮）')
+assert.doesNotMatch(imageViewSource, /image-card-status-row|image-card-prompt-row/, '不得新增独立状态行或将徽标并入提示词行（v1.5 复审二改定案：维持 v1.3 原位叠加）')
+assert.match(imageViewSource, /import \{ ArrowUpOutlined, DeleteOutlined, DownloadOutlined \} from '@ant-design\/icons-vue'/, '操作行图标依赖 DownloadOutlined 与 DeleteOutlined（v1.5）')
+assert.match(imageViewSource, /class="image-card-actions"[\s\S]{0,400}<DownloadOutlined \/>/, '下载必须是信息区操作行 image-card-actions 的 DownloadOutlined 图标按钮（v1.5）')
+assert.match(imageViewSource, /class="image-card-actions"[\s\S]{0,1200}<DeleteOutlined \/>/, '删除必须是信息区操作行 image-card-actions 的 DeleteOutlined 图标按钮（v1.5）')
+assert.match(imageViewSource, /v-if="showImageThumb\(job\)"[\s\S]{0,300}downloadImage\(job\)[\s\S]{0,150}<DownloadOutlined \/>/, '下载入口仅在 completed 且未删（showImageThumb）时显示并触发 downloadImage（v1.5）')
+assert.match(imageViewSource, /v-if="isJobTerminal\(job\)"[\s\S]{0,800}<DeleteOutlined \/>/, '删除入口仅终态（completed/failed，含图像已删卡片）显示（§3.4.6）')
+assert.match(imageViewSource, /function isJobTerminal\(job: PlaygroundImageJob\): boolean \{[\s\S]{0,120}job\.status === 'completed' \|\| job\.status === 'failed'/, '终态判定必须覆盖 completed（含图像已删）与 failed（isJobTerminal，§3.4.6）')
+assert.match(imageViewSource, /size="small"[\s\S]{0,80}danger[\s\S]{0,120}title="删除任务"/, '删除按钮必须带 danger 语义色（v1.5）')
+assert.match(imageViewSource, /a-popconfirm[\s\S]{0,200}删除后任务记录与图像一并删除，不可恢复[\s\S]{0,200}@confirm="deleteJob\(job\)"/, '删除必须经 a-popconfirm 二次确认「删除后任务记录与图像一并删除，不可恢复」（§3.4.6）')
+assert.match(imageViewSource, /async function deleteJob\(job: PlaygroundImageJob\): Promise<void> \{[\s\S]{0,200}imagesJobRemove\(job\.jobId\)[\s\S]{0,300}message\.success\('已删除'\)/, '删除确认必须调 imagesJobRemove，成功后清理轮询与本地移除卡片并 toast「已删除」（§3.4.6）')
+
+// —— 2.0.1) Key 化卡片行（v1.4 §3.4.3/§3.4.4）：任务行携带 apiKeyId（历史筛选 + 卡片回填依据）——
+const playgroundTypesSource = readFileSync(new URL('../../types/domain/playground.ts', import.meta.url), 'utf8')
+assert.match(playgroundTypesSource, /interface PlaygroundImageJob \{[\s\S]{0,600}apiKeyId: string/, '图像任务卡片行必须携带 apiKeyId（v1.4 行投影：归属以创建时 Key 为准）')
+assert.doesNotMatch(playgroundTypesSource, /accountId: string/, 'Key 化（v1.4）后演练场类型不得再有任何 accountId 字段（卡片行/请求载荷一律 apiKeyId）')
+assert.match(imageViewSource, /apiKeyId: ''/, '图像占位卡片行字段必须同步 Key 化（apiKeyId 空串）')
+
 const workbenchModalSource = readFileSync(new URL('../../views/playground/PlaygroundImageWorkbenchModal.vue', import.meta.url), 'utf8')
 assert.match(workbenchModalSource, /const maxReferences = 10/, '参考图上限必须为 10 张（maxReferences）')
 assert.match(workbenchModalSource, /const maxReferenceBytes = 10 \* 1024 \* 1024/, '单张参考图上限必须为 10MB（maxReferenceBytes）')
@@ -125,10 +157,10 @@ assert.match(workbenchModalSource, /const resolution = ref<PlaygroundImageResolu
 assert.match(workbenchModalSource, /const quality = ref<PlaygroundImageQuality>\('standard'\)/, '生成质量必须固定默认标准（无「默认」档）')
 assert.match(workbenchModalSource, /const outputFormat = ref<PlaygroundImageOutputFormat>\('png'\)/, '输出格式必须固定默认 PNG（无「默认」档）')
 assert.doesNotMatch(workbenchModalSource, /label: '默认'/, '参数四项不得再有「默认」选项（v1.3 必选其一）')
-assert.match(workbenchModalSource, /workbench-estimate/, '生成设置必须展示预计扣费块（2026-11-22 Key 化恢复 v1.2 口径）')
-assert.match(workbenchModalSource, /estimatedCostUsd/, '预计扣费必须从所选模型行 imageEstimate 计算（estimatedCostUsd）')
-assert.match(workbenchModalSource, /priceByTier\?\.\[resolution\.value\]/, '预计扣费必须按分辨率档命中 priceByTier，缺档回落 perImageUsd')
-assert.match(workbenchModalSource, /@change="handleApiKeyChange"/, '生成设置 Key→模型联动必须经 handleApiKeyChange 重置模型选择')
+assert.doesNotMatch(workbenchModalSource, /workbench-estimate|estimatedCostUsd|imageEstimate/, '生成设置不得展示费用（v1.3 裁决：演练场不展示 tokens/费用，2026-11-22 Key 化后继续有效）')
+assert.match(workbenchModalSource, /@change="handleKeyChange"/, '生成设置 Key 下拉必须经 handleKeyChange 清占位态后联动重置')
+assert.match(workbenchModalSource, /job\.apiKeyId/, '卡片回填 Key/模型必须以卡片 apiKeyId 为准（§4.2，不再使用当前/默认 Key）')
+assert.match(workbenchModalSource, /原 Key 已删除，请重新选择/, '回填 Key 已删除/不在本人列表时必须占位「原 Key 已删除，请重新选择」并要求重选（不阻断其他项回填，§4.2）')
 assert.match(workbenchModalSource, /a-upload-dragger/, '参考图必须用拖拽上传区（a-upload-dragger）')
 assert.match(workbenchModalSource, /workbench-param-option/, '参数四项必须用块状选择器（workbench-param-option）')
 assert.match(workbenchModalSource, /最终以上游返回/, '比例/分辨率近似映射必须注明「最终以上游返回结果为准」（§4.2）')
@@ -146,7 +178,8 @@ assert.match(embeddingsViewSource, /Math\.max\(0, Math\.min\(1, score\)\)/, '热
 assert.match(embeddingsViewSource, /lightness <= 60 \? '#fff'/, '深色单元格必须换白字保证三位小数可读')
 assert.match(embeddingsViewSource, /toFixed\(3\)/, '矩阵单元格必须显示三位小数')
 assert.match(embeddingsViewSource, /navigator\.clipboard\.writeText\(JSON\.stringify\(item\.vector\)\)/, '结果卡必须提供「复制向量 JSON」按钮')
-assert.match(embeddingsViewSource, /performance\.now\(\)/, '用量行必须以 performance.now 计时前端耗时')
+assert.match(embeddingsViewSource, /performance\.now\(\)/, '结果行必须以 performance.now 计时前端耗时')
+assert.doesNotMatch(embeddingsViewSource, /promptTokens|totalTokens/, '向量页结果行不得渲染 tokens（v1.3 裁决全演练场口径：usage 数据流保留，仅 UI 不渲染）')
 assert.doesNotMatch(embeddingsViewSource, /artifacts/, '向量页无暂存产物，不得引用 artifacts 恢复逻辑（零持久化）')
 
 // —— 2.2) 重排测试页结构断言（§4.4）：rerank 目录联动、分数条归一、名次徽标、前端计时 ——
@@ -161,7 +194,8 @@ assert.match(rerankViewSource, /transition: width 0\.4s ease/, '分数条必须�
 assert.match(rerankViewSource, /rankBadgeClass\(rank\)/, '排序结果必须渲染名次徽标')
 assert.match(rerankViewSource, /toFixed\(3\)/, '重排分数必须显示三位小数')
 assert.match(rerankViewSource, /item\.document\?\.text/, 'returnDocuments=false 时必须只渲染名次 + 行号 + 分数')
-assert.match(rerankViewSource, /performance\.now\(\)/, '用量行必须以 performance.now 计时前端耗时')
+assert.match(rerankViewSource, /performance\.now\(\)/, '结果行必须以 performance.now 计时前端耗时')
+assert.doesNotMatch(rerankViewSource, /promptTokens|totalTokens/, '重排页结果行不得渲染 tokens（v1.3 裁决全演练场口径：usage 数据流保留，仅 UI 不渲染）')
 assert.doesNotMatch(rerankViewSource, /artifacts/, '重排页无暂存产物，不得引用 artifacts 恢复逻辑（零持久化）')
 
 // —— 3) SSE 事件解析行为回放（delta/usage/error + 跨 chunk 分帧；2026-11-22 Key 化后
@@ -224,7 +258,7 @@ assert.equal(errorEvent.message, '上游失败')
 // —— 4) Key→模型联动纯函数（六 kind 过滤 + 默认选中第一个；Key 化后模型行为扁平行）——
 const fixtureKeyModels: PlaygroundModelOption[] = [
   { modelId: 'gpt-5.4', kind: 'chat', providerCode: 'gpt' },
-  { modelId: 'gpt-image-2', kind: 'image', providerCode: 'gpt', imageEstimate: { perImageUsd: 0.05, priceByTier: { '1k': 0.04, '2k': 0.06 } } },
+  { modelId: 'gpt-image-2', kind: 'image', providerCode: 'gpt' },
   { modelId: 'grok-imagine-video-1.5', kind: 'video', providerCode: 'xai' },
   { modelId: 'speech-2.8-hd', kind: 'audio', providerCode: 'minimax' },
   { modelId: 'text-embedding-v4', kind: 'embedding', providerCode: 'qwen' },

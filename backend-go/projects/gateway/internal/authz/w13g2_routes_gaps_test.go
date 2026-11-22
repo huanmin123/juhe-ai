@@ -62,7 +62,7 @@ func TestW13g2MountSelfSurfaceChain(t *testing.T) {
 	f.seedGroup(t, "grp3_w13s", "owner1")
 	f.seedTeamWithMember(t, "team_w13s", "grantee")
 	seedResourceAccount(t, f, "acc_w13s", "owner1", "源账户")
-	// grantee 的默认分组：账户授权领取缺省时一步绑定该分组（组无 provider
+	// grantee 的默认分组：账户授权领取必选目标分组时选它（组无 provider
 	// 维度），is_default=1。
 	if _, err := f.db.Exec(`INSERT INTO groups (id, name, system_account_id, status, enabled, is_default, updated_at)
 		VALUES ('tg_w13s', '默认分组', 'grantee', 'active', 1, 1, '2026-01-01T00:00:00Z')`); err != nil {
@@ -178,8 +178,8 @@ func TestW13g2MountSelfSurfaceChain(t *testing.T) {
 		t.Fatalf("my revoke 应 200: %d %s", status, body)
 	}
 
-	// account 资源 create：targetGroupId 不是发起键；接收方接受（缺省回落
-	// 默认分组）一步创建实例并自动绑定。
+	// account 资源 create：targetGroupId 不是发起键；接收方接受时必选目标
+	// 分组（2026-11-22 用户裁决，无缺省回落）一步创建实例并自动绑定。
 	status, body = env.do(t, http.MethodPost, selfPrefix,
 		`{"resourceType":"account","resourceId":"acc_w13s","granteeType":"system_account","granteeUsername":"grantee"}`)
 	if status != http.StatusCreated {
@@ -187,7 +187,7 @@ func TestW13g2MountSelfSurfaceChain(t *testing.T) {
 	}
 	accountSourceID := w13g2DataMap(t, body)["sourceId"].(string)
 	status, body = granteeEnv.do(t, http.MethodPost,
-		"/__aisys__/api/my-authorization-sources/"+accountSourceID+"/accept", `{}`)
+		"/__aisys__/api/my-authorization-sources/"+accountSourceID+"/accept", `{"targetGroupId":"tg_w13s"}`)
 	if status != http.StatusOK || !strings.Contains(body, `"bound":true`) {
 		t.Fatalf("account accept 应 200 且一步绑定: %d %s", status, body)
 	}
@@ -203,7 +203,7 @@ func TestW13g2MountSelfSurfaceChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	if boundGroups != 1 {
-		t.Fatalf("account 接受应自动绑定接收方默认分组: %d", boundGroups)
+		t.Fatalf("account 接受应绑定所选目标分组: %d", boundGroups)
 	}
 }
 

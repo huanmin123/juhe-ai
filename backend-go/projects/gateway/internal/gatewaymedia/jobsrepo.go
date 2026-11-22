@@ -42,14 +42,14 @@ type MediaJobRecord struct {
 	Kind     MediaJobKind
 	APIKeyID string
 	// APIKeyName 是 api_keys.name 的读面水合值（LEFT JOIN api_keys；Key 已删除
-	// 或内部免 Key 直调任务为空串）。任务行本身只持久化 api_key_id，用户面
-	// 展示必须用名称而不是内部 ID。
+	// 时为空串；历史免 Key 直调存量行本就无 Key 身份）。任务行本身只持久化
+	// api_key_id，用户面展示必须用名称而不是内部 ID。
 	APIKeyName string
-	// OwnerSystemAccountID 是任务归属系统账户（会话 owner，AI 问答免 Key 直调
-	// 计划 §3.3）。新行由创建路径直接写入（内部通道=注入的会话 owner，外部=
-	// API Key 属主系统账户）；存量行经 maintenance ensure 从 api_keys 回填。
-	// APIKeyID 保留为历史审计列（外部 /v1 任务面仍按它做 Key 级隔离），归属
-	// 的属主判定不再依赖它。
+	// OwnerSystemAccountID 是任务归属系统账户（历史免 Key 直调计划引入该列，
+	// 该内部通道已随真实 Key 派发退役）。现行为创建 API Key 的属主系统账户
+	// （存量行曾写注入的会话 owner，经 maintenance ensure 从 api_keys 回填）。
+	// APIKeyID 恒为创建 Key（免 Key 直调存量行为空串），保留为历史审计列
+	// （外部 /v1 任务面仍按它做 Key 级隔离），归属的属主判定不再依赖它。
 	OwnerSystemAccountID string
 	AccountID            string
 	// AccountName 是 accounts.name 的读面水合值（与 VendorCode 同一 LEFT JOIN；
@@ -116,9 +116,9 @@ type MediaJobRequestSnapshot struct {
 	GroupAuthorizationSourceTeamID string `json:"groupAuthorizationSourceTeamId,omitempty"`
 }
 
-// ErrMediaJobNotFound 是归属查询单行未命中（GetByIDAndAPIKey / GetByIDAndOwner
-// / GetByOwnerAndID：不存在或非本人任务）的哨兵错误；链上层按 404 语义渲染，
-// 不区分两种情况（归属信息不泄露）。
+// ErrMediaJobNotFound 是归属查询单行未命中（GetByIDAndAPIKey / GetByOwnerAndID
+// ：不存在或非本人任务）的哨兵错误；链上层按 404 语义渲染，不区分两种情况
+// （归属信息不泄露）。
 var ErrMediaJobNotFound = errors.New("媒体任务不存在")
 
 // MediaJobsRepo 是 media_jobs 的行仓储。
@@ -348,25 +348,6 @@ func (r *MediaJobsRepo) GetByIDAndAPIKey(ctx context.Context, id, apiKeyID strin
 	return rows[0], nil
 }
 
-// GetByIDAndOwner 按 id + 归属系统账户取行（内部通道任务面与 chat 侧媒体端口
-// 消费，AI 问答免 Key 直调计划 §3.3：AI 问答会话不再创建专用 API Key，归属
-// 直接按 owner_system_account_id 判定，不经 api_keys join 推导）。未命中返回
-// ErrMediaJobNotFound。
-func (r *MediaJobsRepo) GetByIDAndOwner(ctx context.Context, id, ownerSystemAccountID string) (*MediaJobRecord, error) {
-	owner := strings.TrimSpace(ownerSystemAccountID)
-	if owner == "" {
-		return nil, ErrMediaJobNotFound
-	}
-	rows, err := r.query(ctx, `WHERE mj.id = ? AND mj.owner_system_account_id = ?`, id, owner, 1, 0)
-	if err != nil {
-		return nil, err
-	}
-	if len(rows) == 0 {
-		return nil, ErrMediaJobNotFound
-	}
-	return rows[0], nil
-}
-
 // GetManagementByID 按 id 取单行全量（管理面详情端点消费：无归属过滤，
 // 行解码与列表查询同源）。未命中返回 ErrMediaJobNotFound。
 func (r *MediaJobsRepo) GetManagementByID(ctx context.Context, id string) (*MediaJobRecord, error) {
@@ -406,32 +387,6 @@ func (r *MediaJobsRepo) listByAPIKeyWhere(ctx context.Context, apiKeyID, kind st
 	return r.query(ctx, `WHERE mj.api_key_id = ? AND mj.kind = ?`, apiKeyID, kind, limit, offset)
 }
 
-// ListByOwner 按归属系统账户倒序分页（内部通道任务面列表消费，AI 问答免 Key
-// 直调计划 §3.3）。
-func (r *MediaJobsRepo) ListByOwner(ctx context.Context, ownerSystemAccountID string, limit, offset int) ([]*MediaJobRecord, error) {
-	return r.listByOwnerWhere(ctx, ownerSystemAccountID, "", limit, offset)
-}
-
-// ListByOwnerAndKind 按归属系统账户 + 任务种类倒序分页（内部通道任务面列表
-// 消费：kind 空串 = 不过滤）。
-func (r *MediaJobsRepo) ListByOwnerAndKind(ctx context.Context, ownerSystemAccountID string, kind MediaJobKind, limit, offset int) ([]*MediaJobRecord, error) {
-	return r.listByOwnerWhere(ctx, ownerSystemAccountID, string(kind), limit, offset)
-}
-
-func (r *MediaJobsRepo) listByOwnerWhere(ctx context.Context, ownerSystemAccountID, kind string, limit, offset int) ([]*MediaJobRecord, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 20
-	}
-	if offset < 0 {
-		offset = 0
-	}
-	owner := strings.TrimSpace(ownerSystemAccountID)
-	if strings.TrimSpace(kind) == "" {
-		return r.query(ctx, `WHERE mj.owner_system_account_id = ?`, owner, limit, offset)
-	}
-	return r.query(ctx, `WHERE mj.owner_system_account_id = ? AND mj.kind = ?`, owner, kind, limit, offset)
-}
-
 // ListExpired 取超过保留 TTL 的行（清理 job 消费：置 expired / 删行；清理
 // 任务属下一任务，本仓储只提供查询）。created_at 早于 before 的行命中。
 func (r *MediaJobsRepo) ListExpired(ctx context.Context, before time.Time, limit int) ([]*MediaJobRecord, error) {
@@ -444,8 +399,8 @@ func (r *MediaJobsRepo) ListExpired(ctx context.Context, before time.Time, limit
 // MediaJobListQuery 是管理面任务列表的查询参数（GET /__aisys__/api/media-jobs
 // 消费；空串 = 不过滤）。OwnerSystemAccountID 是按任务归属系统账户
 // （media_jobs.owner_system_account_id）的过滤：管理面按用户筛选与用户面钉死
-// 调用者共用同一条件（AI 问答免 Key 直调计划 §3.3 起直接按 owner 列判定，
-// 不经 api_keys join 推导）。
+// 调用者共用同一条件（历史免 Key 直调计划起直接按 owner 列判定，不经
+// api_keys join 推导）。
 type MediaJobListQuery struct {
 	Status               string
 	Kind                 string
@@ -479,8 +434,8 @@ func (r *MediaJobsRepo) ListManagement(ctx context.Context, query MediaJobListQu
 
 // GetByOwnerAndID 按 id + 归属属主取单行（用户面详情消费：owner 是当前登录
 // 用户，直接按 media_jobs.owner_system_account_id 判定——不经 api_keys join
-// 推导，AI 问答免 Key 直调计划 §3.3；跨属主与未命中同样返回
-// ErrMediaJobNotFound，不泄露存在性）。
+// 推导（历史免 Key 直调计划确立的归属口径，该内部通道已退役）；跨属主与
+// 未命中同样返回 ErrMediaJobNotFound，不泄露存在性）。
 func (r *MediaJobsRepo) GetByOwnerAndID(ctx context.Context, id, ownerSystemAccountID string) (*MediaJobRecord, error) {
 	owner := strings.TrimSpace(ownerSystemAccountID)
 	if owner == "" {

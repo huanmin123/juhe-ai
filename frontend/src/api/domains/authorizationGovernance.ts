@@ -104,10 +104,15 @@ export const myAuthorizationCenterApi = {
   inboxSummary: () => unwrap<AuthorizationInboxSummary>(http.get(`/my-authorizations/inbox-summary`)),
   inbound: async () => (await unwrap<{ items: AuthorizationSourceSummary[] }>(http.get('/my-authorizations', { params: { direction: 'inbound' } }))).items,
   outbound: async () => (await unwrap<{ items: AuthorizationOfferSummary[] }>(http.get('/my-authorizations', { params: { direction: 'outbound' } }))).items,
-  // 领取即生效：分组授权直接生效；账户授权不选分组时由后端绑入接收人
-  // 供应商默认分组（defaultGroupIDForProvider 兜底）。
-  accept: (sourceId: string) =>
-    unwrap<unknown>(http.post(`/my-authorization-sources/${sourceId}/accept`)),
+  // 领取即生效：分组授权直接领取（无请求体）；账户授权必选接收方自己的启用
+  // 普通分组作为 targetGroupId（绑定完成才是领取，后端不再缺省回落默认分组）。
+  accept: (sourceId: string, targetGroupId?: string) =>
+    unwrap<unknown>(
+      http.post(`/my-authorization-sources/${sourceId}/accept`, targetGroupId ? { targetGroupId } : undefined)
+    ),
+  // 换绑分组：仅账户授权、仅 active 来源；必填 targetGroupId，同组 no-op、异组移动绑定。
+  changeGroup: (sourceId: string, targetGroupId: string) =>
+    unwrap<unknown>(http.post(`/my-authorization-sources/${sourceId}/change-group`, { targetGroupId })),
   decline: (sourceId: string) => unwrap<unknown>(http.post(`/my-authorization-sources/${sourceId}/decline`)),
   return: (sourceId: string) => unwrap<unknown>(http.post(`/my-authorization-sources/${sourceId}/return`)),
   pause: (grantId: string) => unwrap<unknown>(http.post(`/my-authorizations/${grantId}/pause`)),

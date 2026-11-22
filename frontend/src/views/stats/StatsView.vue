@@ -141,14 +141,6 @@
       >
         <template #title-extra>
           <div class="stats-daily-controls">
-            <a-segmented
-              v-model:value="dailyTrendMetric"
-              :options="dailyTrendMetricOptions"
-              :disabled="dailyTrendLoading"
-              size="small"
-              aria-label="趋势指标"
-              @change="renderCharts"
-            />
             <StatsPerspectiveSwitch value="overview" :disabled="loading" />
           </div>
         </template>
@@ -226,6 +218,7 @@ import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDa
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import type { UsageStatsOverview, UsageStatsOverviewDailyTrendResult } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
+import { cacheReadRate } from '@/views/usage-stats/usageStatsHelpers'
 import StatsChartCard from './StatsChartCard.vue'
 import StatsPerspectiveSwitch from './StatsPerspectiveSwitch.vue'
 import StatsSummaryCards from './StatsSummaryCards.vue'
@@ -283,11 +276,6 @@ const selectedSystemAccountId = ref(incomingWorkspace?.systemAccountId || initia
 const selectedSystemAccount = ref<PrincipalSelection | undefined>(incomingWorkspace ? incomingWorkspace.systemAccount : initialPageState.selectedSystemAccount)
 const usageOverview = ref<UsageStatsOverview>()
 const dailyTrend = ref<UsageStatsOverviewDailyTrendResult>()
-const dailyTrendMetric = ref<'tokens' | 'cost'>('tokens')
-const dailyTrendMetricOptions = [
-  { label: 'Token', value: 'tokens' },
-  { label: '成本', value: 'cost' }
-] satisfies Array<{ label: string; value: 'tokens' | 'cost' }>
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const { usageStatsWindowEndDate, usageStatsWindowMaxDays, loadUsageStatsWindow } = useUsageStatsWindow()
 const {
@@ -343,7 +331,7 @@ const { pageActive, requestRender: renderCharts } = useEchartsPageLifecycle({
   onDeactivate: handlePageDeactivate
 })
 
-const hasDailyTrend = computed(() => hasDailyConsumptionData(dailyTrend.value?.dailyTrend ?? [], dailyTrendMetric.value))
+const hasDailyTrend = computed(() => hasDailyConsumptionData(dailyTrend.value?.dailyTrend ?? []))
 const hasUsageTrend = computed(() => (usageOverview.value?.hourlyTrend.length ?? 0) > 0)
 const hasModelDistribution = computed(() => (usageOverview.value?.modelDistribution.length ?? 0) > 0)
 const hasErrors = computed(() => (usageOverview.value?.errors.length ?? 0) > 0)
@@ -372,8 +360,8 @@ const mobileFilterActive = computed(() => quickRangeValue.value === undefined
 const dailyTrendRangeLabel = computed(() => dailyTrend.value
   ? `${formatDateLabel(dailyTrend.value.range.startDate)} 至 ${formatDateLabel(dailyTrend.value.range.endDate)}`
   : currentWindowLabel.value)
-const dailyTrendTitle = computed(() => `Token 与成本（${dailyTrendRangeLabel.value}）`)
-const dailyTrendEmptyDescription = computed(() => `${dailyTrendRangeLabel.value}${dailyTrendMetric.value === 'cost' ? '暂无成本数据' : '暂无 Token 消耗'}`)
+const dailyTrendTitle = computed(() => `Token 消耗（${dailyTrendRangeLabel.value}）`)
+const dailyTrendEmptyDescription = computed(() => `${dailyTrendRangeLabel.value}暂无 Token 消耗`)
 const hasWindowUsage = computed(() => (usageOverview.value?.summary.requestCount ?? 0) > 0)
 const usageTrendEmptyDescription = computed(() => hasWindowUsage.value ? `${currentWindowLabel.value}暂无趋势数据，窗口指标已在上方展示` : `${currentWindowLabel.value}暂无趋势数据`)
 const modelDistributionEmptyDescription = computed(() => `${currentWindowLabel.value}暂无模型调用`)
@@ -383,7 +371,7 @@ const summaryCards = computed(() => {
   return [
     { key: 'requests', label: '范围请求', value: formatInteger(summary?.requestCount), extra: `成功 ${formatInteger(summary?.successCount)} / 失败 ${formatInteger(summary?.errorCount)} / 失败率 ${formatPercent((summary?.errorRate ?? 0) * 100)}` },
     { key: 'firstToken', label: '平均首 Token', value: formatDurationSeconds(summary?.averageFirstTokenMs), extra: `平均总耗时 ${formatDurationSeconds(summary?.averageDurationMs)}` },
-    { key: 'tokens', label: 'Token 消耗', value: formatCompactInteger(summary?.totalTokens), extra: `输入 ${formatCompactInteger(summary?.inputTokens)} / 输出 ${formatCompactInteger(summary?.outputTokens)} / 缓存读 ${formatCompactInteger(summary?.cacheReadTokens)}` },
+    { key: 'tokens', label: 'Token 消耗', value: formatCompactInteger(summary?.totalTokens), extra: `输入 ${formatCompactInteger(summary?.inputTokens)} / 输出 ${formatCompactInteger(summary?.outputTokens)} / 缓存读 ${formatCompactInteger(summary?.cacheReadTokens)} / 缓存率 ${formatPercent(cacheReadRate(summary))}` },
     { key: 'cost', label: '成本', value: formatCost(summary?.totalCost), extra: buildCostExtra(summary) }
   ]
 })
@@ -502,7 +490,7 @@ async function loadDailyTrend(force = false): Promise<void> {
   } catch (error) {
     if (requestSeq !== dailyTrendRequestSeq) return
     console.error(error)
-    dailyTrendError.value = 'Token 与成本趋势加载失败，请重试'
+    dailyTrendError.value = 'Token 消耗趋势加载失败，请重试'
   } finally {
     if (requestSeq === dailyTrendRequestSeq) dailyTrendLoading.value = false
   }
@@ -767,7 +755,7 @@ async function renderDailyTrendChart() {
   }
   const chart = await ensureChart(dailyTrendChartRef, dailyTrendChart, () => pageActive.value)
   if (!chart || !dailyTrend.value || !pageActive.value) return
-  chart.setOption(buildDailyConsumptionOption(dailyTrend.value.dailyTrend, dailyTrendMetric.value), { notMerge: true })
+  chart.setOption(buildDailyConsumptionOption(dailyTrend.value.dailyTrend), { notMerge: true })
 }
 
 async function renderUsageTrendChart() {

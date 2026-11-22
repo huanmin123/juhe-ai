@@ -174,7 +174,7 @@ func (rt *playgroundRoutes) runVideosCreate(ctx context.Context, scope Scope, re
 	}
 	ref := videoTaskRef{
 		JobID:     jobID,
-		AccountID: strings.TrimSpace(req.APIKeyID),
+		APIKeyID:  strings.TrimSpace(req.APIKeyID),
 		ModelID:   model,
 		Status:    status,
 		CreatedAt: time.Now().Unix(),
@@ -282,7 +282,7 @@ func normalizeVideoStatus(status string) string {
 	}
 }
 
-// videosContentHandler 服务 GET /videos/{jobId}/content?accountId=（流式代理
+// videosContentHandler 服务 GET /videos/{jobId}/content?apiKeyId=（流式代理
 // 视频字节，Content-Type 透传，Content-Disposition: inline）。
 func (rt *playgroundRoutes) videosContentHandler(w http.ResponseWriter, r *http.Request) {
 	scope, err := rt.deps.ScopeResolver(r)
@@ -304,7 +304,9 @@ func (rt *playgroundRoutes) videosContentHandler(w http.ResponseWriter, r *http.
 		APIKeyID: apiKeyID, OwnerID: scope.ViewerID, RemoteAddr: scope.RemoteAddr,
 		Path: "/v1/video/generations/" + jobID + "/content", Method: http.MethodGet,
 		Headers: map[string]string{
-			"accept": "application/json",
+			// 二进制字节流端点：accept 用 */*（约束过窄会让按内容协商的上游
+			// 路径拒绝回放视频字节）。
+			"accept": "*/*",
 		},
 	})
 	if err != nil {

@@ -1517,9 +1517,9 @@ func (c *gatewayChain) handleMediaJobCreateUpstreamResponse(
 	// gpt 账户持久化的是 legacy token "openai"。读面供应商一律经
 	// accounts.vendor_code 水合；创建响应的内存行直接携带派发账户 vendor，
 	// 协议档案维度随派发账户视图保留在 usage 记录链（不入任务行）。
-	// OwnerSystemAccountID 是归属列（AI 问答免 Key
-	// 直调计划 §3.3）：内部通道写注入的会话 owner，外部写 API Key 属主系统
-	// 账户；APIKeyID 在内部通道下为空串（免 Key 直调无 Key 身份），保留为
+	// OwnerSystemAccountID 是归属列（历史免 Key 直调计划引入；该内部通道已
+	// 随真实 Key 派发退役）：现行为 API Key 属主系统账户；存量行曾写注入的
+	// 会话 owner。APIKeyID 恒为创建 Key（免 Key 直调存量行为空串），保留为
 	// 历史审计列。
 	createdAt := time.Now().UTC()
 	record := gatewaymedia.MediaJobRecord{
@@ -2568,9 +2568,9 @@ func (c *gatewayChain) enqueueMediaJobTerminalUsage(ctx context.Context, traceID
 		// 身份维度对齐既有 usage 记录约定（chain_usage.go RecordCompleted
 		// UpstreamAttempt：SystemAccountID 取 usage context 即 API Key 属主，
 		// AccountOwnerSystemAccountID 取账户行属主）。
-		SystemAccountID: apiKeyOwnerSystemAccountID,
-		APIKeyID:        record.APIKeyID,
-		AccountID:       record.AccountID,
+		SystemAccountID:             apiKeyOwnerSystemAccountID,
+		APIKeyID:                    record.APIKeyID,
+		AccountID:                   record.AccountID,
 		AccountOwnerSystemAccountID: account.OwnerSystemAccountID,
 		Endpoint:                    endpoint,
 		// vendor 身份：账户行 vendor（B4① 拆除 media_jobs.provider_code 后

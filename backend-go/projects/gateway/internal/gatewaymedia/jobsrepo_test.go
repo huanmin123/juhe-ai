@@ -1,6 +1,6 @@
-// jobsrepo_test.go 是 media_jobs 归属语义的仓储直连回归（AI 问答免 Key 直调
-// 计划 §3.3）：owner 列读写、内外双归属键分流（外部 Key 级隔离保持）、owner
-// 过滤不经 api_keys join 推导。
+// jobsrepo_test.go 是 media_jobs 归属语义的仓储直连回归（归属列口径源自历史
+// 免 Key 直调计划，该内部通道已退役）：owner 列读写、内外双归属键分流（外部
+// Key 级隔离保持）、owner 过滤不经 api_keys join 推导。
 package gatewaymedia
 
 import (
@@ -86,7 +86,7 @@ func TestMediaJobsRepoOwnerSemantics(t *testing.T) {
 	seedOwnerJob(t, repo, ownerJobRecordOf("video_b1", "key_3", "sys_2"))
 
 	// 写入回读：owner 列随 Insert 落库、随查询水合。
-	loaded, err := repo.GetByIDAndOwner(ctx, "video_a1", "sys_1")
+	loaded, err := repo.GetByOwnerAndID(ctx, "video_a1", "sys_1")
 	if err != nil {
 		t.Fatalf("get by owner: %v", err)
 	}
@@ -94,11 +94,11 @@ func TestMediaJobsRepoOwnerSemantics(t *testing.T) {
 		t.Fatalf("loaded = %#v", loaded)
 	}
 
-	// GetByIDAndOwner：跨属主与空 owner 一律未命中。
-	if _, err := repo.GetByIDAndOwner(ctx, "video_a1", "sys_2"); !errors.Is(err, ErrMediaJobNotFound) {
+	// GetByOwnerAndID：跨属主与空 owner 一律未命中。
+	if _, err := repo.GetByOwnerAndID(ctx, "video_a1", "sys_2"); !errors.Is(err, ErrMediaJobNotFound) {
 		t.Fatalf("cross owner err = %v, want ErrMediaJobNotFound", err)
 	}
-	if _, err := repo.GetByIDAndOwner(ctx, "video_a1", ""); !errors.Is(err, ErrMediaJobNotFound) {
+	if _, err := repo.GetByOwnerAndID(ctx, "video_a1", ""); !errors.Is(err, ErrMediaJobNotFound) {
 		t.Fatalf("empty owner err = %v, want ErrMediaJobNotFound", err)
 	}
 
@@ -115,37 +115,19 @@ func TestMediaJobsRepoOwnerSemantics(t *testing.T) {
 		t.Fatalf("internal row via key err = %v, want ErrMediaJobNotFound", err)
 	}
 
-	// 列表分流：ListByOwner 聚合同属主全部 Key 的行（3 行），Key 级列表各行其是。
-	byOwner, err := repo.ListByOwner(ctx, "sys_1", 10, 0)
-	if err != nil || len(byOwner) != 3 {
-		t.Fatalf("list by owner: %v %d, want 3", err, len(byOwner))
-	}
+	// 列表分流：Key 级列表各行其是（owner 聚合读侧由管理面 owner 过滤承载）。
 	byKey, err := repo.ListByAPIKey(ctx, "key_1", 10, 0)
 	if err != nil || len(byKey) != 1 || byKey[0].ID != "video_a1" {
 		t.Fatalf("list by key: %v %#v, want video_a1 单行", err, byKey)
 	}
-	byOwnerKind, err := repo.ListByOwnerAndKind(ctx, "sys_1", JobKindVideo, 10, 0)
-	if err != nil || len(byOwnerKind) != 3 {
-		t.Fatalf("list by owner kind: %v %d, want 3", err, len(byOwnerKind))
-	}
-	if miss, err := repo.ListByOwnerAndKind(ctx, "sys_1", JobKindAudioTranscription, 10, 0); err != nil || len(miss) != 0 {
-		t.Fatalf("list by owner wrong kind: %v %d, want 0", err, len(miss))
-	}
 
-	// owner 过滤不经 api_keys join：删光 api_keys 行后，GetByIDAndOwner /
-	// GetByOwnerAndID / ListByOwner / 管理面 owner 过滤全部仍按 owner 列命中。
+	// owner 过滤不经 api_keys join：删光 api_keys 行后，GetByOwnerAndID 与
+	// 管理面 owner 过滤全部仍按 owner 列命中。
 	if _, err := db.Exec(`DELETE FROM juhe_business.api_keys`); err != nil {
 		t.Fatalf("delete api_keys: %v", err)
 	}
-	if _, err := repo.GetByIDAndOwner(ctx, "video_a1", "sys_1"); err != nil {
-		t.Fatalf("get by owner after api_keys purge: %v", err)
-	}
 	if _, err := repo.GetByOwnerAndID(ctx, "video_a1", "sys_1"); err != nil {
 		t.Fatalf("user-face get by owner after api_keys purge: %v", err)
-	}
-	byOwner, err = repo.ListByOwner(ctx, "sys_1", 10, 0)
-	if err != nil || len(byOwner) != 3 {
-		t.Fatalf("list by owner after api_keys purge: %v %d, want 3", err, len(byOwner))
 	}
 	rows, total, err := repo.ListManagement(ctx, MediaJobListQuery{OwnerSystemAccountID: "sys_1", Limit: 10})
 	if err != nil || total != 3 || len(rows) != 3 {

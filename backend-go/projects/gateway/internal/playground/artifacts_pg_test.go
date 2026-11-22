@@ -66,7 +66,7 @@ func TestPGArtifactStoreSaveListReadAndCleanup(t *testing.T) {
 	if err != nil || speechID == "" {
 		t.Fatalf("replaceSpeech id=%q err=%v", speechID, err)
 	}
-	if err := store.replaceVideoTask("sys_user_1", videoTaskRef{JobID: "job_v1", AccountID: "acc_1", ModelID: "m1", Status: "queued", CreatedAt: 100}); err != nil {
+	if err := store.replaceVideoTask("sys_user_1", videoTaskRef{JobID: "job_v1", APIKeyID: "acc_1", ModelID: "m1", Status: "queued", CreatedAt: 100}); err != nil {
 		t.Fatal(err)
 	}
 	listing, err := store.list("sys_user_1")

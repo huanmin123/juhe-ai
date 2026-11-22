@@ -70,8 +70,7 @@
         />
         <template v-else>
           <div class="playground-result-meta">
-            共 {{ results.length }} 条结果<template v-if="resultUsage"> · {{ resultUsage.promptTokens }} prompt / {{ resultUsage.totalTokens }} tokens</template>
-            · 前端耗时 {{ elapsedMs }} ms
+            共 {{ results.length }} 条结果 · 前端耗时 {{ elapsedMs }} ms
           </div>
           <div class="playground-rank-list">
             <div v-for="(item, rank) in results" :key="`${item.index}-${rank}`" class="playground-rank-row">

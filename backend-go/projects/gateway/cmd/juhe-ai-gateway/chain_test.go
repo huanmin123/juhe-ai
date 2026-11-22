@@ -206,6 +206,7 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 		`CREATE TABLE api_keys (
 			id TEXT PRIMARY KEY, system_account_id TEXT NOT NULL, route_strategy_id TEXT, name TEXT,
 			key_hash TEXT NOT NULL, key_prefix TEXT, key_suffix TEXT, key_secret_encrypted TEXT,
+			description TEXT,
 			status TEXT NOT NULL, is_default INTEGER NOT NULL DEFAULT 0, purpose TEXT,
 			expires_at TEXT, quota_limits_json TEXT, client_ip_concurrency_limit INTEGER NOT NULL DEFAULT -1,
 			availability_schedule_json TEXT,
@@ -584,9 +585,9 @@ func seedChainRuntimeRows(t *testing.T, db *sql.DB, fixture *chainFixture) strin
 	seed(`INSERT INTO scheduling_preferences (id, system_account_id, name, chat_mode, chat_speed_first_config_json, built_in, created_at, updated_at)
 		VALUES ('schpref-builtin-chat-cost-first', NULL, '默认调度偏好', 'cost_first', NULL, 1, ?, ?)`, now, now)
 	secret := "sk-chain-test-key"
-	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, status, scheduling_preference_id, created_at)
-		VALUES ('key_1', ?, 'rs_1', '链路测试', ?, 'active', 'schpref-builtin-chat-cost-first', ?)`,
-		fixture.systemAccount, gatewayruntimecache.HashSecret(secret), now)
+	seed(`INSERT INTO api_keys (id, system_account_id, route_strategy_id, name, key_hash, key_prefix, key_suffix, status, scheduling_preference_id, created_at, updated_at)
+		VALUES ('key_1', ?, 'rs_1', '链路测试', ?, 'sk-', 'test', 'active', 'schpref-builtin-chat-cost-first', ?, ?)`,
+		fixture.systemAccount, gatewayruntimecache.HashSecret(secret), now, now)
 	// 2026-09-20 目录源扩展后，openai 兼容目标的内置目录不含自身（Node
 	// modelCatalogBuiltInSourceProviderCodes 剔除 openai 目标）；fixture 的
 	// gpt-test 目录行改种在 custom_provider_models（global scope，带价格以

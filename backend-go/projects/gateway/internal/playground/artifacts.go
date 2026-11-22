@@ -94,10 +94,11 @@ type decodedImage struct {
 }
 
 // videoTaskRef 是视频任务引用（§3.8：视频产物本体不落盘，仅引用随暂存；单条
-// 覆盖）。createdAt 为 unix 秒。
+// 覆盖）。createdAt 为 unix 秒。apiKeyId 是创建时所选 Key（v1.4 前端恢复轮询
+// /下载依赖；原 accountId 字段随真实 Key 化退役改名）。
 type videoTaskRef struct {
 	JobID     string `json:"jobId"`
-	AccountID string `json:"accountId"`
+	APIKeyID  string `json:"apiKeyId"`
 	ModelID   string `json:"modelId"`
 	Status    string `json:"status"`
 	CreatedAt int64  `json:"createdAt"`
@@ -115,7 +116,7 @@ type artifactsSpeechEntry struct {
 
 type artifactsVideoEntry struct {
 	JobID     string `json:"jobId"`
-	AccountID string `json:"accountId"`
+	APIKeyID  string `json:"apiKeyId"`
 	ModelID   string `json:"modelId"`
 	Status    string `json:"status"`
 	CreatedAt int64  `json:"createdAt"`
@@ -354,7 +355,7 @@ func (s *pgArtifactStore) list(viewerID string) (*artifactsResponse, error) {
 		var ref videoTaskRef
 		if json.Unmarshal(videoPayload, &ref) == nil {
 			out.Video = &artifactsVideoEntry{
-				JobID: ref.JobID, AccountID: ref.AccountID, ModelID: ref.ModelID, Status: ref.Status, CreatedAt: ref.CreatedAt,
+				JobID: ref.JobID, APIKeyID: ref.APIKeyID, ModelID: ref.ModelID, Status: ref.Status, CreatedAt: ref.CreatedAt,
 			}
 		}
 	} else if !errors.Is(videoErr, sql.ErrNoRows) {

@@ -160,11 +160,11 @@ func (a *usageDispatchAdapter) DispatchUsageRecord(input gatewayresponse.ModelsU
 		SystemAccountID: input.UsageContext.SystemAccountID,
 		APIKeyID:        input.UsageContext.APIKeyID,
 		GroupID:         input.UsageContext.GroupID,
-		ProviderCode:  input.ProviderCode,
-		Endpoint:      input.UsageContext.Endpoint,
-		UsageSemantic: input.UsageSemantic,
-		Success:       input.Success,
-		CreatedAt:     time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00"),
+		ProviderCode:    input.ProviderCode,
+		Endpoint:        input.UsageContext.Endpoint,
+		UsageSemantic:   input.UsageSemantic,
+		Success:         input.Success,
+		CreatedAt:       time.Now().UTC().Format("2006-01-02T15:04:05.000Z07:00"),
 	}
 	stream := input.Stream
 	record.Stream = &stream

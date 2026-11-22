@@ -230,7 +230,6 @@
           <template v-if="column.key === 'user'">
             <div class="authorization-usage-user-cell">
               <span class="authorization-usage-name">{{ record.userName }}</span>
-              <span v-if="record.username && record.username !== record.userName" class="authorization-usage-subtext">{{ record.username }}</span>
             </div>
           </template>
           <template v-else-if="column.key === 'teams'">
@@ -259,7 +258,6 @@
             <div class="mobile-list-card-head">
               <div>
                 <div class="mobile-list-card-title">{{ record.userName }}</div>
-                <div v-if="record.username && record.username !== record.userName" class="authorization-usage-subtext">{{ record.username }}</div>
               </div>
             </div>
             <div class="mobile-list-meta-grid">

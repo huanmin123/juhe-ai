@@ -39,7 +39,7 @@ chat 域可声明集合 = 域 lane（13 值对话锚集）∩ 供应商写侧词
 
 - 请求域由请求形态派生（chat / responses / messages / gemini 族 → chat；images → image；语音 / 转写 / realtime → audio；video 族 → video；embeddings → embedding；rerank → rerank）。
 - 候选 driver 过滤（`gatewayRequestCapabilityMismatchReasonFor` 链）按 `账户 capability_domain` vs 请求域匹配，不匹配拒绝（reason `capability_domain_mismatch`）。账户投影（`AccountCandidate` / `OpenAIAccountSecret`）携带 `capability_domain`。
-- 切号冻结门（`FilterAccountsForSwitchTarget`）、演练场账户选择同步按域。
+- 切号冻结门（`FilterAccountsForSwitchTarget`）、演练场模型目录分类同步按域（演练场 v1.4 起按所选 Key 模型并集做六 kind 分类，与域闸门同口径）。
 - chat 域请求仍按既有声明 mode 过滤 chat 账户（`endpoint_mode_unsupported` 语义保留）；chat-pinned 直取路径目标账户明确，不经域闸门。
 
 ## 5. 健康检查与连通性探测（执行面保留）

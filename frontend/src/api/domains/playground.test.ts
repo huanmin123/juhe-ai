@@ -261,10 +261,10 @@ describe('playgroundApi 请求形状', () => {
     http.defaults.adapter = originalAdapter
   })
 
-  it('keyModels GET /playground/key-models?apiKeyId=：返回所选 Key 的模型行数组（Key 化目录）', async () => {
+  it('keyModels GET /playground/key-models?apiKeyId=：返回所选 Key 的模型行数组（Key 化目录，行不含计价投影）', async () => {
     const models = [
       { modelId: 'gpt-5.4', kind: 'chat', providerCode: 'gpt' },
-      { modelId: 'gpt-image-2', kind: 'image', providerCode: 'gpt', imageEstimate: { perImageUsd: 0.05, priceByTier: { '1k': 0.04, '2k': 0.06 } } }
+      { modelId: 'gpt-image-2', kind: 'image', providerCode: 'gpt' }
     ]
     installCaptureAdapter({ models })
     await expect(playgroundApi.keyModels('key_1')).resolves.toEqual(models)
@@ -325,7 +325,7 @@ describe('playgroundApi 请求形状', () => {
         status: 'completed',
         prompt: '一只猫',
         model: 'gpt-image-2',
-        accountId: 'acc_1',
+        apiKeyId: 'key_1',
         size: '1024x1024',
         referenceCount: 1,
         references: [{ id: 'ref_1', url: '/playground/artifacts/ref_1/content' }],
@@ -372,7 +372,7 @@ describe('playgroundApi 请求形状', () => {
       status: 'failed',
       prompt: '一只狗',
       model: 'gpt-image-2',
-      accountId: 'acc_1',
+      apiKeyId: 'key_1',
       referenceCount: 0,
       references: [],
       images: [],
@@ -385,6 +385,14 @@ describe('playgroundApi 请求形状', () => {
     expect(job.images).toEqual([])
     expect(job.error).toBe('上游 502')
     expect(requests).toEqual([{ method: 'GET', url: '/playground/images/jobs/job_2', params: undefined, data: undefined }])
+  })
+
+  it('imagesJobRemove DELETE /playground/images/jobs/{id}：jobId 经 encodeURIComponent，成功 204 无响应体不 unwrap（设计 §3.4.6）', async () => {
+    installCaptureAdapter(null)
+    await playgroundApi.imagesJobRemove('job_3')
+    expect(requests).toEqual([{ method: 'DELETE', url: '/playground/images/jobs/job_3', params: undefined, data: undefined }])
+    await playgroundApi.imagesJobRemove('job/1')
+    expect(requests[1]?.url).toBe('/playground/images/jobs/job%2F1')
   })
 
   it('artifacts GET /playground/artifacts 并返回暂存清单（v1.2 无 images 字段，url 归一，video 引用携带 apiKeyId）', async () => {
@@ -455,7 +463,7 @@ describe('playgroundApi 请求形状', () => {
     }
     installCaptureAdapter(embeddingsResult)
     const payload = {
-      accountId: 'acc_1',
+      apiKeyId: 'key_1',
       modelId: 'text-embedding-v4',
       input: ['文本一', '文本二'],
       dimensions: 1024
@@ -475,12 +483,12 @@ describe('playgroundApi 请求形状', () => {
 
   it('embeddings 可选参数缺省时不发 dimensions/encodingFormat 键', async () => {
     installCaptureAdapter({ model: 'text-embedding-v4', items: [] })
-    await playgroundApi.embeddings({ accountId: 'acc_1', modelId: 'text-embedding-v4', input: ['只有一条'] })
+    await playgroundApi.embeddings({ apiKeyId: 'key_1', modelId: 'text-embedding-v4', input: ['只有一条'] })
     const sentBody = JSON.parse(String(requests[0]?.data))
     expect(sentBody).not.toHaveProperty('dimensions')
     expect(sentBody).not.toHaveProperty('encodingFormat')
     expect(sentBody).toEqual({
-      accountId: 'acc_1',
+      apiKeyId: 'key_1',
       modelId: 'text-embedding-v4',
       input: ['只有一条']
     })
@@ -497,7 +505,7 @@ describe('playgroundApi 请求形状', () => {
     }
     installCaptureAdapter(rerankResult)
     const payload = {
-      accountId: 'acc_1',
+      apiKeyId: 'key_1',
       modelId: 'gte-rerank-v2',
       query: '查询语句',
       documents: ['文档一', '文档二', '文档三'],
@@ -515,18 +523,18 @@ describe('playgroundApi 请求形状', () => {
     expect(lastConfig?.timeout).toBe(0)
   })
 
-  it('rerank 默认形状只发 accountId/modelId/query/documents，回显结果带 document.text', async () => {
+  it('rerank 默认形状只发 apiKeyId/modelId/query/documents，回显结果带 document.text', async () => {
     installCaptureAdapter({
       results: [{ index: 0, relevanceScore: 0.5, document: { text: '文档一' } }]
     })
-    await playgroundApi.rerank({ accountId: 'acc_1', modelId: 'gte-rerank-v2', query: '查询', documents: ['文档一'] })
+    await playgroundApi.rerank({ apiKeyId: 'key_1', modelId: 'gte-rerank-v2', query: '查询', documents: ['文档一'] })
     expect(JSON.parse(String(requests[0]?.data))).toEqual({
-      accountId: 'acc_1',
+      apiKeyId: 'key_1',
       modelId: 'gte-rerank-v2',
       query: '查询',
       documents: ['文档一']
     })
-    await expect(playgroundApi.rerank({ accountId: 'acc_1', modelId: 'gte-rerank-v2', query: '查询', documents: ['文档一'] }))
+    await expect(playgroundApi.rerank({ apiKeyId: 'key_1', modelId: 'gte-rerank-v2', query: '查询', documents: ['文档一'] }))
       .resolves.toEqual({ results: [{ index: 0, relevanceScore: 0.5, document: { text: '文档一' } }] })
   })
 })

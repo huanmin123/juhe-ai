@@ -174,14 +174,6 @@ func TestW1SettingsLimitAndCatalogs(t *testing.T) {
 	if limit < 1 {
 		t.Fatalf("默认账户上限必须为正 = %d", limit)
 	}
-	// 目录适配：nil cache 直接 nil；有 cache 时返回空集或错误回落 nil。
-	if (chatModelCatalog{}).ListProviderCatalog("openai", "sys") != nil {
-		t.Fatal("nil cache 必须返回 nil")
-	}
-	items := (chatModelCatalog{cache: fixture.cache}).ListProviderCatalog("openai", "sys_owner")
-	if len(items) != 1 {
-		t.Fatalf("seed 目录期望 1 条 = %d", len(items))
-	}
 	// 追加一条 inactive 目录：override 目录必须过滤非 active（openai 兼容
 	// 目录源扩展后自身目录走 custom_provider_models，种子同步改种）。
 	now := time.Now().UTC().Format(time.RFC3339)

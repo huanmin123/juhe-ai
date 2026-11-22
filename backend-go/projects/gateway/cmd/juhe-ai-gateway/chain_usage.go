@@ -522,8 +522,8 @@ func (u *chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayres
 		// 安全策略事实随请求级状态直传（构造点注入，安全策略设计 §8）。
 		SecurityPolicyApplied: u.securityPolicyApplied,
 		PIIHits:               u.piiHits,
-		Endpoint:      input.UsageContext.Endpoint,
-		ProviderCode:  providerCode,
+		Endpoint:              input.UsageContext.Endpoint,
+		ProviderCode:          providerCode,
 		// 账号视图 provider 身份优先，空回落 usage context；协议档案 id 随账号
 		// 视图携带（Node input.account.providerProtocolProfileId）。
 		ProviderProtocolProfileID: providerProtocolProfileID,
@@ -861,8 +861,8 @@ func (u *chainFinalizationUsage) RecordFailedUpstreamAttempt(input gatewayrespon
 		// 安全策略事实随请求级状态直传（与完成路径同源，安全策略设计 §8）。
 		SecurityPolicyApplied: u.securityPolicyApplied,
 		PIIHits:               u.piiHits,
-		Endpoint:      input.UsageContext.Endpoint,
-		ProviderCode:  providerCode,
+		Endpoint:              input.UsageContext.Endpoint,
+		ProviderCode:          providerCode,
 		// 账号视图协议档案 id（Node input.account.providerProtocolProfileId）。
 		ProviderProtocolProfileID: providerProtocolProfileID,
 		UsageSemantic:             finalizationUsageSemanticOf(input.Account),

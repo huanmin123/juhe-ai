@@ -80,11 +80,11 @@
             @keydown.enter.prevent="handleCardClick(job)"
           >
             <div class="image-card-thumb">
+              <!-- v1.5 复审二改定案:状态徽标维持 v1.3 原位叠加缩略图左上（视频页同款 pill）,仅下载/删除移出图像区。 -->
               <span class="playground-status" :class="statusClassOf(job)">{{ statusLabelOf(job) }}</span>
-              <!-- completed 且未删:结果图按固定高度裁切直显,点图走 a-image 大图预览(阻断冒泡,与卡片回填区分),另附下载。 -->
+              <!-- completed 且未删:结果图按固定高度裁切直显,点图走 a-image 大图预览(阻断冒泡,与卡片回填区分)。 -->
               <div v-if="showImageThumb(job)" class="image-card-thumb-media" @click.stop>
                 <a-image class="image-card-image" :src="job.images[0]?.url" :alt="job.prompt" />
-                <a-button class="image-card-download" size="small" @click.stop="downloadImage(job)">下载</a-button>
               </div>
               <div v-else-if="isPendingStatus(job.status)" class="image-card-thumb-placeholder">
                 <a-spin size="small" />
@@ -98,6 +98,8 @@
                 <span>已删除图像</span>
               </div>
             </div>
+            <!-- 信息区三块定高（§4.2 v1.5）：提示词两行 → 参数标签一行 → 元信息+操作行,
+                 全状态等高（生成中/失败/已删除图像卡片渲染相同行,非命中态隐藏图标但保留行位）。 -->
             <div class="image-card-body">
               <div v-if="job.prompt" class="image-card-prompt" :title="job.prompt">{{ job.prompt }}</div>
               <div v-else class="image-card-prompt is-placeholder">生成任务排队中…</div>
@@ -109,8 +111,42 @@
                 <span v-if="job.referenceCount > 0" class="image-card-tag">参考图 ×{{ job.referenceCount }}</span>
               </div>
               <div class="image-card-meta">
-                <span class="image-card-time">{{ absoluteTimeText(job.createdAt) }}</span>
-                <span v-if="expiryTextOf(job)" class="image-card-expiry">{{ expiryTextOf(job) }}</span>
+                <div class="image-card-meta-info">
+                  <span class="image-card-time">{{ absoluteTimeText(job.createdAt) }}</span>
+                  <span v-if="expiryTextOf(job)" class="image-card-expiry">{{ expiryTextOf(job) }}</span>
+                </div>
+                <div class="image-card-actions">
+                  <a-button
+                    v-if="showImageThumb(job)"
+                    class="image-card-action-btn"
+                    type="text"
+                    size="small"
+                    title="下载图像"
+                    @click.stop="downloadImage(job)"
+                    @keydown.enter.stop
+                  >
+                    <template #icon><DownloadOutlined /></template>
+                  </a-button>
+                  <a-popconfirm
+                    v-if="isJobTerminal(job)"
+                    title="删除后任务记录与图像一并删除，不可恢复"
+                    ok-text="删除"
+                    cancel-text="取消"
+                    @confirm="deleteJob(job)"
+                  >
+                    <a-button
+                      class="image-card-action-btn"
+                      type="text"
+                      size="small"
+                      danger
+                      title="删除任务"
+                      @click.stop
+                      @keydown.enter.stop
+                    >
+                      <template #icon><DeleteOutlined /></template>
+                    </a-button>
+                  </a-popconfirm>
+                </div>
               </div>
             </div>
           </article>
@@ -132,7 +168,7 @@
 </template>
 
 <script setup lang="ts">
-import { ArrowUpOutlined } from '@ant-design/icons-vue'
+import { ArrowUpOutlined, DeleteOutlined, DownloadOutlined } from '@ant-design/icons-vue'
 import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { message } from '@/lib/antd'
 import dayjs from 'dayjs'
@@ -162,7 +198,10 @@ import PlaygroundImageWorkbenchModal from './PlaygroundImageWorkbenchModal.vue'
 // 不依赖前端持有）,onDeactivated/onBeforeUnmount 停止。completed 未删卡片按分钟
 // tick 刷新删除倒计时（keepAlive 下激活期管理定时器）。演练场不展示 tokens/费用
 // （v1.3）：卡片仅呈现状态、提示词、参数与保留期。2026-11-22 Key 化：历史筛选
-// 「全部账户」改「全部 Key」（本人 active Key，任务行记录创建时的 Key）。
+// 「全部账户」改「全部 Key」（本人 active Key，任务行记录创建时的 Key）。v1.5 卡片
+// 操作区改版（v1.5 复审二改定案）：状态徽标维持 v1.3 原位叠加缩略图左上（仅下载/
+// 删除移出图像区），下载/删除为信息区末行操作行图标按钮（删除经 a-popconfirm 二次
+// 确认,§3.4.6），信息区三块定高（提示词 → 标签 → 元信息+操作行）。
 
 const pollIntervalMs = 3000
 const pollMaxFailures = 5
@@ -418,7 +457,7 @@ function makePlaceholderJob(result: PlaygroundImageJobCreateResult): PlaygroundI
     status: 'queued',
     prompt: '',
     model: '',
-    accountId: '',
+    apiKeyId: '',
     referenceCount: 0,
     references: [],
     images: [],
@@ -441,6 +480,25 @@ function isCardClickable(job: PlaygroundImageJob): boolean {
 
 function handleCardClick(job: PlaygroundImageJob): void {
   if (isCardClickable(job)) openWorkbenchWithJob(job)
+}
+
+/** 删除入口仅终态开放（§3.4.6，v1.5）：completed（含图像已删）/failed；生成中不做取消语义。 */
+function isJobTerminal(job: PlaygroundImageJob): boolean {
+  return job.status === 'completed' || job.status === 'failed'
+}
+
+/** 手动删除任务（§3.4.6，v1.5）：记录行与字节一并删,不可恢复;成功后停轮清计数、本地移除卡片并 toast。 */
+async function deleteJob(job: PlaygroundImageJob): Promise<void> {
+  try {
+    await api.playground.imagesJobRemove(job.jobId)
+    stopPollingJob(job.jobId)
+    pollFailures.delete(job.jobId)
+    jobs.value = jobs.value.filter((candidate) => candidate.jobId !== job.jobId)
+    message.success('已删除')
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '删除生成任务失败，请稍后重试'))
+  }
 }
 
 /** 读时派生「已删除图像」:后端标记 × 本地倒计时到期收敛（§3.4.4/§3.4.5）。 */
@@ -637,12 +695,13 @@ function downloadImage(job: PlaygroundImageJob): void {
   background: var(--juhe-surface-soft);
 }
 
+/* 左上状态角标（v1.5 复审二改定案:维持 v1.3 原位叠加,仅下载/删除移出）:
+   视频页 playground-status 同款 pill 配色(§4.2)。 */
 .image-card-thumb > .playground-status {
   position: absolute;
   top: 8px;
   left: 8px;
   z-index: 2;
-  /* 视频页 playground-status 同款 pill 配色(§4.2)。 */
   padding: 2px 10px;
   border-radius: 999px;
   font-size: 12px;
@@ -689,13 +748,6 @@ function downloadImage(job: PlaygroundImageJob): void {
   cursor: zoom-in;
 }
 
-.image-card-download {
-  position: absolute;
-  right: 8px;
-  bottom: 8px;
-  z-index: 2;
-}
-
 .image-card-thumb-placeholder {
   display: flex;
   flex-direction: column;
@@ -723,8 +775,8 @@ function downloadImage(job: PlaygroundImageJob): void {
   word-break: break-all;
 }
 
-/* 信息区三块各自定高（提示词两行 + 标签一行 + 元信息一行）:
-   无论标签有无,卡片纵向尺寸一致,网格跨行也等高。 */
+/* 信息区三块各自定高（v1.5：提示词两行 + 标签一行 + 元信息/操作行）:
+   无论标签或图标有无,卡片纵向尺寸一致,网格跨行也等高。 */
 .image-card-body {
   display: flex;
   flex-direction: column;
@@ -762,17 +814,40 @@ function downloadImage(job: PlaygroundImageJob): void {
   font-size: 12px;
 }
 
+/* 元信息行 + 操作行（v1.5）：绝对时间与保留期居左,下载/删除图标按钮居右（同一行两端）;
+   非命中态隐藏图标但操作行占位保留（等高）。 */
 .image-card-meta {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  min-height: 24px;
   color: var(--juhe-faint);
   font-size: 12px;
 }
 
+.image-card-meta-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.image-card-time {
+  flex: 0 0 auto;
+}
+
 .image-card-expiry {
-  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.image-card-actions {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 4px;
 }
 
 .image-load-more {

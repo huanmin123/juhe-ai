@@ -23,12 +23,12 @@ const (
 
 // speechRequest 是 POST /speech 请求体（设计 §3.6）。
 type speechRequest struct {
-	APIKeyID  string   `json:"apiKeyId"`
-	ModelID   string   `json:"modelId"`
-	Input     string   `json:"input"`
-	Voice     string   `json:"voice"`
-	Speed     *float64 `json:"speed"`
-	Format    string   `json:"format"`
+	APIKeyID string   `json:"apiKeyId"`
+	ModelID  string   `json:"modelId"`
+	Input    string   `json:"input"`
+	Voice    string   `json:"voice"`
+	Speed    *float64 `json:"speed"`
+	Format   string   `json:"format"`
 }
 
 // speechHandler 服务 POST /speech。

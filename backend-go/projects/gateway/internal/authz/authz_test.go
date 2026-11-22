@@ -95,8 +95,8 @@ func (f *fixture) createAcceptedDirectOffer(t *testing.T, resourceType, resource
 }
 
 // claimAccountOffer drives the direct account offer → one-step claim: the
-// offer is claimed with the grantee-selected target group (empty falls back to
-// the grantee's enabled default group). Returns the grant id.
+// offer is claimed with the grantee-selected target group (required — no
+// default-group fallback). Returns the grant id.
 func (f *fixture) claimAccountOffer(t *testing.T, resourceID, granteeID, targetGroupID string) string {
 	t.Helper()
 	ctx := context.Background()
@@ -120,10 +120,10 @@ func (f *fixture) claimAccountOffer(t *testing.T, resourceID, granteeID, targetG
 
 // acceptSourceForTest accepts the pending source as the given receiver,
 // returning the store result/error for callers that assert the consent
-// outcome.
-func (f *fixture) acceptSourceForTest(t *testing.T, actorID, sourceID string) (*AcceptResult, error) {
+// outcome. targetGroupID 只对账户资源生效且必填（分组资源传空）。
+func (f *fixture) acceptSourceForTest(t *testing.T, actorID, sourceID, targetGroupID string) (*AcceptResult, error) {
 	t.Helper()
-	return f.store.AcceptSource(context.Background(), actorID, sourceID, AcceptInput{},
+	return f.store.AcceptSource(context.Background(), actorID, sourceID, AcceptInput{TargetGroupID: targetGroupID},
 		f.now.UTC().Format(time.RFC3339Nano))
 }
 
@@ -155,10 +155,9 @@ func seedPhysicalAccount(t *testing.T, f *fixture, id, ownerID string) {
 	}
 }
 
-// seedGranteeDefaultGroup satisfies the one-step claim default-group fallback
-// for account grants claimed without a target group: the binding requires an
-// enabled default group owned by the grantee（组无 provider 维度后，provider
-// 入参仅为调用点兼容保留）.
+// seedGranteeDefaultGroup seeds an enabled default group owned by the grantee
+// for account grants claimed with an explicit target group（组无 provider 维度
+// 后，provider 入参仅为调用点兼容保留；必选目标分组契约下无缺省回落）.
 func seedGranteeDefaultGroup(t *testing.T, f *fixture, granteeID, _ string) {
 	t.Helper()
 	if _, err := f.db.Exec(fixtureBind(`INSERT INTO groups (id, name, system_account_id, status, enabled, is_default, updated_at)

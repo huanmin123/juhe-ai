@@ -65,8 +65,8 @@
             allow-clear
             show-search
             option-filter-prop="label"
-            placeholder="选择要试玩的 API Key"
-            @change="handleApiKeyChange"
+            :placeholder="originalKeyDeleted ? '原 Key 已删除，请重新选择' : '选择要试玩的 API Key'"
+            @change="handleKeyChange"
           />
         </a-form-item>
         <a-form-item label="模型" required>
@@ -156,8 +156,6 @@
         </div>
       </div>
       <div class="workbench-field-hint">比例与分辨率为近似映射，最终以上游返回结果为准。</div>
-      <!-- 预计扣费（2026-11-22 Key 化恢复 v1.2 口径）：所选模型行 imageEstimate 按分辨率档投影，目录无价不虚构不展示。 -->
-      <div v-if="estimatedCostUsd !== null" class="workbench-estimate">预计扣费：约 {{ formatUsd(estimatedCostUsd, 4) }} / 张</div>
 
       <div v-if="keysLoadError || modelsLoadError" class="workbench-form-error">{{ keysLoadError || modelsLoadError }}</div>
     </a-form>
@@ -171,7 +169,6 @@ import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import { formatUsd } from '@/shared/formatters'
 import type {
   PlaygroundImageArtifactRef,
   PlaygroundImageAspectRatio,
@@ -181,13 +178,12 @@ import type {
   PlaygroundImageQuality,
   PlaygroundImageResolution
 } from '@/types/domain/playground'
-import { usePlaygroundCatalog } from './usePlaygroundCatalog'
+import { firstModelIdOf, usePlaygroundCatalog } from './usePlaygroundCatalog'
 
 // 生成设置弹窗（演练场设计 §4.2 v1.3）：提示词 + 参考图拖拽上传（≤10 张,选中即逐张
 // 上传）+ Key→模型两级联动（2026-11-22 Key 化）+ 参数四项（必选,固定默认 16:9/1K/标准/
-// PNG,无「默认」档,恒传后端）+ 块状参数选择器;预计扣费按所选模型行 imageEstimate
-// 以分辨率档投影（v1.2 口径恢复,目录无价不虚构）。创建成功即关弹窗,由父页面在历史
-// 网格顶部插入「生成中」占位卡片并启动轮询。
+// PNG,无「默认」档,恒传后端）+ 块状参数选择器;演练场不展示费用（v1.3 裁决,2026-11-22
+// Key 化后继续有效）。创建成功即关弹窗,由父页面在历史网格顶部插入「生成中」占位卡片并启动轮询。
 
 const maxReferences = 10
 const maxReferenceBytes = 10 * 1024 * 1024
@@ -206,16 +202,18 @@ const emit = defineEmits<{
 }>()
 
 const {
+  keys,
   keysLoading,
   keysLoadError,
   modelsLoading,
   modelsLoadError,
   apiKeyId,
   modelId,
-  currentModel,
+  models,
   keyOptions,
   modelOptions,
   handleApiKeyChange,
+  loadModelsForKey,
   loadCatalog
 } = usePlaygroundCatalog('image')
 
@@ -225,6 +223,14 @@ const references = ref<PlaygroundImageArtifactRef[]>([])
 const deletedReferenceCount = ref(0)
 const uploadingCount = ref(0)
 const creating = ref(false)
+/** 卡片回填时原 Key 已不在本人 active 列表（已删除/非本人）：占位提示并要求重选（§4.2），不阻断其他项回填。 */
+const originalKeyDeleted = ref(false)
+
+/** Key 下拉 change：先清「原 Key 已删除」占位态，再走联动重置。 */
+function handleKeyChange(): void {
+  originalKeyDeleted.value = false
+  handleApiKeyChange()
+}
 
 // 参数四项必选（v1.3 无「默认」档）：固定默认 16:9 / 1K / 标准 / PNG,创建时恒传。
 const aspectRatio = ref<PlaygroundImageAspectRatio>('16:9')
@@ -262,29 +268,18 @@ const canCreate = computed(() => Boolean(
   && !creating.value
 ))
 
-/**
- * 预计扣费（v1.2 口径）：所选模型行 imageEstimate 的 priceByTier 按分辨率档（1k/2k/4k）
- * 命中单价，缺档回落 perImageUsd；两者皆缺 = 目录无价，返回 null 不展示、不虚构金额。
- */
-const estimatedCostUsd = computed<number | null>(() => {
-  const estimate = currentModel.value?.imageEstimate
-  if (!estimate) return null
-  const tierPrice = estimate.priceByTier?.[resolution.value]
-  if (typeof tierPrice === 'number') return tierPrice
-  return typeof estimate.perImageUsd === 'number' ? estimate.perImageUsd : null
-})
-
 watch(() => props.open, (open) => {
   if (!open) return
   void resetForOpen()
 })
 
-/** 打开序：清空上一轮状态并落参数默认值 → 带入快速入口提示词 → 加载 Key/模型目录 → 回填历史卡片配置。 */
+/** 打开序：清空上一轮状态并落参数默认值 → 带入快速入口提示词 → 加载 Key/模型目录 → 回填历史卡片配置（Key/模型以卡片 apiKeyId 为准，§4.2）。 */
 async function resetForOpen(): Promise<void> {
   creating.value = false
   uploadingCount.value = 0
   references.value = []
   deletedReferenceCount.value = 0
+  originalKeyDeleted.value = false
   aspectRatio.value = '16:9'
   resolution.value = '1k'
   quality.value = 'standard'
@@ -294,10 +289,19 @@ async function resetForOpen(): Promise<void> {
   await loadCatalog()
   if (!job) return
   prompt.value = job.prompt
-  // 任务行不带创建时的 Key（行形状未变），Key 维持当前/默认选中；模型在当前
-  // Key 的本域清单内才回填，否则保留联动默认值。
-  if (modelOptions.value.some((model) => model.modelId === job.model)) {
-    modelId.value = job.model
+  // Key/模型以卡片 apiKeyId 回填；该 Key 已删除或不在本人列表时占位「原 Key 已删除，
+  // 请重新选择」并要求重选（清空当前/默认选择），不阻断提示词/参数/参考图回填。
+  if (keys.value.some((key) => key.id === job.apiKeyId)) {
+    apiKeyId.value = job.apiKeyId
+    const kindModels = await loadModelsForKey(job.apiKeyId)
+    modelId.value = kindModels.some((model) => model.modelId === job.model)
+      ? job.model
+      : firstModelIdOf(kindModels)
+  } else {
+    originalKeyDeleted.value = true
+    apiKeyId.value = undefined
+    modelId.value = undefined
+    models.value = []
   }
   // 旧任务（默认档时代）缺参时落当前固定默认值,保证四项恒有选中。
   aspectRatio.value = job.aspectRatio ?? '16:9'
@@ -573,13 +577,6 @@ async function createJob(): Promise<void> {
   margin-top: -2px;
   margin-bottom: 12px;
   color: var(--juhe-faint);
-  font-size: 12px;
-}
-
-/* 预计扣费：轻提示行，紧随参数区 hint，弱于正文存在感（目录无价时不渲染）。 */
-.workbench-estimate {
-  margin: -6px 0 12px;
-  color: var(--juhe-muted);
   font-size: 12px;
 }
 

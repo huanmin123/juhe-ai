@@ -51,6 +51,7 @@ func (d *Deps) mountGovernanceRoutes(k *kernel.Kernel, prefix string) {
 	k.Register("GET "+prefix+"/my-authorizations/inbox-summary", self(d.inboxSummary))
 
 	k.Register("POST "+prefix+"/my-authorization-sources/{sourceId}/accept", self(d.acceptSource))
+	k.Register("POST "+prefix+"/my-authorization-sources/{sourceId}/change-group", self(d.changeSourceGroup))
 	k.Register("POST "+prefix+"/my-authorization-sources/{sourceId}/decline", self(d.declineSource))
 	k.Register("POST "+prefix+"/my-authorization-sources/{sourceId}/return", self(d.returnSource))
 
@@ -88,6 +89,28 @@ func (d *Deps) acceptSource(w http.ResponseWriter, r *http.Request) {
 		input.TargetGroupID = strings.TrimSpace(*body.TargetGroupID)
 	}
 	result, err := d.Store.AcceptSource(r.Context(), auth.SystemAccountID, r.PathValue("sourceId"), input, nowISO(d.Store))
+	if err != nil {
+		writeGovernanceError(r, w, err)
+		return
+	}
+	d.writeData(w, result)
+}
+
+// changeSourceGroup rebinds a claimed account authorization source into
+// another of the grantee's own enabled standard groups (§5.2 换绑段).
+func (d *Deps) changeSourceGroup(w http.ResponseWriter, r *http.Request) {
+	auth := authsys.AuthContextFrom(r)
+	var body struct {
+		TargetGroupID *string `json:"targetGroupId"`
+	}
+	if !decodeStrictJSON(w, r, &body, map[string]bool{"targetGroupId": true}) {
+		return
+	}
+	target := ""
+	if body.TargetGroupID != nil {
+		target = strings.TrimSpace(*body.TargetGroupID)
+	}
+	result, err := d.Store.ChangeSourceGroup(r.Context(), auth.SystemAccountID, r.PathValue("sourceId"), target, nowISO(d.Store))
 	if err != nil {
 		writeGovernanceError(r, w, err)
 		return

@@ -14,27 +14,22 @@ import (
 	"testing"
 )
 
-// embeddingFixtureDeps 在基础夹具上补 embedding 候选（目录行 embeddings 协议 ×
-// 账户能力域 embedding，五域退役修订：候选按域路由）。
+// embeddingFixtureDeps 在基础夹具上补 embedding 候选（Key 候选行 embedding
+// kind）。
 func embeddingFixtureDeps(t *testing.T) *Deps {
 	t.Helper()
-	deps := playgroundFixtureDeps(t, false)
-	catalog := deps.ProviderCatalog.(*staticCatalog)
-	catalog.byProvider["gpt"] = append(catalog.byProvider["gpt"], CatalogItem{Model: "text-embedding-v4", SupportedAPIProtocols: []string{"embeddings"}})
-	transportView := deps.TransportAccounts.(*staticTransport)
-	transportView.views["acc_1"][0].CapabilityDomain = "embedding"
+	deps := playgroundFixtureDeps(t)
+	keyModels := fixtureKeyModels(deps)
+	keyModels.rows[playgroundKeyModelsFixtureID] = append(keyModels.rows[playgroundKeyModelsFixtureID], keyRowsOf("text-embedding-v4", KindEmbedding)...)
 	return deps
 }
 
-// rerankFixtureDeps 在基础夹具上补 rerank 候选（目录行 rerank 协议 × 账户能力
-// 域 rerank）。
+// rerankFixtureDeps 在基础夹具上补 rerank 候选。
 func rerankFixtureDeps(t *testing.T) *Deps {
 	t.Helper()
-	deps := playgroundFixtureDeps(t, false)
-	catalog := deps.ProviderCatalog.(*staticCatalog)
-	catalog.byProvider["gpt"] = append(catalog.byProvider["gpt"], CatalogItem{Model: "gte-rerank-v2", SupportedAPIProtocols: []string{"rerank"}})
-	transportView := deps.TransportAccounts.(*staticTransport)
-	transportView.views["acc_1"][0].CapabilityDomain = "rerank"
+	deps := playgroundFixtureDeps(t)
+	keyModels := fixtureKeyModels(deps)
+	keyModels.rows[playgroundKeyModelsFixtureID] = append(keyModels.rows[playgroundKeyModelsFixtureID], keyRowsOf("gte-rerank-v2", KindRerank)...)
 	return deps
 }
 
@@ -49,7 +44,7 @@ func TestEmbeddingsRequestConstructionAndNormalization(t *testing.T) {
 	}}
 	mux, _ := newTestRoutes(deps)
 	payload := mustJSON(map[string]any{
-		"accountId": "acc_1", "modelId": "text-embedding-v4",
+		"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "text-embedding-v4",
 		"input": []string{"文本一", "文本二"}, "dimensions": 1024, "encodingFormat": "float",
 	})
 	recorder := doJSON(mux, "POST", "/__aisys__/api/playground/embeddings", payload)
@@ -62,9 +57,6 @@ func TestEmbeddingsRequestConstructionAndNormalization(t *testing.T) {
 	call := dispatch.calls[0]
 	if call.Request.Path != "/v1/embeddings" || call.Request.Method != "POST" {
 		t.Fatalf("派发目标 = %s %s", call.Request.Method, call.Request.Path)
-	}
-	if call.Request.Headers["x-juhe-ai-purpose"] != "playground_embeddings" {
-		t.Fatalf("purpose 头 = %q", call.Request.Headers["x-juhe-ai-purpose"])
 	}
 	if call.Request.Headers["content-type"] != "application/json" || call.Request.Headers["accept"] != "application/json" {
 		t.Fatalf("内容协商头不符: %v", call.Request.Headers)
@@ -126,7 +118,7 @@ func TestEmbeddingsSingleStringInputAndOptionalOmitted(t *testing.T) {
 	}
 	mux, _ := newTestRoutes(deps)
 	recorder := doJSON(mux, "POST", "/__aisys__/api/playground/embeddings",
-		mustJSON(map[string]any{"accountId": "acc_1", "modelId": "text-embedding-v4", "input": "单条文本"}))
+		mustJSON(map[string]any{"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "text-embedding-v4", "input": "单条文本"}))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("状态码 = %d（body %s）", recorder.Code, recorder.Body.String())
 	}
@@ -154,7 +146,7 @@ func TestEmbeddingsSingleStringInputAndOptionalOmitted(t *testing.T) {
 	}
 	// 8192 字节边界（恰好等于上限）放行。
 	recorder = doJSON(mux, "POST", "/__aisys__/api/playground/embeddings",
-		mustJSON(map[string]any{"accountId": "acc_1", "modelId": "text-embedding-v4", "input": strings.Repeat("a", 8192)}))
+		mustJSON(map[string]any{"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "text-embedding-v4", "input": strings.Repeat("a", 8192)}))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("8192 字节边界应放行: %d（body %s）", recorder.Code, recorder.Body.String())
 	}
@@ -174,15 +166,15 @@ func TestEmbeddingsValidation(t *testing.T) {
 		body     map[string]any
 		contains string
 	}{
-		{"input 超 10 条", map[string]any{"accountId": "acc_1", "modelId": "text-embedding-v4", "input": eleven}, "10"},
-		{"input 空数组", map[string]any{"accountId": "acc_1", "modelId": "text-embedding-v4", "input": []string{}}, "input"},
-		{"input 条目空白", map[string]any{"accountId": "acc_1", "modelId": "text-embedding-v4", "input": []string{"  "}}, "不能为空"},
-		{"input 超 8KB", map[string]any{"accountId": "acc_1", "modelId": "text-embedding-v4", "input": []string{strings.Repeat("a", 8193)}}, "8192"},
-		{"input 数字数组", map[string]any{"accountId": "acc_1", "modelId": "text-embedding-v4", "input": []any{1, 2}}, "必须是字符串或字符串数组"},
-		{"input null", map[string]any{"accountId": "acc_1", "modelId": "text-embedding-v4", "input": nil}, "必须是字符串或字符串数组"},
-		{"dimensions 非正", map[string]any{"accountId": "acc_1", "modelId": "text-embedding-v4", "input": "文本", "dimensions": 0}, "正整数"},
-		{"dimensions 非整数形态", map[string]any{"accountId": "acc_1", "modelId": "text-embedding-v4", "input": "文本", "dimensions": 1.5}, "dimensions 必须是正整数"},
-		{"模型不在候选", map[string]any{"accountId": "acc_1", "modelId": "nope-embed", "input": "文本"}, "playground_model_not_available"},
+		{"input 超 10 条", map[string]any{"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "text-embedding-v4", "input": eleven}, "10"},
+		{"input 空数组", map[string]any{"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "text-embedding-v4", "input": []string{}}, "input"},
+		{"input 条目空白", map[string]any{"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "text-embedding-v4", "input": []string{"  "}}, "不能为空"},
+		{"input 超 8KB", map[string]any{"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "text-embedding-v4", "input": []string{strings.Repeat("a", 8193)}}, "8192"},
+		{"input 数字数组", map[string]any{"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "text-embedding-v4", "input": []any{1, 2}}, "必须是字符串或字符串数组"},
+		{"input null", map[string]any{"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "text-embedding-v4", "input": nil}, "必须是字符串或字符串数组"},
+		{"dimensions 非正", map[string]any{"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "text-embedding-v4", "input": "文本", "dimensions": 0}, "正整数"},
+		{"dimensions 非整数形态", map[string]any{"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "text-embedding-v4", "input": "文本", "dimensions": 1.5}, "dimensions 必须是正整数"},
+		{"模型不在候选", map[string]any{"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "nope-embed", "input": "文本"}, "playground_model_not_available"},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -193,9 +185,9 @@ func TestEmbeddingsValidation(t *testing.T) {
 		})
 	}
 	recorder := doJSON(mux, "POST", "/__aisys__/api/playground/embeddings",
-		mustJSON(map[string]any{"accountId": "acc_missing", "modelId": "text-embedding-v4", "input": "文本"}))
-	if recorder.Code != http.StatusNotFound || !strings.Contains(recorder.Body.String(), "playground_account_not_found") {
-		t.Fatalf("账户不存在应 404 playground_account_not_found: %d %s", recorder.Code, recorder.Body.String())
+		mustJSON(map[string]any{"apiKeyId": "key_missing", "modelId": "text-embedding-v4", "input": "文本"}))
+	if recorder.Code != http.StatusNotFound || !strings.Contains(recorder.Body.String(), "playground_key_not_found") {
+		t.Fatalf("Key 不存在应 404 playground_key_not_found: %d %s", recorder.Code, recorder.Body.String())
 	}
 	if len(depsOut.Dispatch.(*mockDispatch).calls) != 0 {
 		t.Fatalf("校验失败不应进入派发路径（%d 次）", len(depsOut.Dispatch.(*mockDispatch).calls))
@@ -213,7 +205,7 @@ func TestEmbeddingsUpstreamErrorPropagates(t *testing.T) {
 	}}
 	mux, _ := newTestRoutes(deps)
 	recorder := doJSON(mux, "POST", "/__aisys__/api/playground/embeddings",
-		mustJSON(map[string]any{"accountId": "acc_1", "modelId": "text-embedding-v4", "input": "文本"}))
+		mustJSON(map[string]any{"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "text-embedding-v4", "input": "文本"}))
 	if recorder.Code != http.StatusBadGateway {
 		t.Fatalf("状态码 = %d，期望 502", recorder.Code)
 	}
@@ -233,7 +225,7 @@ func TestEmbeddingsBase64FormRejected(t *testing.T) {
 	}}
 	mux, _ := newTestRoutes(deps)
 	recorder := doJSON(mux, "POST", "/__aisys__/api/playground/embeddings",
-		mustJSON(map[string]any{"accountId": "acc_1", "modelId": "text-embedding-v4", "input": "文本"}))
+		mustJSON(map[string]any{"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "text-embedding-v4", "input": "文本"}))
 	if recorder.Code != http.StatusBadGateway || !strings.Contains(recorder.Body.String(), "向量响应归一失败") {
 		t.Fatalf("base64 形态应 502 归一失败: %d %s", recorder.Code, recorder.Body.String())
 	}
@@ -249,7 +241,7 @@ func TestEmbeddingsNullEmbeddingRejected(t *testing.T) {
 	}}
 	mux, _ := newTestRoutes(deps)
 	recorder := doJSON(mux, "POST", "/__aisys__/api/playground/embeddings",
-		mustJSON(map[string]any{"accountId": "acc_1", "modelId": "text-embedding-v4", "input": "文本"}))
+		mustJSON(map[string]any{"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "text-embedding-v4", "input": "文本"}))
 	if recorder.Code != http.StatusBadGateway || !strings.Contains(recorder.Body.String(), "向量响应归一失败") {
 		t.Fatalf("embedding null 应 502 归一失败: %d %s", recorder.Code, recorder.Body.String())
 	}
@@ -265,7 +257,7 @@ func TestEmbeddingsResponseTooLargeRejected(t *testing.T) {
 	}}
 	mux, _ := newTestRoutes(deps)
 	recorder := doJSON(mux, "POST", "/__aisys__/api/playground/embeddings",
-		mustJSON(map[string]any{"accountId": "acc_1", "modelId": "text-embedding-v4", "input": "文本"}))
+		mustJSON(map[string]any{"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "text-embedding-v4", "input": "文本"}))
 	if recorder.Code != http.StatusBadGateway ||
 		!strings.Contains(recorder.Body.String(), "playground_dispatch_failed") ||
 		!strings.Contains(recorder.Body.String(), "向量响应读取失败") {
@@ -285,7 +277,7 @@ func TestEmbeddingsInputBoundaryAccepted(t *testing.T) {
 		ten[index] = "文本"
 	}
 	recorder := doJSON(mux, "POST", "/__aisys__/api/playground/embeddings",
-		mustJSON(map[string]any{"accountId": "acc_1", "modelId": "text-embedding-v4", "input": ten}))
+		mustJSON(map[string]any{"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "text-embedding-v4", "input": ten}))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("input 恰 10 条应放行: %d（body %s）", recorder.Code, recorder.Body.String())
 	}
@@ -310,7 +302,7 @@ func TestRerankRequestConstructionAndNormalization(t *testing.T) {
 	}}
 	mux, _ := newTestRoutes(deps)
 	payload := mustJSON(map[string]any{
-		"accountId": "acc_1", "modelId": "gte-rerank-v2",
+		"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "gte-rerank-v2",
 		"query": "查询语句", "documents": []string{"文档一", "文档二"}, "topN": 3,
 	})
 	recorder := doJSON(mux, "POST", "/__aisys__/api/playground/rerank", payload)
@@ -320,9 +312,6 @@ func TestRerankRequestConstructionAndNormalization(t *testing.T) {
 	call := dispatch.calls[0]
 	if call.Request.Path != "/v1/rerank" || call.Request.Method != "POST" {
 		t.Fatalf("派发目标 = %s %s", call.Request.Method, call.Request.Path)
-	}
-	if call.Request.Headers["x-juhe-ai-purpose"] != "playground_rerank" {
-		t.Fatalf("purpose 头 = %q", call.Request.Headers["x-juhe-ai-purpose"])
 	}
 	var outbound map[string]any
 	if err := json.Unmarshal(call.Request.Body, &outbound); err != nil {
@@ -375,7 +364,7 @@ func TestRerankReturnDocumentsFalseOmitsDocument(t *testing.T) {
 	}}
 	mux, _ := newTestRoutes(deps)
 	recorder := doJSON(mux, "POST", "/__aisys__/api/playground/rerank", mustJSON(map[string]any{
-		"accountId": "acc_1", "modelId": "gte-rerank-v2",
+		"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "gte-rerank-v2",
 		"query": "查询语句", "documents": []string{"文档一"}, "returnDocuments": false,
 	}))
 	if recorder.Code != http.StatusOK {
@@ -421,16 +410,16 @@ func TestRerankValidation(t *testing.T) {
 		body     map[string]any
 		contains string
 	}{
-		{"query 空", map[string]any{"accountId": "acc_1", "modelId": "gte-rerank-v2", "query": "  ", "documents": []string{"文档一"}}, "query"},
-		{"query 超 8KB", map[string]any{"accountId": "acc_1", "modelId": "gte-rerank-v2", "query": strings.Repeat("a", 8193), "documents": []string{"文档一"}}, "8192"},
-		{"documents 0 条", map[string]any{"accountId": "acc_1", "modelId": "gte-rerank-v2", "query": "查询", "documents": []string{}}, "documents"},
-		{"documents 超 20 条", map[string]any{"accountId": "acc_1", "modelId": "gte-rerank-v2", "query": "查询", "documents": twentyOne}, "20"},
-		{"documents 条目空白", map[string]any{"accountId": "acc_1", "modelId": "gte-rerank-v2", "query": "查询", "documents": []string{"文档一", " "}}, "不能为空"},
-		{"documents 超 8KB", map[string]any{"accountId": "acc_1", "modelId": "gte-rerank-v2", "query": "查询", "documents": []string{strings.Repeat("a", 8193)}}, "8192"},
-		{"topN 非正", map[string]any{"accountId": "acc_1", "modelId": "gte-rerank-v2", "query": "查询", "documents": []string{"文档一"}, "topN": 0}, "正整数"},
-		{"topN 非整数形态", map[string]any{"accountId": "acc_1", "modelId": "gte-rerank-v2", "query": "查询", "documents": []string{"文档一"}, "topN": 1.5}, "topN 必须是正整数"},
-		{"documents 非数组形态", map[string]any{"accountId": "acc_1", "modelId": "gte-rerank-v2", "query": "查询", "documents": map[string]any{"a": "b"}}, "documents 必须是字符串数组"},
-		{"模型不在候选", map[string]any{"accountId": "acc_1", "modelId": "nope-rerank", "query": "查询", "documents": []string{"文档一"}}, "playground_model_not_available"},
+		{"query 空", map[string]any{"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "gte-rerank-v2", "query": "  ", "documents": []string{"文档一"}}, "query"},
+		{"query 超 8KB", map[string]any{"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "gte-rerank-v2", "query": strings.Repeat("a", 8193), "documents": []string{"文档一"}}, "8192"},
+		{"documents 0 条", map[string]any{"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "gte-rerank-v2", "query": "查询", "documents": []string{}}, "documents"},
+		{"documents 超 20 条", map[string]any{"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "gte-rerank-v2", "query": "查询", "documents": twentyOne}, "20"},
+		{"documents 条目空白", map[string]any{"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "gte-rerank-v2", "query": "查询", "documents": []string{"文档一", " "}}, "不能为空"},
+		{"documents 超 8KB", map[string]any{"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "gte-rerank-v2", "query": "查询", "documents": []string{strings.Repeat("a", 8193)}}, "8192"},
+		{"topN 非正", map[string]any{"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "gte-rerank-v2", "query": "查询", "documents": []string{"文档一"}, "topN": 0}, "正整数"},
+		{"topN 非整数形态", map[string]any{"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "gte-rerank-v2", "query": "查询", "documents": []string{"文档一"}, "topN": 1.5}, "topN 必须是正整数"},
+		{"documents 非数组形态", map[string]any{"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "gte-rerank-v2", "query": "查询", "documents": map[string]any{"a": "b"}}, "documents 必须是字符串数组"},
+		{"模型不在候选", map[string]any{"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "nope-rerank", "query": "查询", "documents": []string{"文档一"}}, "playground_model_not_available"},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -441,9 +430,9 @@ func TestRerankValidation(t *testing.T) {
 		})
 	}
 	recorder := doJSON(mux, "POST", "/__aisys__/api/playground/rerank",
-		mustJSON(map[string]any{"accountId": "acc_missing", "modelId": "gte-rerank-v2", "query": "查询", "documents": []string{"文档一"}}))
-	if recorder.Code != http.StatusNotFound || !strings.Contains(recorder.Body.String(), "playground_account_not_found") {
-		t.Fatalf("账户不存在应 404 playground_account_not_found: %d %s", recorder.Code, recorder.Body.String())
+		mustJSON(map[string]any{"apiKeyId": "key_missing", "modelId": "gte-rerank-v2", "query": "查询", "documents": []string{"文档一"}}))
+	if recorder.Code != http.StatusNotFound || !strings.Contains(recorder.Body.String(), "playground_key_not_found") {
+		t.Fatalf("Key 不存在应 404 playground_key_not_found: %d %s", recorder.Code, recorder.Body.String())
 	}
 	if len(depsOut.Dispatch.(*mockDispatch).calls) != 0 {
 		t.Fatalf("校验失败不应进入派发路径（%d 次）", len(depsOut.Dispatch.(*mockDispatch).calls))
@@ -461,7 +450,7 @@ func TestRerankUpstreamErrorPropagates(t *testing.T) {
 	}}
 	mux, _ := newTestRoutes(deps)
 	recorder := doJSON(mux, "POST", "/__aisys__/api/playground/rerank", mustJSON(map[string]any{
-		"accountId": "acc_1", "modelId": "gte-rerank-v2", "query": "查询", "documents": []string{"文档一"},
+		"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "gte-rerank-v2", "query": "查询", "documents": []string{"文档一"},
 	}))
 	if recorder.Code != http.StatusBadGateway {
 		t.Fatalf("状态码 = %d，期望 502", recorder.Code)
@@ -482,7 +471,7 @@ func TestRerankNonNumericScoreRejected(t *testing.T) {
 	}}
 	mux, _ := newTestRoutes(deps)
 	recorder := doJSON(mux, "POST", "/__aisys__/api/playground/rerank", mustJSON(map[string]any{
-		"accountId": "acc_1", "modelId": "gte-rerank-v2", "query": "查询", "documents": []string{"文档一"},
+		"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "gte-rerank-v2", "query": "查询", "documents": []string{"文档一"},
 	}))
 	if recorder.Code != http.StatusBadGateway || !strings.Contains(recorder.Body.String(), "重排响应归一失败") {
 		t.Fatalf("字符串分值应 502 归一失败: %d %s", recorder.Code, recorder.Body.String())
@@ -499,7 +488,7 @@ func TestRerankNullScoreRejected(t *testing.T) {
 	}}
 	mux, _ := newTestRoutes(deps)
 	recorder := doJSON(mux, "POST", "/__aisys__/api/playground/rerank", mustJSON(map[string]any{
-		"accountId": "acc_1", "modelId": "gte-rerank-v2", "query": "查询", "documents": []string{"文档一"},
+		"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "gte-rerank-v2", "query": "查询", "documents": []string{"文档一"},
 	}))
 	if recorder.Code != http.StatusBadGateway || !strings.Contains(recorder.Body.String(), "重排响应归一失败") {
 		t.Fatalf("relevance_score null 应 502 归一失败: %d %s", recorder.Code, recorder.Body.String())
@@ -516,7 +505,7 @@ func TestRerankResponseTooLargeRejected(t *testing.T) {
 	}}
 	mux, _ := newTestRoutes(deps)
 	recorder := doJSON(mux, "POST", "/__aisys__/api/playground/rerank", mustJSON(map[string]any{
-		"accountId": "acc_1", "modelId": "gte-rerank-v2", "query": "查询", "documents": []string{"文档一"},
+		"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "gte-rerank-v2", "query": "查询", "documents": []string{"文档一"},
 	}))
 	if recorder.Code != http.StatusBadGateway ||
 		!strings.Contains(recorder.Body.String(), "playground_dispatch_failed") ||
@@ -536,44 +525,9 @@ func TestRerankDocumentsBoundaryAccepted(t *testing.T) {
 		twenty[index] = "文档"
 	}
 	recorder := doJSON(mux, "POST", "/__aisys__/api/playground/rerank", mustJSON(map[string]any{
-		"accountId": "acc_1", "modelId": "gte-rerank-v2", "query": "查询", "documents": twenty,
+		"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "gte-rerank-v2", "query": "查询", "documents": twenty,
 	}))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("documents 恰 20 条应放行: %d（body %s）", recorder.Code, recorder.Body.String())
-	}
-}
-
-// TestClassifyCatalogModelsEmbeddingRerank 目录分类补 embedding/rerank 两 kind
-// （设计 §3.2 v1.1）：目录协议声明 × 账户能力域命中/不命中 × 模型清单可路由。
-func TestClassifyCatalogModelsEmbeddingRerank(t *testing.T) {
-	catalog := []CatalogItem{
-		{Model: "text-embedding-v4", SupportedAPIProtocols: []string{"embeddings"}},
-		{Model: "gte-rerank-v2", SupportedAPIProtocols: []string{"rerank"}},
-	}
-	embeddingView := &TransportAccount{ID: "acc_e", Type: "api_key", ProviderCode: "qwen", CapabilityDomain: "embedding", SupportedModels: []string{"text-embedding-v4", "gte-rerank-v2"}}
-	options := classifyCatalogModels("qwen", catalog, embeddingView)
-	if len(options) != 1 || options[0].ModelID != "text-embedding-v4" || options[0].Kind != KindEmbedding {
-		t.Fatalf("embedding 域账户应只列 embedding 行: %+v", options)
-	}
-	rerankView := &TransportAccount{ID: "acc_r", Type: "api_key", ProviderCode: "qwen", CapabilityDomain: "rerank", SupportedModels: []string{"text-embedding-v4", "gte-rerank-v2"}}
-	options = classifyCatalogModels("qwen", catalog, rerankView)
-	if len(options) != 1 || options[0].ModelID != "gte-rerank-v2" || options[0].Kind != KindRerank {
-		t.Fatalf("rerank 域账户应只列 rerank 行: %+v", options)
-	}
-	// 跨域能力不进候选：chat 域账户不列向量/重排目录行。
-	chatView := &TransportAccount{ID: "acc_c", Type: "api_key", ProviderCode: "qwen", CapabilityDomain: "chat", SupportedModels: []string{"text-embedding-v4", "gte-rerank-v2"}}
-	if options := classifyCatalogModels("qwen", catalog, chatView); len(options) != 0 {
-		t.Fatalf("chat 域账户不应产出向量/重排行: %+v", options)
-	}
-	// 模型清单不含该模型（清单非空且未命中）：即便域命中也不产出。
-	restrictedView := &TransportAccount{ID: "acc_s", Type: "api_key", ProviderCode: "qwen", CapabilityDomain: "embedding", SupportedModels: []string{"other-embed"}}
-	if options := classifyCatalogModels("qwen", catalog, restrictedView); len(options) != 0 {
-		t.Fatalf("清单未命中不应产出候选: %+v", options)
-	}
-	// 非白名单供应商也可产出（embedding/rerank 不限媒体供应商白名单）。
-	anthropicView := &TransportAccount{ID: "acc_a", Type: "api_key", ProviderCode: "anthropic", CapabilityDomain: "rerank", SupportedModels: []string{"gte-rerank-v2"}}
-	options = classifyCatalogModels("anthropic", catalog, anthropicView)
-	if len(options) != 1 || options[0].Kind != KindRerank {
-		t.Fatalf("非媒体白名单供应商应可产出 rerank 行: %+v", options)
 	}
 }

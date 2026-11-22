@@ -17,15 +17,11 @@ import (
 
 // TestVideosCreateAndPoll 视频创建与轮询：创建体（model/prompt/size/seconds/
 // input_reference data URL）、响应 {jobId}；轮询 in_progress→running 归一、
-// error 透出、purpose 头与 GET 方法。
+// error 透出、创建时 Key 定位与 GET 方法。
 func TestVideosCreateAndPoll(t *testing.T) {
-	deps := playgroundFixtureDeps(t, false)
-	catalog := deps.ProviderCatalog.(*staticCatalog)
-	catalog.byProvider["gpt"] = append(catalog.byProvider["gpt"], CatalogItem{Model: "grok-imagine-video-1.5", SupportedAPIProtocols: []string{"video"}})
-	transportView := deps.TransportAccounts.(*staticTransport)
-	// 五域退役修订：视频候选按域路由。
-	transportView.views["acc_1"][0].CapabilityDomain = "video"
-	transportView.views["acc_1"][0].SupportedEndpointModes = []string{"chat_sse", "video_create", "audio_speech"}
+	deps := playgroundFixtureDeps(t)
+	keyModels := fixtureKeyModels(deps)
+	keyModels.rows[playgroundKeyModelsFixtureID] = append(keyModels.rows[playgroundKeyModelsFixtureID], keyRowsOf("grok-imagine-video-1.5", KindVideo)...)
 	dispatch := deps.Dispatch.(*mockDispatch)
 	dispatch.script = []scriptedResponse{
 		{Body: []byte(`{"task_id":"job_v1","status":"queued","progress":0}`)},
@@ -33,7 +29,7 @@ func TestVideosCreateAndPoll(t *testing.T) {
 	}
 	mux, _ := newTestRoutes(deps)
 	payload, _ := json.Marshal(map[string]any{
-		"accountId": "acc_1", "modelId": "grok-imagine-video-1.5", "prompt": "一只猫在跳舞",
+		"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "grok-imagine-video-1.5", "prompt": "一只猫在跳舞",
 		"size": "1280x720", "seconds": 5.0, "inputImageBase64": base64Of(pngOnePixel),
 	})
 	recorder := doJSON(mux, "POST", "/__aisys__/api/playground/videos", payload)
@@ -44,8 +40,8 @@ func TestVideosCreateAndPoll(t *testing.T) {
 	if createCall.Request.Path != "/v1/video/generations" || createCall.Request.Method != "POST" {
 		t.Fatalf("创建派发目标 = %s %s", createCall.Request.Method, createCall.Request.Path)
 	}
-	if createCall.Request.Headers["x-juhe-ai-purpose"] != "playground_videos" {
-		t.Fatalf("purpose 头 = %q", createCall.Request.Headers["x-juhe-ai-purpose"])
+	if createCall.Request.APIKeyID != playgroundKeyModelsFixtureID {
+		t.Fatalf("创建时 Key 定位不符: %+v", createCall.Request)
 	}
 	var createOutbound struct {
 		Model          string   `json:"model"`
@@ -75,7 +71,7 @@ func TestVideosCreateAndPoll(t *testing.T) {
 		t.Fatalf("创建响应 = %s（err %v）", recorder.Body.String(), err)
 	}
 	// 轮询。
-	recorder = doJSON(mux, "GET", "/__aisys__/api/playground/videos/job_v1?accountId=acc_1", nil)
+	recorder = doJSON(mux, "GET", "/__aisys__/api/playground/videos/job_v1?apiKeyId="+playgroundKeyModelsFixtureID, nil)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("轮询状态码 = %d（body %s）", recorder.Code, recorder.Body.String())
 	}
@@ -99,14 +95,14 @@ func TestVideosCreateAndPoll(t *testing.T) {
 
 // TestVideosPollErrorPropagation 轮询上游失败：502 + 上游 message 摘要。
 func TestVideosPollErrorPropagation(t *testing.T) {
-	deps := playgroundFixtureDeps(t, false)
+	deps := playgroundFixtureDeps(t)
 	dispatch := deps.Dispatch.(*mockDispatch)
 	dispatch.script = []scriptedResponse{{
 		Status: http.StatusNotFound,
 		Body:   []byte(`{"error":{"message":"任务不存在"}}`),
 	}}
 	mux, _ := newTestRoutes(deps)
-	recorder := doJSON(mux, "GET", "/__aisys__/api/playground/videos/job_x?accountId=acc_1", nil)
+	recorder := doJSON(mux, "GET", "/__aisys__/api/playground/videos/job_x?apiKeyId="+playgroundKeyModelsFixtureID, nil)
 	if recorder.Code != http.StatusBadGateway {
 		t.Fatalf("状态码 = %d，期望 502", recorder.Code)
 	}
@@ -118,7 +114,7 @@ func TestVideosPollErrorPropagation(t *testing.T) {
 // TestVideosContentStreamsPassthrough 产物下载：Content-Type 透传 + inline +
 // 字节回放。
 func TestVideosContentStreamsPassthrough(t *testing.T) {
-	deps := playgroundFixtureDeps(t, false)
+	deps := playgroundFixtureDeps(t)
 	dispatch := deps.Dispatch.(*mockDispatch)
 	videoBytes := append([]byte{0x1A, 0x45, 0xDF, 0xA3}, bytes.Repeat([]byte{0x42}, 64)...)
 	dispatch.script = []scriptedResponse{{
@@ -126,7 +122,7 @@ func TestVideosContentStreamsPassthrough(t *testing.T) {
 		Body:   videoBytes,
 	}}
 	mux, _ := newTestRoutes(deps)
-	recorder := doJSON(mux, "GET", "/__aisys__/api/playground/videos/job_c/content?accountId=acc_1", nil)
+	recorder := doJSON(mux, "GET", "/__aisys__/api/playground/videos/job_c/content?apiKeyId="+playgroundKeyModelsFixtureID, nil)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("状态码 = %d", recorder.Code)
 	}
@@ -146,15 +142,11 @@ func TestVideosContentStreamsPassthrough(t *testing.T) {
 
 // TestSpeechSynthesis 语音合成：出站体（model/input/voice/response_format/
 // speed）、音频落暂存后的 JSON 响应形状（{id,url,mimeType}，不再直接回字节
-// 流）、暂存文件字节一致、purpose 头。
+// 流）、暂存文件字节一致。
 func TestSpeechSynthesis(t *testing.T) {
-	deps := playgroundFixtureDeps(t, false)
-	catalog := deps.ProviderCatalog.(*staticCatalog)
-	catalog.byProvider["gpt"] = append(catalog.byProvider["gpt"], CatalogItem{Model: "speech-2.8-hd", SupportedAPIProtocols: []string{"audio_speech"}})
-	transportView := deps.TransportAccounts.(*staticTransport)
-	// 五域退役修订：语音候选按域路由。
-	transportView.views["acc_1"][0].CapabilityDomain = "audio"
-	transportView.views["acc_1"][0].SupportedEndpointModes = []string{"chat_sse", "video_create", "audio_speech"}
+	deps := playgroundFixtureDeps(t)
+	keyModels := fixtureKeyModels(deps)
+	keyModels.rows[playgroundKeyModelsFixtureID] = append(keyModels.rows[playgroundKeyModelsFixtureID], keyRowsOf("speech-2.8-hd", KindAudio)...)
 	dispatch := deps.Dispatch.(*mockDispatch)
 	dispatch.script = []scriptedResponse{{
 		Header: http.Header{"Content-Type": []string{"audio/wav"}},
@@ -162,7 +154,7 @@ func TestSpeechSynthesis(t *testing.T) {
 	}}
 	mux, _ := newTestRoutes(deps)
 	payload, _ := json.Marshal(map[string]any{
-		"accountId": "acc_1", "modelId": "speech-2.8-hd", "input": "演练场语音合成", "voice": "tongtong", "speed": 1.1, "format": "wav",
+		"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "speech-2.8-hd", "input": "演练场语音合成", "voice": "tongtong", "speed": 1.1, "format": "wav",
 	})
 	recorder := doJSON(mux, "POST", "/__aisys__/api/playground/speech", payload)
 	if recorder.Code != http.StatusOK {
@@ -190,8 +182,8 @@ func TestSpeechSynthesis(t *testing.T) {
 		t.Fatalf("暂存文件读取失败或字节不符（err %v）", err)
 	}
 	call := dispatch.calls[0]
-	if call.Request.Path != "/v1/audio/speech" || call.Request.Headers["x-juhe-ai-purpose"] != "playground_speech" {
-		t.Fatalf("派发形状不符: %s %v", call.Request.Path, call.Request.Headers)
+	if call.Request.Path != "/v1/audio/speech" {
+		t.Fatalf("派发路径 = %q", call.Request.Path)
 	}
 	var outbound struct {
 		Model          string  `json:"model"`
@@ -211,22 +203,17 @@ func TestSpeechSynthesis(t *testing.T) {
 // TestSpeechValidation 语音校验面：input 超 2000 字 400；模型不在 audio 候选
 // 400（账户无 audio 模型/端点模式时 400，契约 §3.6）。
 func TestSpeechValidation(t *testing.T) {
-	deps := playgroundFixtureDeps(t, false)
-	catalog := deps.ProviderCatalog.(*staticCatalog)
-	catalog.byProvider["gpt"] = append(catalog.byProvider["gpt"], CatalogItem{Model: "speech-2.8-hd", SupportedAPIProtocols: []string{"audio_speech"}})
-	transportView := deps.TransportAccounts.(*staticTransport)
-	// 五域退役修订：语音候选按域路由。
-	transportView.views["acc_1"][0].CapabilityDomain = "audio"
-	transportView.views["acc_1"][0].SupportedEndpointModes = []string{"chat_sse", "audio_speech"}
-	transportView.views["acc_1"][0].SupportedModels = []string{"speech-2.8-hd"}
+	deps := playgroundFixtureDeps(t)
+	keyModels := fixtureKeyModels(deps)
+	keyModels.rows[playgroundKeyModelsFixtureID] = append(keyModels.rows[playgroundKeyModelsFixtureID], keyRowsOf("speech-2.8-hd", KindAudio)...)
 	mux, _ := newTestRoutes(deps)
 	longInput := strings.Repeat("字", 2001)
-	payload, _ := json.Marshal(map[string]any{"accountId": "acc_1", "modelId": "speech-2.8-hd", "input": longInput})
+	payload, _ := json.Marshal(map[string]any{"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "speech-2.8-hd", "input": longInput})
 	recorder := doJSON(mux, "POST", "/__aisys__/api/playground/speech", payload)
 	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "2000") {
 		t.Fatalf("超长 input 应 400: %d %s", recorder.Code, recorder.Body.String())
 	}
-	payload, _ = json.Marshal(map[string]any{"accountId": "acc_1", "modelId": "nope-speech", "input": "正常文本"})
+	payload, _ = json.Marshal(map[string]any{"apiKeyId": playgroundKeyModelsFixtureID, "modelId": "nope-speech", "input": "正常文本"})
 	recorder = doJSON(mux, "POST", "/__aisys__/api/playground/speech", payload)
 	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "playground_model_not_available") {
 		t.Fatalf("无 audio 候选应 400 playground_model_not_available: %d %s", recorder.Code, recorder.Body.String())
@@ -252,11 +239,11 @@ func mustJSON(value any) []byte {
 // TestVideosPollUnknownStatusKeepsRawText 未知任务状态：按 failed 收敛且原文
 // 透出到 error.message（「未知状态 <原文>」，不静默丢弃）。
 func TestVideosPollUnknownStatusKeepsRawText(t *testing.T) {
-	deps := playgroundFixtureDeps(t, false)
+	deps := playgroundFixtureDeps(t)
 	dispatch := deps.Dispatch.(*mockDispatch)
 	dispatch.script = []scriptedResponse{{Body: []byte(`{"task_id":"job_u","status":"weird_state","progress":10}`)}}
 	mux, _ := newTestRoutes(deps)
-	recorder := doJSON(mux, "GET", "/__aisys__/api/playground/videos/job_u?accountId=acc_1", nil)
+	recorder := doJSON(mux, "GET", "/__aisys__/api/playground/videos/job_u?apiKeyId="+playgroundKeyModelsFixtureID, nil)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("状态码 = %d（body %s）", recorder.Code, recorder.Body.String())
 	}
@@ -284,11 +271,11 @@ func TestVideosPollUnknownStatusKeepsRawText(t *testing.T) {
 // TestVideosPollKnownStatusNoSyntheticError 词表内状态不得合成 error 载荷
 // （未知状态分支仅对词表外生效）。
 func TestVideosPollKnownStatusNoSyntheticError(t *testing.T) {
-	deps := playgroundFixtureDeps(t, false)
+	deps := playgroundFixtureDeps(t)
 	dispatch := deps.Dispatch.(*mockDispatch)
 	dispatch.script = []scriptedResponse{{Body: []byte(`{"task_id":"job_k","status":"expired","progress":100}`)}}
 	mux, _ := newTestRoutes(deps)
-	recorder := doJSON(mux, "GET", "/__aisys__/api/playground/videos/job_k?accountId=acc_1", nil)
+	recorder := doJSON(mux, "GET", "/__aisys__/api/playground/videos/job_k?apiKeyId="+playgroundKeyModelsFixtureID, nil)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("状态码 = %d（body %s）", recorder.Code, recorder.Body.String())
 	}
@@ -308,25 +295,15 @@ func TestVideosPollKnownStatusNoSyntheticError(t *testing.T) {
 	}
 }
 
-// TestMediaEndpointsAccountNotFoundMaps404 媒体三端点账户不存在/范围外：与
-// chatstream 对齐 404 playground_account_not_found（原 400 model_not_available
-// 误标语义），且不进入派发路径。
-func TestMediaEndpointsAccountNotFoundMaps404(t *testing.T) {
-	deps := playgroundFixtureDeps(t, false)
-	catalog := deps.ProviderCatalog.(*staticCatalog)
-	catalog.byProvider["gpt"] = append(catalog.byProvider["gpt"],
-		CatalogItem{Model: "gpt-image-2", SupportedAPIProtocols: []string{"image_generation"}},
-		CatalogItem{Model: "grok-imagine-video-1.5", SupportedAPIProtocols: []string{"video"}},
-		CatalogItem{Model: "speech-2.8-hd", SupportedAPIProtocols: []string{"audio_speech"}},
-	)
-	// 图像任务面接线（账户校验先于派发，队列面未接线时端点 503 优先收敛）。
+// TestMediaEndpointsKeyNotFoundMaps404 媒体三端点 Key 不存在/范围外：统一
+// 404 playground_key_not_found（真实 Key 化修订），且不进入派发路径。
+func TestMediaEndpointsKeyNotFoundMaps404(t *testing.T) {
+	deps := playgroundFixtureDeps(t)
+	// 图像任务面接线（Key 校验先于派发，队列面未接线时端点 503 优先收敛）。
 	imageJobs := newFakeImageJobStore()
 	deps.ImageJobs = imageJobs
 	deps.ImageRunner = NewImageJobRunner(deps, imageJobs, nil)
 	t.Cleanup(deps.ImageRunner.Stop)
-	transportView := deps.TransportAccounts.(*staticTransport)
-	transportView.views["acc_1"][0].SupportedEndpointModes = []string{"chat_sse", "video_create", "audio_speech"}
-	transportView.views["acc_1"][0].SupportedModels = []string{"gpt-image-2", "grok-imagine-video-1.5", "speech-2.8-hd"}
 	mux, depsOut := newTestRoutes(deps)
 
 	cases := []struct {
@@ -334,9 +311,9 @@ func TestMediaEndpointsAccountNotFoundMaps404(t *testing.T) {
 		target string
 		body   []byte
 	}{
-		{"images", "/__aisys__/api/playground/images/jobs", mustJSON(map[string]any{"accountId": "acc_missing", "modelId": "gpt-image-2", "prompt": "一只猫"})},
-		{"videos", "/__aisys__/api/playground/videos", mustJSON(map[string]any{"accountId": "acc_missing", "modelId": "grok-imagine-video-1.5", "prompt": "一只猫"})},
-		{"speech", "/__aisys__/api/playground/speech", mustJSON(map[string]any{"accountId": "acc_missing", "modelId": "speech-2.8-hd", "input": "文本"})},
+		{"images", "/__aisys__/api/playground/images/jobs", mustJSON(map[string]any{"apiKeyId": "key_missing", "modelId": "gpt-image-2", "prompt": "一只猫"})},
+		{"videos", "/__aisys__/api/playground/videos", mustJSON(map[string]any{"apiKeyId": "key_missing", "modelId": "grok-imagine-video-1.5", "prompt": "一只猫"})},
+		{"speech", "/__aisys__/api/playground/speech", mustJSON(map[string]any{"apiKeyId": "key_missing", "modelId": "speech-2.8-hd", "input": "文本"})},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -344,27 +321,27 @@ func TestMediaEndpointsAccountNotFoundMaps404(t *testing.T) {
 			if recorder.Code != http.StatusNotFound {
 				t.Fatalf("%s 状态码 = %d，期望 404（body %s）", testCase.name, recorder.Code, recorder.Body.String())
 			}
-			if !strings.Contains(recorder.Body.String(), "playground_account_not_found") {
+			if !strings.Contains(recorder.Body.String(), "playground_key_not_found") {
 				t.Fatalf("%s 错误码不符: %s", testCase.name, recorder.Body.String())
 			}
 		})
 	}
 	dispatch := depsOut.Dispatch.(*mockDispatch)
 	if len(dispatch.calls) != 0 {
-		t.Fatalf("账户不存在时不应派发（%d 次）", len(dispatch.calls))
+		t.Fatalf("Key 不存在时不应派发（%d 次）", len(dispatch.calls))
 	}
 }
 
 // TestVideosJobIDWhitelist jobId 白名单 ^[A-Za-z0-9._-]{1,512}$：非法字符在
 // 轮询与内容两端点都以 400 invalid_request 收敛，不透传派发。
 func TestVideosJobIDWhitelist(t *testing.T) {
-	deps := playgroundFixtureDeps(t, false)
+	deps := playgroundFixtureDeps(t)
 	mux, depsOut := newTestRoutes(deps)
-	recorder := doJSON(mux, "GET", "/__aisys__/api/playground/videos/job!x?accountId=acc_1", nil)
+	recorder := doJSON(mux, "GET", "/__aisys__/api/playground/videos/job!x?apiKeyId="+playgroundKeyModelsFixtureID, nil)
 	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "playground_invalid_request") {
 		t.Fatalf("轮询非法 jobId 应 400 invalid_request: %d %s", recorder.Code, recorder.Body.String())
 	}
-	recorder = doJSON(mux, "GET", "/__aisys__/api/playground/videos/job!x/content?accountId=acc_1", nil)
+	recorder = doJSON(mux, "GET", "/__aisys__/api/playground/videos/job!x/content?apiKeyId="+playgroundKeyModelsFixtureID, nil)
 	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "playground_invalid_request") {
 		t.Fatalf("内容端点非法 jobId 应 400 invalid_request: %d %s", recorder.Code, recorder.Body.String())
 	}

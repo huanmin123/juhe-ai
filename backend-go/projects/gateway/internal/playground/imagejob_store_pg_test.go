@@ -4,7 +4,8 @@ package playground
 // pgtestkit 自动 SKIP；授权后覆盖状态机（Create/Claim 原子性/Complete/Fail）、
 // 卡片归一（imageDeleted 读时判定、usage/costUsd 仅 completed 含已删）、参考图事务
 // 绑定（归属校验失败整体回滚）、列表过滤（keyword/status 派生态/quality/游
-// 标）与启动恢复（queued 返回 + running 置 failed）。
+// 标）、启动恢复（queued 返回 + running 置 failed）与手动删除（§3.4.6 v1.5：
+// 终态任务行与产物字节同事务一并删、非终态拒绝、越权 404 口径）。
 
 import (
 	"context"
@@ -66,7 +67,7 @@ func newPlaygroundImageJobsPG(t *testing.T) *sql.DB {
 
 func newImageJobRecord(viewerID string, referenceIDs ...string) *ImageJobRecord {
 	return &ImageJobRecord{
-		ViewerID: viewerID, AccountID: "acc_1", ModelID: "gpt-image-2",
+		ViewerID: viewerID, APIKeyID: playgroundKeyModelsFixtureID, ProviderCode: "gpt", ModelID: "gpt-image-2",
 		Prompt: "一只赛博猫", AspectRatio: "1:1", Resolution: "1k", Quality: "standard",
 		OutputFormat: "png", Size: "1024x1024", ReferenceIDs: referenceIDs,
 	}
@@ -112,6 +113,10 @@ func TestPGImageJobStoreCreateBindsReferences(t *testing.T) {
 	}
 	if params.AspectRatio != "1:1" || params.Size != "1024x1024" || params.ReferenceCount != 2 {
 		t.Fatalf("params 不符: %+v", params)
+	}
+	// v1.4 口径：Key 归属随 params.apiKeyId 落 jsonb（account_id 历史列恒空）。
+	if params.APIKeyID != playgroundKeyModelsFixtureID || params.ProviderCode != "gpt" {
+		t.Fatalf("params 缺 Key 归属: %+v", params)
 	}
 }
 
@@ -377,6 +382,21 @@ func TestPGImageJobStoreListFiltersAndCursor(t *testing.T) {
 	if err != nil || len(followUp.Jobs) != 5 {
 		t.Fatalf("游标续页 = %d 条 err=%v", len(followUp.Jobs), err)
 	}
+	// apiKeyId 过滤（真实 Key 化修订：按 params jsonb 的创建时 Key 筛选；
+	// 新行 account_id 历史列写空串）。
+	if _, err := db.Exec(`INSERT INTO `+playgroundImageJobsTable+`
+		(system_account_id,id,status,account_id,model_id,prompt,params,created_at,updated_at)
+		VALUES ('sys_user_1','job_key1','completed','','gpt-image-2','Key 筛选图','{"apiKeyId":"key_1","providerCode":"gpt"}',$1,$1),
+		       ('sys_user_1','job_key2','completed','','gpt-image-2','Key 筛选图二','{"apiKeyId":"key_2","providerCode":"gpt"}',$1,$1)`, now-6500); err != nil {
+		t.Fatal(err)
+	}
+	page, err = store.List("sys_user_1", ImageJobFilter{APIKeyID: "key_1"})
+	if err != nil || len(page.Jobs) != 1 || page.Jobs[0].JobID != "job_key1" {
+		t.Fatalf("apiKeyId 过滤 = %+v err=%v", page, err)
+	}
+	if page, err = store.List("sys_user_1", ImageJobFilter{APIKeyID: "key_missing"}); err != nil || len(page.Jobs) != 0 {
+		t.Fatalf("未知 apiKeyId 过滤应为空: %+v err=%v", page, err)
+	}
 	// status 词表外显式拒绝。
 	if _, err := store.List("sys_user_1", ImageJobFilter{Status: "nope"}); !errors.Is(err, errImageJobFilterInvalid) {
 		t.Fatalf("status 词表外必须拒绝，得到 %v", err)
@@ -385,6 +405,112 @@ func TestPGImageJobStoreListFiltersAndCursor(t *testing.T) {
 	page, err = store.List("sys_user_2", ImageJobFilter{})
 	if err != nil || len(page.Jobs) != 0 {
 		t.Fatalf("越权列表应为空: %+v err=%v", page, err)
+	}
+}
+
+// TestPGImageJobStoreDelete 手动删除（§3.4.6 v1.5）：completed（含参考图 +
+// 结果图 artifact 绑定）→ Delete 后任务行与产物字节一并消失；queued/running
+// → errImageJobNotDeletable 且行保留；跨 viewer/不存在 → errImageJobNotFound；
+// failed → 删除成功。
+func TestPGImageJobStoreDelete(t *testing.T) {
+	db := newPlaygroundImageJobsPG(t)
+	store := NewPGImageJobStore(db)
+
+	seedReferenceArtifact(t, db, "sys_user_1", "ref_del")
+	created, err := store.Create(newImageJobRecord("sys_user_1", "ref_del"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim("sys_user_1", created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Complete("sys_user_1", created.ID, []string{"res_del"}, ImageJobUsage{}, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	// 模拟执行器落图：一张 image_result artifact 绑定该任务。
+	if _, err := db.Exec(`INSERT INTO `+playgroundArtifactsTable+` (system_account_id,id,kind,mime_type,data,job_id,created_at) VALUES ($1,'res_del','image_result','image/png',$2,$3,$4)`,
+		"sys_user_1", []byte("res"), created.ID, time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete("sys_user_1", created.ID); err != nil {
+		t.Fatalf("completed 删除失败: %v", err)
+	}
+	var count int
+	if err := db.QueryRow(`SELECT count(*) FROM `+playgroundImageJobsTable+` WHERE system_account_id=$1 AND id=$2`,
+		"sys_user_1", created.ID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("任务行应已删除，count=%d err=%v", count, err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM `+playgroundArtifactsTable+` WHERE system_account_id=$1 AND job_id=$2`,
+		"sys_user_1", created.ID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("产物字节（结果图+参考图）应一并删除，count=%d err=%v", count, err)
+	}
+	if _, err := store.Get("sys_user_1", created.ID); !errors.Is(err, errImageJobNotFound) {
+		t.Fatalf("删除后读取应 not found，得到 %v", err)
+	}
+
+	// queued → errImageJobNotDeletable 且行仍在。
+	queued, err := store.Create(newImageJobRecord("sys_user_1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete("sys_user_1", queued.ID); !errors.Is(err, errImageJobNotDeletable) {
+		t.Fatalf("queued 删除必须拒绝，得到 %v", err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM `+playgroundImageJobsTable+` WHERE system_account_id=$1 AND id=$2`,
+		"sys_user_1", queued.ID).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("非终态拒绝后行应保留，count=%d err=%v", count, err)
+	}
+	// running 同口径拒绝。
+	running, err := store.Create(newImageJobRecord("sys_user_1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim("sys_user_1", running.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete("sys_user_1", running.ID); !errors.Is(err, errImageJobNotDeletable) {
+		t.Fatalf("running 删除必须拒绝，得到 %v", err)
+	}
+
+	// 跨 viewer → errImageJobNotFound（他户行不受影响）。
+	foreign, err := store.Create(newImageJobRecord("sys_user_2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim("sys_user_2", foreign.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Complete("sys_user_2", foreign.ID, []string{"res_foreign"}, ImageJobUsage{}, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete("sys_user_1", foreign.ID); !errors.Is(err, errImageJobNotFound) {
+		t.Fatalf("越权删除必须 not found，得到 %v", err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM `+playgroundImageJobsTable+` WHERE system_account_id=$1 AND id=$2`,
+		"sys_user_2", foreign.ID).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("他户行不得被删，count=%d err=%v", count, err)
+	}
+	if err := store.Delete("sys_user_1", "no_such_job"); !errors.Is(err, errImageJobNotFound) {
+		t.Fatalf("不存在删除必须 not found，得到 %v", err)
+	}
+
+	// failed → 删除成功。
+	failed, err := store.Create(newImageJobRecord("sys_user_1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Claim("sys_user_1", failed.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Fail("sys_user_1", failed.ID, "生图请求失败（上游 HTTP 429）: rate limited"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete("sys_user_1", failed.ID); err != nil {
+		t.Fatalf("failed 删除失败: %v", err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM `+playgroundImageJobsTable+` WHERE system_account_id=$1 AND id=$2`,
+		"sys_user_1", failed.ID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("failed 任务行应已删除，count=%d err=%v", count, err)
 	}
 }
 

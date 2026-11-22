@@ -1,7 +1,7 @@
 package playground
 
-// 演练场 Key 模型候选分类（docs/functions/演练场设计.md §3.2 真实 Key 化修订）：
-// 所选 API Key 的分组模型并集经目录行逐模型分类为六类 kind（目录侧口径）：
+// 演练场 Key 模型候选分类（docs/functions/演练场设计.md §3.2）：所选 API Key
+// 的分组模型并集经目录行逐模型分类为六类 kind，再经提供账户能力域复核：
 //   - chat：目录协议含 chat_completions|messages|generate_content 之一；
 //   - image：家族白名单（gpt 系 × gpt-image-2、xai × grok-imagine 系；目录
 //     声明 image_generation 的其他模型不进候选）；
@@ -10,9 +10,11 @@ package playground
 //   - embedding：目录声明 embeddings 协议；
 //   - rerank：目录声明 rerank 协议。
 //
-// 原账户侧复核（能力域 × 模型清单可路由）随固定派发退役：候选由 Key 的分组
-// 并集承载，可派发性由 /v1 链按候选路由真实裁决。functionCalling 目录投影已
-// 随 fetch_url 工具退役（§3.3 归一 SSE 修订）。
+// 每条候选行要求「∃ 提供账户：能力域覆盖该 kind 且模型清单（含映射）含该
+// 模型」（§3.2 目录声明 × 提供账户能力域复核，延续「目录声明 × 实际可派发」
+// 收口：纯目录分类会列出跑不通的模型）。账户投影与 preflight 能力域闸门账户
+// 侧同口径（域归一空值落 chat、清单空 = 不限制、启用映射按上游目标对清单）。
+// functionCalling 目录投影已随 fetch_url 工具退役（§3.3 归一 SSE 修订）。
 
 import (
 	"strings"
@@ -78,10 +80,11 @@ type ModelOption struct {
 	Kind    ModelKind `json:"kind"`
 }
 
-// classifyKeyCatalogModels 对单供应商目录行做六类分类（目录侧口径；入口行
+// ClassifyKeyCatalogModels 对单供应商目录行做六类分类（目录侧口径；入口行
 // Model 为空时跳过）。去重键为 (modelId, kind)：同一模型可兼具多类能力
-// （如 veo-3 同时声明 generate_content 与 video 协议），双行合法。
-func classifyKeyCatalogModels(providerCode string, catalog []CatalogItem) []ModelOption {
+// （如 veo-3 同时声明 generate_content 与 video 协议），双行合法。cmd 层
+// KeyModels 适配器对并集模型逐行调用。
+func ClassifyKeyCatalogModels(providerCode string, catalog []CatalogItem) []ModelOption {
 	options := []ModelOption{}
 	seen := map[string]bool{}
 	add := func(option ModelOption) {
@@ -138,4 +141,113 @@ func hasAnyProtocol(protocols []string, wanted []string) bool {
 		}
 	}
 	return false
+}
+
+// KeyAccountModelMapping 是提供账户模型映射的最小投影（runtime cache
+// AccountModelMapping 的演练场子集）。
+type KeyAccountModelMapping struct {
+	SourceModel   string
+	UpstreamModel string
+	Enabled       bool
+}
+
+// KeyCandidateAccount 是参与能力域复核的提供账户最小投影（cmd 层适配器从
+// runtime cache 分组账户快照投影；CapabilityDomain/SupportedModels/
+// ModelMappings 与 preflight 能力域闸门账户侧同口径）。
+type KeyCandidateAccount struct {
+	CapabilityDomain string
+	SupportedModels  []string
+	ModelMappings    []KeyAccountModelMapping
+}
+
+// keyAccountCapabilityDomain 归一提供账户能力域（空值 / 词表外值落 chat，
+// accounts.capability_domain NOT NULL DEFAULT 'chat' 的列默认语义；与
+// preflight 域闸门账户侧同口径，playground 侧独立投影避免 dispatch 依赖）。
+func keyAccountCapabilityDomain(account KeyCandidateAccount) string {
+	switch strings.ToLower(strings.TrimSpace(account.CapabilityDomain)) {
+	case "video", "audio", "image", "embedding", "rerank":
+		return strings.ToLower(strings.TrimSpace(account.CapabilityDomain))
+	default:
+		return "chat"
+	}
+}
+
+// keyAccountSupportsModel 是模型清单/映射路由的共用判定（清单空 = 不限制；
+// 启用映射且源模型命中时按上游目标模型对清单）。
+func keyAccountSupportsModel(account KeyCandidateAccount, model string) bool {
+	if len(account.SupportedModels) == 0 {
+		return true
+	}
+	for _, mapping := range account.ModelMappings {
+		if !mapping.Enabled || mapping.SourceModel != model {
+			continue
+		}
+		target := mapping.UpstreamModel
+		if target == "" {
+			target = model
+		}
+		if containsString(account.SupportedModels, target) {
+			return true
+		}
+	}
+	return containsString(account.SupportedModels, model)
+}
+
+// KeyModelProvidedByAccounts 是 §3.2 提供账户复核：∃ 账户能力域覆盖该 kind
+// （六值一一对应）且模型清单（含映射）含该模型；未过复核的模型不进候选。
+func KeyModelProvidedByAccounts(kind ModelKind, model string, accounts []KeyCandidateAccount) bool {
+	domain := string(kind)
+	for _, account := range accounts {
+		if keyAccountCapabilityDomain(account) != domain {
+			continue
+		}
+		if keyAccountSupportsModel(account, model) {
+			return true
+		}
+	}
+	return false
+}
+
+// KeyRowProviderEntry 是同一 (modelId, kind) 在多供应商目录下的候选行来源
+// （§3.2 单行口径消歧输入）。
+type KeyRowProviderEntry struct {
+	ProviderCode string
+	Scope        string
+}
+
+// keyCatalogScopeRank 是目录行作用域 rank（personal 账户作用域自定义行 > builtin
+// 平台内置行 > global 全局行；词表外 0）。
+func keyCatalogScopeRank(scope string) int {
+	switch strings.ToLower(strings.TrimSpace(scope)) {
+	case "personal":
+		return 3
+	case "builtin":
+		return 2
+	case "global":
+		return 1
+	default:
+		return 0
+	}
+}
+
+// SelectKeyRowProvider 在 (modelId, kind) 去重取单行时确定 providerCode：
+// scope rank 高者优先，同 rank 按 providerCode 归一字典序升序（确定性消歧，
+// §3.2「providerCode 取目录归属供应商行」）。entries 空返回 false。
+func SelectKeyRowProvider(entries []KeyRowProviderEntry) (string, bool) {
+	best := ""
+	bestRank := -1
+	found := false
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.ProviderCode) == "" {
+			continue
+		}
+		rank := keyCatalogScopeRank(entry.Scope)
+		normalized := normalizeProviderToken(entry.ProviderCode)
+		if !found || rank > bestRank || (rank == bestRank && normalized < normalizeProviderToken(best)) {
+			best = entry.ProviderCode
+			bestRank = rank
+			found = true
+		}
+	}
+	return best, found
 }

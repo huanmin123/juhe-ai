@@ -11,18 +11,17 @@ import (
 	"net/http"
 )
 
-// Scope 是演练场的数据范围（口径沿 chat.ChatBindScope：admin/super_admin 看
-// 全量号池，其余用户看自有 + 被授权账户；设计 §3.1）。由 cmd 层 ScopeResolver
-// 从登录态解析，playground 只见本结构。RemoteAddr 是控制台请求的客户端地址
-// （派发 RemoteAddr 透传源）。
+// Scope 是演练场的数据范围（设计 §3.1 真实 Key 化修订：fail-closed 单一
+// viewer 口径——所有候选与派发收敛到当前登录者本人可见范围，无 admin 越权
+// 视图）。由 cmd 层 ScopeResolver 从登录态解析，playground 只见本结构。
+// RemoteAddr 是控制台请求的客户端地址（派发 RemoteAddr 透传源）。
 type Scope struct {
 	ViewerID   string
-	IsAdmin    bool
 	RemoteAddr string
 }
 
 // ScopeResolver 从请求解析数据范围（RequireSession 中间件之后调用；未登录
-// 返回错误）。生产实现经 authsys.AuthContextFrom + IsAdminRole 投影。
+// 返回错误）。生产实现经 authsys.AuthContextFrom 投影登录者本人。
 type ScopeResolver func(r *http.Request) (Scope, error)
 
 // DispatchRequest 是派发出站请求（进程内直调 /v1 链，Path 空默认
@@ -63,12 +62,13 @@ type CatalogItem struct {
 	SupportedAPIProtocols []string
 }
 
-// KeyModelRow 是 GET /key-models 响应行（所选 Key 的分组模型并集 ∪ 目录分类）。
+// KeyModelRow 是 GET /key-models 响应行（所选 Key 的分组模型并集 ∪ 目录分类；
+// v1.3 UI 口径：不展示 tokens 与费用，行不含计价投影字段——ImageCost 端口与
+// cost_usd 落库保留）。
 type KeyModelRow struct {
-	ModelID       string        `json:"modelId"`
-	Kind          ModelKind     `json:"kind"`
-	ProviderCode  string        `json:"providerCode"`
-	ImageEstimate *float64      `json:"imageEstimate,omitempty"`
+	ModelID      string    `json:"modelId"`
+	Kind         ModelKind `json:"kind"`
+	ProviderCode string    `json:"providerCode"`
 }
 
 // KeyModelsPort 列出所选 Key 的演练场模型候选（生产实现 = cmd 层经 runtime

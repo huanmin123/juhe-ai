@@ -165,9 +165,260 @@ func (w *statsWriter) seed() error {
 		if err := w.seedDirtyMarkers(tx); err != nil {
 			return fmt.Errorf("派生窗口脏标记: %w", err)
 		}
+		if err := w.seedAuthzUsageDaily(tx); err != nil {
+			return fmt.Errorf("授权用量日表分页样本: %w", err)
+		}
 		return nil
 	})
 }
+
+// authzDailyCombination 是一条授权用量日表的窗口键（与 statsagg 聚合输出的
+// 维度一致）：scope 是读面的 system_account_id（管理态明细固定 'global'）。
+type authzDailyCombination struct {
+	scope     string
+	teamID    string
+	granteeID string
+	// userScope 为 true 表示写授权用户日表，否则写授权团队日表。
+	userScope bool
+}
+
+// seedAuthzUsageDaily 直造授权用量日表（2026-11-22 用户裁决：授权明细页先看
+// 页面效果，不等离线 rebuild 的真实聚合；在线聚合 20s JobTimeout 跑不完全量
+// 重放）。组合键取自 business 域落库的团队来源 active 授权运行时行，与 statsagg
+// 聚合输出同形——将来真实聚合跑起来会按同键 UPSERT 覆盖成真实值，不产生第二
+// 种事实。行值用键哈希确定性生成（重复执行同键同值，不叠加）。
+func (w *statsWriter) seedAuthzUsageDaily(tx *sql.Tx) error {
+	exists, err := tableExists(w.ctx, w.env.db, SchemaBusiness, "resource_authorizations")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		w.env.logger.Info("mockdata 授权日表分页样本跳过", "reason", "juhe_business 缺少 resource_authorizations（business 域未执行）")
+		return nil
+	}
+	// 团队明细组合：DISTINCT(团队, 资源)。页面读面 scope='global'（admin 无
+	// FilterID 时 usageScopeKey 的固定键）。
+	teamCombs, err := w.env.db.QueryContext(w.ctx, `
+		SELECT DISTINCT effective_source_team_id, resource_type, resource_id
+		FROM juhe_business.resource_authorizations
+		WHERE effective_source_type = 'team' AND status = 'active' AND id LIKE $1
+		  AND grantee_system_account_id <> resource_owner_system_account_id
+		ORDER BY effective_source_team_id, resource_type, resource_id`, CleanupIDPrefix+"%")
+	if err != nil {
+		return fmt.Errorf("读取团队授权组合: %w", err)
+	}
+	var teamCombsList [][3]string
+	for teamCombs.Next() {
+		var teamID, resourceType, resourceID string
+		if err := teamCombs.Scan(&teamID, &resourceType, &resourceID); err != nil {
+			teamCombs.Close()
+			return err
+		}
+		teamCombsList = append(teamCombsList, [3]string{teamID, resourceType, resourceID})
+	}
+	if err := teamCombs.Err(); err != nil {
+		teamCombs.Close()
+		return err
+	}
+	teamCombs.Close()
+
+	// 用户明细组合：每个成员运行时行一行（团队来源下 grantee=成员）。
+	userCombs, err := w.env.db.QueryContext(w.ctx, `
+		SELECT effective_source_team_id, grantee_system_account_id, resource_type, resource_id
+		FROM juhe_business.resource_authorizations
+		WHERE effective_source_type = 'team' AND status = 'active' AND id LIKE $1
+		  AND grantee_system_account_id <> resource_owner_system_account_id
+		ORDER BY effective_source_team_id, grantee_system_account_id, resource_type, resource_id`, CleanupIDPrefix+"%")
+	if err != nil {
+		return fmt.Errorf("读取成员授权组合: %w", err)
+	}
+	var userCombsList [][4]string
+	for userCombs.Next() {
+		var teamID, grantee, resourceType, resourceID string
+		if err := userCombs.Scan(&teamID, &grantee, &resourceType, &resourceID); err != nil {
+			userCombs.Close()
+			return err
+		}
+		userCombsList = append(userCombsList, [4]string{teamID, grantee, resourceType, resourceID})
+	}
+	if err := userCombs.Err(); err != nil {
+		userCombs.Close()
+		return err
+	}
+	userCombs.Close()
+
+	if len(teamCombsList) == 0 && len(userCombsList) == 0 {
+		w.env.logger.Info("mockdata 授权日表分页样本跳过", "reason", "没有团队来源 active 授权组合（business 域授权样本缺失）")
+		return nil
+	}
+
+	// 视角集合：global（管理模式）+ 每个在册成员的 self 视角（用户模式读面的
+	// scope key 是查看者自身）。成员视角只保留与该成员相关的组合：所在团队的
+	// 授权消耗（团队明细）与本人领取或所在团队的消耗（用户明细）。
+	memberRows, err := w.env.db.QueryContext(w.ctx, `
+		SELECT team_id, system_account_id FROM juhe_business.system_team_members
+		WHERE team_id LIKE $1 ORDER BY team_id, system_account_id`, CleanupIDPrefix+"%")
+	if err != nil {
+		return fmt.Errorf("读取团队成员: %w", err)
+	}
+	teamsByMember := map[string][]string{}
+	for memberRows.Next() {
+		var teamID, member string
+		if err := memberRows.Scan(&teamID, &member); err != nil {
+			memberRows.Close()
+			return err
+		}
+		teamsByMember[member] = append(teamsByMember[member], teamID)
+	}
+	if err := memberRows.Err(); err != nil {
+		memberRows.Close()
+		return err
+	}
+	memberRows.Close()
+
+	scopes := []struct {
+		id    string
+		teams map[string]bool
+	}{{id: "global", teams: nil}}
+	for member := range teamsByMember {
+		teamSet := map[string]bool{}
+		for _, teamID := range teamsByMember[member] {
+			teamSet[teamID] = true
+		}
+		scopes = append(scopes, struct {
+			id    string
+			teams map[string]bool
+		}{id: member, teams: teamSet})
+	}
+
+	days := w.env.options.Days
+	if days <= 0 {
+		days = DefaultDays
+	}
+	updatedAt := w.now.Format("2006-01-02T15:04:05.000Z")
+	written := 0
+	for day := days; day >= 1; day-- {
+		statDate := w.now.AddDate(0, 0, -day+1).Format("2006-01-02")
+		for _, scope := range scopes {
+			for _, comb := range teamCombsList {
+				if scope.teams != nil && !scope.teams[comb[0]] {
+					continue
+				}
+				if err := w.putAuthzDailyRow(tx, authzDailyCombination{
+					scope: scope.id, teamID: comb[0],
+				}, false, comb[1], comb[2], statDate, updatedAt); err != nil {
+					return err
+				}
+				written++
+			}
+			for _, comb := range userCombsList {
+				if scope.teams != nil && !scope.teams[comb[0]] && comb[1] != scope.id {
+					continue
+				}
+				// 团队来源行：真实聚合在 sourceType=team 时额外写 {team, grantee} 键。
+				if err := w.putAuthzDailyRow(tx, authzDailyCombination{
+					scope: scope.id, teamID: comb[0], granteeID: comb[1],
+				}, true, comb[2], comb[3], statDate, updatedAt); err != nil {
+					return err
+				}
+				// 直连行：真实聚合对每条授权都写 {team='', grantee} 键（statsagg
+				// authorizationSummaryKeys 的 userKeys 直连维度）；用户明细页
+				// 无团队筛选读的正是这批行（usage_reads.go userUsageRows
+				// `team_filter_id = filters.TeamID` 空筛选只命中空团队键）。
+				if err := w.putAuthzDailyRow(tx, authzDailyCombination{
+					scope: scope.id, granteeID: comb[1],
+				}, true, comb[2], comb[3], statDate, updatedAt); err != nil {
+					return err
+				}
+				written += 2
+			}
+		}
+	}
+	w.env.logger.Info("mockdata 授权日表分页样本写入完成",
+		"teamCombinations", len(teamCombsList), "userCombinations", len(userCombsList),
+		"scopes", len(scopes), "days", days, "rows", written)
+	return nil
+}
+
+// authzDailySeed 是一个确定性伪随机流（fnv-1a 演进的 LCG）：同键恒同序列。
+type authzDailySeed struct{ state uint64 }
+
+func (r *authzDailySeed) next(mod uint64) uint64 {
+	r.state = r.state*6364136223846793005 + 1442695040888963407
+	return (r.state >> 16) % mod
+}
+
+func newAuthzDailySeed(parts ...string) *authzDailySeed {
+	var acc uint64 = 1469598103934665603
+	for _, part := range parts {
+		for _, b := range []byte(part) {
+			acc ^= uint64(b)
+			acc *= 1099511628211
+		}
+		acc ^= 0xFF
+		acc *= 1099511628211
+	}
+	return &authzDailySeed{state: acc}
+}
+
+// putAuthzDailyRow 写一行授权日表（团队表或用户表按 userScope 分派），数值由
+// 键派生的确定性伪随机生成：单日请求 8..47、约 12% 失败、token/成本按请求量
+// 折算，保证 HAVING 非空与页面卡片数值形态可信。
+func (w *statsWriter) putAuthzDailyRow(tx *sql.Tx, comb authzDailyCombination, userScope bool, resourceType, resourceID, statDate, updatedAt string) error {
+	rng := newAuthzDailySeed(comb.scope, comb.teamID, comb.granteeID, resourceType, resourceID, statDate)
+	requests := int64(8 + rng.next(40))
+	errors := requests * int64(rng.next(24)) / 100 // 0..23% 失败率
+	success := requests - errors
+	inputTokens := requests * (180 + int64(rng.next(700)))
+	outputTokens := requests * (60 + int64(rng.next(300)))
+	cacheReadTokens := requests * int64(rng.next(90))
+	totalCost := float64(inputTokens+outputTokens) * 0.0000021
+	durationSum := requests * (900 + int64(rng.next(2400)))
+	firstTokenSum := requests * (380 + int64(rng.next(500)))
+	// last_used_at 落在 statDate 当日内且不超过造数时钟（clamp 防未来时刻，
+	// 页面「最后使用」不能晚于现在）。
+	dayStart, err := time.ParseInLocation("2006-01-02", statDate, time.UTC)
+	if err != nil {
+		return fmt.Errorf("解析 stat_date %s: %w", statDate, err)
+	}
+	lastMoment := dayStart.Add(time.Duration(rng.next(20))*time.Hour + time.Duration(rng.next(3600))*time.Second)
+	if lastMoment.After(w.now) {
+		lastMoment = w.now.Add(-time.Duration(rng.next(3600)) * time.Second)
+	}
+	lastUsedAt := lastMoment.Format("2006-01-02T15:04:05.000Z")
+	var lastErrorAt any
+	if errors > 0 {
+		lastErrorAt = lastUsedAt
+	}
+	base := map[string]any{
+		"system_account_id": comb.scope, "stat_date": statDate,
+		"team_filter_id": comb.teamID, "resource_filter_type": resourceType,
+		"resource_filter_id": resourceID,
+		"row_count":          requests, "request_count": requests,
+		"success_count": success, "error_count": errors,
+		"input_tokens": inputTokens, "output_tokens": outputTokens,
+		"cache_read_tokens":    cacheReadTokens,
+		"cache_read_cost_usd":  float64(cacheReadTokens) * 0.0000004,
+		"cache_write_tokens":   int64(0), "cache_write_1h_tokens": int64(0),
+		"cache_write_cost_usd": float64(0),
+		"thinking_tokens":      requests * int64(rng.next(120)),
+		"input_image_tokens":   int64(0), "output_image_tokens": int64(0),
+		"total_cost_usd":       totalCost,
+		"duration_ms_sum":      durationSum, "duration_ms_count": requests,
+		"duration_ms_max":  3200 + int64(rng.next(4200)),
+		"first_token_ms_sum": firstTokenSum, "first_token_ms_count": requests,
+		"first_token_ms_max": 900 + int64(rng.next(800)),
+		"last_used_at":       lastUsedAt, "last_error_at": lastErrorAt,
+		"updated_at": updatedAt,
+	}
+	if userScope {
+		base["grantee_filter_system_account_id"] = comb.granteeID
+		return w.put(tx, qualified(SchemaStats, "authorization_user_usage_summary_daily"), base)
+	}
+	return w.put(tx, qualified(SchemaStats, "authorization_team_usage_summary_daily"), base)
+}
+
+
 
 // put 写入一行并记账。insertMapTx 的 ON CONFLICT(主键) DO UPDATE + 确定性主键
 // 让重复执行不报错也不叠加（cleanupAll 会先清理/重置，这里是第二道幂等保证）。

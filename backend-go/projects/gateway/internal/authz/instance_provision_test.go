@@ -219,9 +219,11 @@ func TestProvisionInstanceNameFallsBackWhenTaken(t *testing.T) {
 	}
 }
 
-// TestProvisionTargetGroupValidationsVerbatim: the claim path carries the four
-// verbatim group rejections, and a rejected claim leaves the pending offer
-// without instance/binding side effects (the offer itself stays claimable).
+// TestProvisionTargetGroupValidationsVerbatim: the claim path carries the
+// verbatim group rejections, an empty target is rejected with
+// target_group_required (no default-group fallback, 2026-11-22 用户裁决), and a
+// rejected claim leaves the pending offer without instance/binding side
+// effects (the offer itself stays claimable).
 func TestProvisionTargetGroupValidationsVerbatim(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -244,10 +246,12 @@ func TestProvisionTargetGroupValidationsVerbatim(t *testing.T) {
 			wantErr: "目标分组已停用，请选择启用分组",
 		},
 		{
-			name:    "no enabled default group fallback",
+			// 必选目标分组（2026-11-22 用户裁决）：空值在更早的校验处拒绝，
+			// 无缺省回落默认分组。
+			name:    "empty target group rejected without default fallback",
 			setup:   func(f *fixture) {},
 			target:  "",
-			wantErr: "目标用户缺少启用的默认分组，请按当前数据契约修复目标用户分组后再授权",
+			wantErr: "请选择领取后绑入的分组",
 		},
 	}
 	for _, testCase := range cases {
@@ -482,11 +486,13 @@ func TestSyncInstanceNamesFollowsSourceRename(t *testing.T) {
 	}
 }
 
-// TestProvisionTeamClaimWithoutDefaultGroupFails pins the team-account claim
-// path: a member without an enabled default group fails his own claim (the
-// pending offer and the other members stay intact), and a past expiry is
-// rejected before any source exists.
-func TestProvisionTeamClaimWithoutDefaultGroupFails(t *testing.T) {
+// TestProvisionTeamClaimRequiresExplicitTargetGroup pins the team-account
+// claim path (2026-11-22 用户裁决): a member claiming without an explicit
+// target group fails with target_group_required — no default-group fallback,
+// the pending offer and the other members stay intact — while explicit
+// targets claim normally. A past expiry is still rejected before any source
+// exists.
+func TestProvisionTeamClaimRequiresExplicitTargetGroup(t *testing.T) {
 	f := newFixture(t)
 	f.seedAccount(t, "owner", "active")
 	f.seedAccount(t, "member", "active")
@@ -495,6 +501,7 @@ func TestProvisionTeamClaimWithoutDefaultGroupFails(t *testing.T) {
 	f.seedTeamWithMember(t, "team_1", "member")
 	f.seedTeamWithMember(t, "team_1", "grantee")
 	f.seedGranteeGroup(t, "grp-target", "grantee", "gpt", 1, 0)
+	f.seedGranteeGroup(t, "grp-member", "member", "gpt", 1, 0)
 
 	offer, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: "account", ResourceID: "acc-src",
@@ -503,17 +510,23 @@ func TestProvisionTeamClaimWithoutDefaultGroupFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// member 缺少启用的默认分组 → 自己的领取失败并给出数据契约修复指引；
-	// grantee（有默认分组）不受影响。
+	// member 缺省 targetGroupId → target_group_required（绑定完成才是领取，
+	// 无缺省回落）；来源保持 pending，grantee 不受影响。
 	_, memberErr := f.store.AcceptSource(context.Background(), "member",
 		pendingTeamSourceFor(t, f, offer.GrantID, "team_1", "member"),
 		AcceptInput{}, f.now.UTC().Format(time.RFC3339Nano))
-	if memberErr == nil || !strings.Contains(memberErr.Error(), "目标用户缺少启用的默认分组") {
-		t.Fatalf("member without default group must fail his claim: %v", memberErr)
+	fail, ok := memberErr.(*Fail)
+	if !ok || fail.Code != "target_group_required" {
+		t.Fatalf("member claim without target group must fail with target_group_required: %#v", memberErr)
+	}
+	if _, err := f.store.AcceptSource(context.Background(), "member",
+		pendingTeamSourceFor(t, f, offer.GrantID, "team_1", "member"),
+		AcceptInput{TargetGroupID: "grp-member"}, f.now.UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatalf("member explicit-target claim must succeed: %v", err)
 	}
 	if _, err := f.store.AcceptSource(context.Background(), "grantee",
 		pendingTeamSourceFor(t, f, offer.GrantID, "team_1", "grantee"),
-		AcceptInput{}, f.now.UTC().Format(time.RFC3339Nano)); err != nil {
+		AcceptInput{TargetGroupID: "grp-target"}, f.now.UTC().Format(time.RFC3339Nano)); err != nil {
 		t.Fatalf("grantee claim must succeed: %v", err)
 	}
 

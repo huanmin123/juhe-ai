@@ -179,7 +179,7 @@ func (s *fsArtifactStore) list(viewerID string) (*artifactsResponse, error) {
 		ref, refErr := readVideoTaskRefFile(dir, video.name)
 		if refErr == nil {
 			out.Video = &artifactsVideoEntry{
-				JobID: ref.JobID, AccountID: ref.AccountID, ModelID: ref.ModelID,
+				JobID: ref.JobID, APIKeyID: ref.APIKeyID, ModelID: ref.ModelID,
 				Status: ref.Status, CreatedAt: ref.CreatedAt,
 			}
 		}

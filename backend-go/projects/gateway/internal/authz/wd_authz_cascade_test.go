@@ -55,8 +55,8 @@ func wdSourceRows(t *testing.T, f *fixture, runtimeID string) []map[string]strin
 }
 
 // wdOfferTeamGrant 发起团队 offer 并让 members 逐个领取（发送-领取模型的
-// 激活前置），返回 grant id。
-func wdOfferTeamGrant(t *testing.T, f *fixture, resourceType, resourceID, owner, teamID string, members []string) string {
+// 激活前置），返回 grant id。targetGroupID 供账户资源领取必选（分组资源传空）。
+func wdOfferTeamGrant(t *testing.T, f *fixture, resourceType, resourceID, owner, teamID string, members []string, targetGroupID string) string {
 	t.Helper()
 	offer, err := f.store.CreateOffer(context.Background(), OfferInput{
 		ResourceType: resourceType, ResourceID: resourceID,
@@ -76,7 +76,7 @@ func wdOfferTeamGrant(t *testing.T, f *fixture, resourceType, resourceID, owner,
 			LIMIT 1`), offer.GrantID, teamID, member).Scan(&sourceID); err != nil {
 			t.Fatalf("load pending source for %s: %v", member, err)
 		}
-		if _, err := f.acceptSourceForTest(t, member, sourceID); err != nil {
+		if _, err := f.acceptSourceForTest(t, member, sourceID, targetGroupID); err != nil {
 			t.Fatalf("member %s claim: %v", member, err)
 		}
 	}
@@ -103,7 +103,7 @@ func TestWdTeamCascadeRevokeMemberRevokeAllReactivate(t *testing.T) {
 	f.seedTeamWithMember(t, "team_wd", "member1")
 	f.seedTeamWithMember(t, "team_wd", "member2")
 	f.seedGroup(t, "grp_wd", "owner")
-	wdOfferTeamGrant(t, f, "group", "grp_wd", "owner", "team_wd", []string{"member1", "member2"})
+	wdOfferTeamGrant(t, f, "group", "grp_wd", "owner", "team_wd", []string{"member1", "member2"}, "")
 
 	// 领取后：成员运行时行带 team 生效来源。
 	status, effective := wdGrantRuntimeStatus(t, f, "group", "grp_wd", "member1")

@@ -60,6 +60,8 @@ export const playgroundApi = {
     const job = await unwrap<PlaygroundImageJob>(http.get(`/playground/images/jobs/${encodeURIComponent(jobId)}`))
     return withJobContentUrls(job)
   },
+  /** 手动删除任务（设计 §3.4.6，v1.5）：任务记录行与产物字节一并删除，仅终态可删；成功 204 无响应体，不 unwrap。 */
+  imagesJobRemove: (jobId: string) => http.delete(`/playground/images/jobs/${encodeURIComponent(jobId)}`),
   /** 创建异步视频任务；任务引用随暂存区记录（设计 §3.5/§3.8），jobId 由前端持有。 */
   videosCreate: (payload: PlaygroundVideoCreateRequest) => unwrap<PlaygroundVideoCreateResult>(http.post('/playground/videos', payload, { timeout: 0 })),
   /** 代理上游轮询并归一状态；网关重启后凭前端持有的 jobId 仍可轮询（传创建时记住的 Key）。 */

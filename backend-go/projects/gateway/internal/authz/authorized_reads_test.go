@@ -113,7 +113,7 @@ func TestAuthorizedReadableAccountIDsTeamAndDirect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.acceptSourceForTest(t, "member1", pendingTeamSourceFor(t, f, teamOffer.GrantID, "team_1", "member1")); err != nil {
+	if _, err := f.acceptSourceForTest(t, "member1", pendingTeamSourceFor(t, f, teamOffer.GrantID, "team_1", "member1"), "grp-default-member1"); err != nil {
 		t.Fatal(err)
 	}
 	// Direct offer → member2 claims.
@@ -124,7 +124,7 @@ func TestAuthorizedReadableAccountIDsTeamAndDirect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.acceptSourceForTest(t, "member2", directOffer.SourceID); err != nil {
+	if _, err := f.acceptSourceForTest(t, "member2", directOffer.SourceID, "grp-default-member2"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -184,12 +184,12 @@ func TestAuthorizedReadableAccountIDsStatusMatrix(t *testing.T) {
 	f.seedSourceAccount(t, "acc-src", "owner")
 	seedGranteeDefaultGroup(t, f, "grantee", "gpt")
 
-	grantID := f.claimAccountOffer(t, "acc-src", "grantee", "")
+	grantID := f.claimAccountOffer(t, "acc-src", "grantee", "grp-default-grantee")
 	if ids := readableKeys(t, f, "grantee"); len(ids) < 1 {
 		t.Fatalf("active grant must expose the provisioned instance: %v", ids)
 	}
-	// 空 targetGroupId 走 grantee 默认组兜底：绑定必须落在 seedGranteeDefaultGroup
-	// 建的 is_default 组上（一步创建 + 绑定，无独立 bind 调用）。
+	// 必选 targetGroupId（2026-11-22 用户裁决）：显式选择 seedGranteeDefaultGroup
+	// 建的分组，绑定一步完成（无独立 bind 调用）。
 	var boundGroupID string
 	if err := f.db.QueryRow(fixtureBind(`SELECT ga.group_id FROM group_accounts ga
 		JOIN accounts a ON a.id = ga.account_id
@@ -198,7 +198,7 @@ func TestAuthorizedReadableAccountIDsStatusMatrix(t *testing.T) {
 		t.Fatal(err)
 	}
 	if boundGroupID != "grp-default-grantee" {
-		t.Fatalf("default-group fallback binding = %q, want grp-default-grantee", boundGroupID)
+		t.Fatalf("explicit-target binding = %q, want grp-default-grantee", boundGroupID)
 	}
 
 	// Paused offer → runtime paused → still readable (the management-list
