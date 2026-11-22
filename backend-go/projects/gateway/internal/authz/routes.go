@@ -254,8 +254,6 @@ func (d *Deps) list(w http.ResponseWriter, r *http.Request, selfOnly bool) {
 	switch direction {
 	case "outbound":
 		items, err = d.Store.ListOutboundOffers(r.Context(), auth.SystemAccountID)
-	case "owned":
-		items, err = d.Store.ListOwnedOffers(r.Context(), auth.SystemAccountID)
 	default:
 		kernel.WriteBadRequest(w, "direction 参数无效")
 		return

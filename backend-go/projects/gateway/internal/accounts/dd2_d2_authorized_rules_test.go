@@ -6,15 +6,12 @@ package accounts
 // 错误处理规则在授权实例读面不可见。DB 流程测试，复用 w13g 授权装配。
 
 import (
-	"context"
 	"testing"
 	"time"
-
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authz"
 )
 
 func TestDD2D2AuthorizedInstanceRulesFromSource(t *testing.T) {
-	env, authzStore, store := w13gTrafficAuthorizedEnv(t)
+	env, _, store := w13gTrafficAuthorizedEnv(t)
 	ownerID := env.login(t, "dd2-d2-owner", "owner-pass", "user")
 	memberID := env.login(t, "dd2-d2-member", "member-pass", "user")
 	env.seedProviderAndDefaultGroup(t, ownerID)
@@ -45,13 +42,13 @@ func TestDD2D2AuthorizedInstanceRulesFromSource(t *testing.T) {
 		sourceID, ownerID, sealed, now, now)
 
 	// team 授权 + grantee 侧实例行（w13gSeedTrafficInstance 同款装配，来源凭据
-	// 已手工落行故不走 seedAccount）。
-	if _, err := authzStore.Create(context.Background(), authz.CreateInput{
-		ResourceType: "account", ResourceID: sourceID,
-		GranteeType: "team", GranteeID: "team-w13g-tm",
-	}, ownerID); err != nil {
-		t.Fatal(err)
-	}
+	// 已手工落行故不走 seedAccount）。授权大简化后团队发放不直接落 runtime 行，
+	// 本测只关注详情读面，直接种一条已领取形态的 runtime 行。
+	env.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id,
+		resource_owner_system_account_id, grantee_system_account_id, scope, status,
+		effective_source_type, effective_source_team_id, created_by, created_at, updated_at)
+		VALUES ('ra-dd2-d2', 'account', ?, ?, ?, 'use', 'active',
+		'manual', 'team-w13g-tm', ?, ?, ?)`, sourceID, ownerID, memberID, ownerID, now, now)
 	runtimeID := env.queryCell(t, `SELECT id FROM resource_authorizations
 		WHERE grantee_system_account_id = ? AND resource_id = ?`, memberID, sourceID)
 	if runtimeID == "" {
@@ -66,7 +63,7 @@ func TestDD2D2AuthorizedInstanceRulesFromSource(t *testing.T) {
 	env.exec(t, `INSERT INTO group_accounts (system_account_id, group_id, account_id, enabled, created_at, updated_at, account_authorization_id)
 		VALUES (?, ?, ?, 1, ?, ?, ?)`, memberID, groupID, instanceID, now, now, runtimeID)
 
-	detail, err := store.FindAdvancedDetail(context.Background(), instanceID, AccessScope{ViewerID: memberID})
+	detail, err := store.FindAdvancedDetail(t.Context(), instanceID, AccessScope{ViewerID: memberID})
 	if err != nil || detail == nil {
 		t.Fatalf("授权实例高级详情读取：%v %v", detail, err)
 	}

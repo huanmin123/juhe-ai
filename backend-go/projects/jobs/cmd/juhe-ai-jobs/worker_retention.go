@@ -255,6 +255,22 @@ func (a *workerAssembly) wireRetentionFamily(ctx context.Context) error {
 		return jobsched.TaskResult{}, nil
 	})
 
+	// playground-images-retention（演练场设计 §3.4.5/§3.8/§5.1）：演练场图像
+	// 工作台产物字节保留清理，复用 retention-business 句柄（同业务库 PG
+	// 方言）；表缺席（老库未跑 maintenance 迁移）按零任务快速返回（job 内部
+	// 判 IsPlaygroundTablesMissing）。
+	playgroundImagesRetention := &retention.PlaygroundImagesRetentionJob{
+		Store:  &retention.PlaygroundImagesSQLStore{DB: business.DB},
+		Clock:  func() time.Time { return family.now() },
+		Logger: a.logger,
+	}
+	a.scheduleWiredJob("playground-images-retention", func(taskCtx context.Context, _ jobsched.TaskContext) (jobsched.TaskResult, error) {
+		if _, err := playgroundImagesRetention.Run(taskCtx); err != nil {
+			return jobsched.TaskResult{}, err
+		}
+		return jobsched.TaskResult{}, nil
+	})
+
 	retryJob := &retention.RecordCleanupRetryJob{
 		Logger:  a.logger,
 		APIKey:  &familyAPIKeyRetryer{family: family},

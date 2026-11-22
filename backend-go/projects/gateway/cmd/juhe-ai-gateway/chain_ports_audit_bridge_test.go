@@ -106,7 +106,7 @@ func auditBridgeFixtures(t *testing.T) map[string]gatewayusage.AuditLogInput {
 			DurationMs:                  intPtr(700),
 		}, {
 			// 第二 attempt 只填必填，覆盖零值/缺省字段。
-			AttemptIndex:  1,
+			AttemptIndex:   1,
 			UpstreamMethod: "POST",
 			UpstreamURL:    "https://up2.invalid/v1/responses",
 			StartedAt:      "2026-11-03T00:00:00.950Z",
@@ -197,13 +197,13 @@ func auditBridgeFixtures(t *testing.T) map[string]gatewayusage.AuditLogInput {
 	}}
 
 	return map[string]gatewayusage.AuditLogInput{
-		"full":              full,
-		"minimal":           minimal,
-		"nil-slices":        nilSlices,
-		"empty-slices":      emptySlices,
+		"full":               full,
+		"minimal":            minimal,
+		"nil-slices":         nilSlices,
+		"empty-slices":       emptySlices,
 		"explicit-finalized": explicitFinalized,
-		"no-durations":      noDurations,
-		"binary-body":       binaryBody,
+		"no-durations":       noDurations,
+		"binary-body":        binaryBody,
 	}
 }
 
@@ -275,13 +275,13 @@ func TestDecodeAuditWireInputBigBodyLossless(t *testing.T) {
 // 旧往返一样返回错误（整条采集丢弃），不静默降级。
 func TestAuditHeadersFromWireRejectsNonString(t *testing.T) {
 	cases := map[string]map[string]any{
-		"int":        {"x-num": 42},
-		"bool":       {"x-bool": true},
-		"float":      {"x-float": 1.5},
-		"obj":        {"x-obj": map[string]any{"a": 1}},
-		"any-int":    {"x-mixed": []any{"ok", 1}},
-		"any-array":  {"x-nested": []any{[]string{"a"}}},
-		"typed-2d":   {"x-typed": [][]string{{"a"}}},
+		"int":       {"x-num": 42},
+		"bool":      {"x-bool": true},
+		"float":     {"x-float": 1.5},
+		"obj":       {"x-obj": map[string]any{"a": 1}},
+		"any-int":   {"x-mixed": []any{"ok", 1}},
+		"any-array": {"x-nested": []any{[]string{"a"}}},
+		"typed-2d":  {"x-typed": [][]string{{"a"}}},
 	}
 	for name, headers := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -538,48 +538,58 @@ func TestDecodeAuditWireInputRandomized(t *testing.T) {
 		attemptCount := int(next() % 4)
 		payloadCount := int(next() % 4)
 		input := gatewayusage.AuditLogInput{
-			ID:                     maybeID("audit"),
-			LifecycleStatus:        pick("finalized", ""),
-			TraceID:                "trace-" + pick("x", "y"),
-			ConversationKey:        maybeID("conv"),
-			SessionID:              maybeID("sess"),
-			SessionClientType:      pick("", "codex", "claude"),
-			TrafficSource:          pick("gateway", "probe", ""),
-			SystemAccountID:        maybeID("sys"),
-			APIKeyID:               maybeID("key"),
-			GroupID:                maybeID("grp"),
-			RouteGroupID:           maybeID("rgrp"),
-			AccountID:              maybeID("acc"),
-			ProviderCode:           pick("", "gpt", "xai"),
-			Method:                 pick("POST", "GET"),
-			Path:                   pick("/v1/chat/completions", "/v1/responses"),
-			QueryString:            pick("", "a=1"),
-			Model:                  pick("", "gpt-5"),
-			UpstreamModel:          pick("", "gpt-5-up"),
-			PricingModel:           pick("", "price-1"),
-			ModelMappingApplied:    func() *bool { if next()%2 == 0 { return nil }; return boolPtr(next()%2 == 0) }(),
+			ID:                maybeID("audit"),
+			LifecycleStatus:   pick("finalized", ""),
+			TraceID:           "trace-" + pick("x", "y"),
+			ConversationKey:   maybeID("conv"),
+			SessionID:         maybeID("sess"),
+			SessionClientType: pick("", "codex", "claude"),
+			TrafficSource:     pick("gateway", "probe", ""),
+			SystemAccountID:   maybeID("sys"),
+			APIKeyID:          maybeID("key"),
+			GroupID:           maybeID("grp"),
+			RouteGroupID:      maybeID("rgrp"),
+			AccountID:         maybeID("acc"),
+			ProviderCode:      pick("", "gpt", "xai"),
+			Method:            pick("POST", "GET"),
+			Path:              pick("/v1/chat/completions", "/v1/responses"),
+			QueryString:       pick("", "a=1"),
+			Model:             pick("", "gpt-5"),
+			UpstreamModel:     pick("", "gpt-5-up"),
+			PricingModel:      pick("", "price-1"),
+			ModelMappingApplied: func() *bool {
+				if next()%2 == 0 {
+					return nil
+				}
+				return boolPtr(next()%2 == 0)
+			}(),
 			ModelMappingSource:     pick("", "explicit"),
 			SourceEndpointFamily:   pick("", "chat_completions"),
 			UpstreamEndpointFamily: pick("", "responses"),
-			Stream:                 func() *bool { if next()%2 == 0 { return nil }; return boolPtr(true) }(),
-			ClientIP:               pick("", "10.0.0.1"),
-			UserAgent:              pick("", "ua"),
-			AuditOutcome:           pick("success", "gateway_failed", ""),
-			Success:                next()%2 == 0,
-			FinalStatusCode:        maybeInt(),
-			ErrorPhase:             pick("", "dispatch"),
-			ErrorCode:              pick("", "account_rpm_limit"),
-			ErrorMessage:           pick("", "boom"),
-			SampleBucket:           int(next() % 10),
-			SampleReason:           pick("", "always"),
-			CaptureStatus:          pick("", "complete", "summary_only"),
-			StartedAt:              "2026-11-03T00:00:00.000Z",
-			EndedAt:                "2026-11-03T00:00:01.000Z",
-			DurationMs:             maybeInt(),
-			HTTPCompletedAt:        pick("", "2026-11-03T00:00:02.000Z"),
-			HTTPDurationMs:         maybeInt(),
-			FirstTokenMs:           maybeInt(),
-			CreatedAt:              pick("", "2026-11-03T00:00:00.500Z"),
+			Stream: func() *bool {
+				if next()%2 == 0 {
+					return nil
+				}
+				return boolPtr(true)
+			}(),
+			ClientIP:        pick("", "10.0.0.1"),
+			UserAgent:       pick("", "ua"),
+			AuditOutcome:    pick("success", "gateway_failed", ""),
+			Success:         next()%2 == 0,
+			FinalStatusCode: maybeInt(),
+			ErrorPhase:      pick("", "dispatch"),
+			ErrorCode:       pick("", "account_rpm_limit"),
+			ErrorMessage:    pick("", "boom"),
+			SampleBucket:    int(next() % 10),
+			SampleReason:    pick("", "always"),
+			CaptureStatus:   pick("", "complete", "summary_only"),
+			StartedAt:       "2026-11-03T00:00:00.000Z",
+			EndedAt:         "2026-11-03T00:00:01.000Z",
+			DurationMs:      maybeInt(),
+			HTTPCompletedAt: pick("", "2026-11-03T00:00:02.000Z"),
+			HTTPDurationMs:  maybeInt(),
+			FirstTokenMs:    maybeInt(),
+			CreatedAt:       pick("", "2026-11-03T00:00:00.500Z"),
 		}
 		for index := 0; index < attemptCount; index++ {
 			input.Attempts = append(input.Attempts, gatewayusage.AuditLogAttemptInput{
@@ -606,13 +616,13 @@ func TestDecodeAuditWireInputRandomized(t *testing.T) {
 				body = []byte{0x00, 0xff, 0x10}
 			}
 			input.Payloads = append(input.Payloads, gatewayusage.AuditLogPayloadInput{
-				ID:          maybeID("pay"),
-				PartType:    pick("client_request", "upstream_response", "gateway_error"),
-				Headers:     headerSamples[int(next()%uint64(len(headerSamples)))],
-				Body:        body,
-				HasBody:     len(body) > 0,
+				ID:            maybeID("pay"),
+				PartType:      pick("client_request", "upstream_response", "gateway_error"),
+				Headers:       headerSamples[int(next()%uint64(len(headerSamples)))],
+				Body:          body,
+				HasBody:       len(body) > 0,
 				CaptureStatus: pick("", "complete"),
-				DropReason:  pick("", "capacity_limit"),
+				DropReason:    pick("", "capacity_limit"),
 			})
 		}
 

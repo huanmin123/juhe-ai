@@ -32,7 +32,7 @@ var videosJobIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,512}$`)
 
 // videosRequest 是 POST /videos 请求体（设计 §3.5）。
 type videosRequest struct {
-	AccountID        string   `json:"accountId"`
+	APIKeyID         string   `json:"apiKeyId"`
 	ModelID          string   `json:"modelId"`
 	Prompt           string   `json:"prompt"`
 	Size             string   `json:"size"`
@@ -82,19 +82,13 @@ func (rt *playgroundRoutes) videosCreateHandler(w http.ResponseWriter, r *http.R
 		writeHTTPError(w, invalidRequest("请求体必须是合法 JSON"))
 		return
 	}
-	_, options, candidateErr := rt.resolveAccountModels(r.Context(), scope, strings.TrimSpace(req.AccountID))
+	options, candidateErr := rt.resolveKeyModels(r.Context(), scope.ViewerID, strings.TrimSpace(req.APIKeyID))
 	if candidateErr != nil {
 		writeHTTPError(w, candidateErr)
 		return
 	}
-	// options == nil = 账户不存在或不在当前用户可见范围：与 chatstream 同口径
-	// 404 playground_account_not_found（区别于模型越界的 400）。
-	if options == nil {
-		writeHTTPError(w, accountNotFound())
-		return
-	}
 	if modelOptionOf(options, strings.TrimSpace(req.ModelID), KindVideo) == nil {
-		writeHTTPError(w, modelNotAvailable("模型不在该账户的演练场视频候选内"))
+		writeHTTPError(w, modelNotAvailable("模型不在所选 Key 的演练场视频候选内"))
 		return
 	}
 	payload, httpErr := rt.runVideosCreate(r.Context(), scope, &req)
@@ -140,17 +134,16 @@ func (rt *playgroundRoutes) runVideosCreate(ctx context.Context, scope Scope, re
 	}
 	payload, _ := json.Marshal(payloadValues)
 	response, err := rt.deps.Dispatch.Dispatch(ctx, DispatchRequest{
-		AccountID: strings.TrimSpace(req.AccountID), OwnerID: scope.ViewerID,
+		APIKeyID: strings.TrimSpace(req.APIKeyID), OwnerID: scope.ViewerID, RemoteAddr: scope.RemoteAddr,
 		Path: "/v1/video/generations", Method: http.MethodPost,
 		Headers: map[string]string{
-			"accept":         "application/json",
-			"content-type":   "application/json",
-			purposeHeaderKey: playgroundPurposeVideos,
+			"accept":       "application/json",
+			"content-type": "application/json",
 		},
 		Body: payload,
 	})
 	if err != nil {
-		return nil, dispatchFailed("视频创建派发失败: " + err.Error())
+		return nil, dispatchError("视频创建派发失败", err)
 	}
 	if response == nil {
 		return nil, dispatchFailed("视频创建派发失败")
@@ -181,7 +174,7 @@ func (rt *playgroundRoutes) runVideosCreate(ctx context.Context, scope Scope, re
 	}
 	ref := videoTaskRef{
 		JobID:     jobID,
-		AccountID: strings.TrimSpace(req.AccountID),
+		AccountID: strings.TrimSpace(req.APIKeyID),
 		ModelID:   model,
 		Status:    status,
 		CreatedAt: time.Now().Unix(),
@@ -192,7 +185,8 @@ func (rt *playgroundRoutes) runVideosCreate(ctx context.Context, scope Scope, re
 	return &videosCreateResponse{JobID: jobID}, nil
 }
 
-// videosPollHandler 服务 GET /videos/{jobId}?accountId=（代理上游轮询）。
+// videosPollHandler 服务 GET /videos/{jobId}?apiKeyId=（代理上游轮询；轮询用
+// 创建时 Key——凭据由前端持有，不默认取「当前页 Key」）。
 func (rt *playgroundRoutes) videosPollHandler(w http.ResponseWriter, r *http.Request) {
 	scope, err := rt.deps.ScopeResolver(r)
 	if err != nil {
@@ -204,12 +198,12 @@ func (rt *playgroundRoutes) videosPollHandler(w http.ResponseWriter, r *http.Req
 		writeHTTPError(w, invalidRequest("jobId 无效"))
 		return
 	}
-	accountID := strings.TrimSpace(r.URL.Query().Get("accountId"))
-	if accountID == "" {
-		writeHTTPError(w, invalidRequest("accountId 必填（凭前端持有的任务凭据轮询）"))
+	apiKeyID := strings.TrimSpace(r.URL.Query().Get("apiKeyId"))
+	if apiKeyID == "" {
+		writeHTTPError(w, invalidRequest("apiKeyId 必填（轮询用创建时 Key，凭前端持有的任务凭据轮询）"))
 		return
 	}
-	payload, httpErr := rt.runVideosPoll(r.Context(), scope, accountID, jobID)
+	payload, httpErr := rt.runVideosPoll(r.Context(), scope, apiKeyID, jobID)
 	if httpErr != nil {
 		writeHTTPError(w, httpErr)
 		return
@@ -217,19 +211,19 @@ func (rt *playgroundRoutes) videosPollHandler(w http.ResponseWriter, r *http.Req
 	writeOKPayload(w, payload)
 }
 
-// runVideosPoll 执行轮询派发并归一状态（/v1 链按归属校验任务行；内部身份为
-// 演练场请求者，与创建同源——跨用户 jobId 轮询由 /v1 链归属过滤拒绝）。
-func (rt *playgroundRoutes) runVideosPoll(ctx context.Context, scope Scope, accountID, jobID string) (*videosPollResponse, *HTTPError) {
+// runVideosPoll 执行轮询派发并归一状态（真实 Key 走完整 /v1 链：任务归属按
+// 认证 Key 隔离，跨用户 jobId 轮询由 /v1 链归属过滤拒绝；Key 归属 fail-closed
+// 校验在派发适配层解密时收敛）。
+func (rt *playgroundRoutes) runVideosPoll(ctx context.Context, scope Scope, apiKeyID, jobID string) (*videosPollResponse, *HTTPError) {
 	response, err := rt.deps.Dispatch.Dispatch(ctx, DispatchRequest{
-		AccountID: accountID, OwnerID: scope.ViewerID,
+		APIKeyID: apiKeyID, OwnerID: scope.ViewerID, RemoteAddr: scope.RemoteAddr,
 		Path: "/v1/video/generations/" + jobID, Method: http.MethodGet,
 		Headers: map[string]string{
-			"accept":         "application/json",
-			purposeHeaderKey: playgroundPurposeVideos,
+			"accept": "application/json",
 		},
 	})
 	if err != nil {
-		return nil, dispatchFailed("视频任务轮询派发失败: " + err.Error())
+		return nil, dispatchError("视频任务轮询派发失败", err)
 	}
 	if response == nil {
 		return nil, dispatchFailed("视频任务轮询派发失败")
@@ -301,21 +295,20 @@ func (rt *playgroundRoutes) videosContentHandler(w http.ResponseWriter, r *http.
 		writeHTTPError(w, invalidRequest("jobId 无效"))
 		return
 	}
-	accountID := strings.TrimSpace(r.URL.Query().Get("accountId"))
-	if accountID == "" {
-		writeHTTPError(w, invalidRequest("accountId 必填（凭前端持有的任务凭据取流）"))
+	apiKeyID := strings.TrimSpace(r.URL.Query().Get("apiKeyId"))
+	if apiKeyID == "" {
+		writeHTTPError(w, invalidRequest("apiKeyId 必填（下载用创建时 Key，凭前端持有的任务凭据取流）"))
 		return
 	}
 	response, err := rt.deps.Dispatch.Dispatch(r.Context(), DispatchRequest{
-		AccountID: accountID, OwnerID: scope.ViewerID,
+		APIKeyID: apiKeyID, OwnerID: scope.ViewerID, RemoteAddr: scope.RemoteAddr,
 		Path: "/v1/video/generations/" + jobID + "/content", Method: http.MethodGet,
 		Headers: map[string]string{
-			"accept":         "application/json",
-			purposeHeaderKey: playgroundPurposeVideos,
+			"accept": "application/json",
 		},
 	})
 	if err != nil {
-		writeHTTPError(w, dispatchFailed("视频产物下载派发失败: "+err.Error()))
+		writeHTTPError(w, dispatchError("视频产物下载派发失败", err))
 		return
 	}
 	if response == nil {

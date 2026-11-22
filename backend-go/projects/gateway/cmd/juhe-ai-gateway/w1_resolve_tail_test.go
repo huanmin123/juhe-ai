@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -612,43 +611,6 @@ func TestW1KClientIPAvoidanceOrderAsync(t *testing.T) {
 	}
 	if len(ordered.Accounts) != 2 || ordered.Accounts[0].ID != "acc-good" || ordered.Accounts[1].ID != "acc-bad" {
 		t.Fatalf("避让顺序错误: %v", ordered.Accounts)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// B6. chainDispatchQuota.CheckBatchAsync
-// ---------------------------------------------------------------------------
-
-func TestW1KDispatchQuotaCheckBatchAsync(t *testing.T) {
-	fixture := newChainFixture(t)
-	deps := chainSmokeDeps(t, fixture, gatewaypreauth.SystemClock{}, filepath.Join(t.TempDir(), "spool-w1k-quota"))
-	quota := newChainDispatchQuota(deps.AuthzQuota)
-	ctx := context.Background()
-
-	decisions, err := quota.CheckBatchAsync(ctx, gatewayruntimecache.GroupUsageAccessMetadata{}, []gatewaydispatch.AccountCandidate{
-		{ID: fixture.accountID},
-		{ID: "acc_w1k_quota"},
-	})
-	if err != nil {
-		t.Fatalf("批量配额检查失败: %v", err)
-	}
-	if len(decisions) != 2 {
-		t.Fatalf("决策数 = %d, want 2: %+v", len(decisions), decisions)
-	}
-	for _, accountID := range []string{fixture.accountID, "acc_w1k_quota"} {
-		decision, ok := decisions[accountID]
-		if !ok || !decision.Allowed {
-			t.Fatalf("账户 %s 决策 = %+v, want 放行", accountID, decision)
-		}
-	}
-
-	// 未绑定授权 ID 的候选投影为空授权摘要（无分组配额时不进入检查面）。
-	limited := true
-	decisions, err = quota.CheckBatchAsync(ctx, gatewayruntimecache.GroupUsageAccessMetadata{}, []gatewaydispatch.AccountCandidate{
-		{ID: "acc_w1k_limited", AccountAuthorizationQuotaLimited: &limited},
-	})
-	if err != nil || len(decisions) != 1 || !decisions["acc_w1k_limited"].Allowed {
-		t.Fatalf("配额受限标记候选决策错误: %+v, %v", decisions, err)
 	}
 }
 

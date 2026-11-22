@@ -476,28 +476,12 @@ func TestW13g3PrepareEdges(t *testing.T) {
 	})
 }
 
-func TestW13g3PrepareQuotaAndCapacityEdges(t *testing.T) {
+func TestW13g3PrepareCapacityEdges(t *testing.T) {
 	req := newTestRequest(t, `{"model":"gpt-test","stream":true}`)
 
-	t.Run("quota fallback error and complete failure error", func(t *testing.T) {
-		pipeline, _, _, _ := newPipeline(t)
-		input := w13g3DispatchPrepInput(t, req, testAccounts("a-1"), &w13g3Coordinator{fallbackErr: errW13g3})
-		if _, err := pipeline.PrepareDispatchAccounts(context.Background(), input); !errors.Is(err, errW13g3) {
-			t.Fatalf("expected quota fallback error, got %v", err)
-		}
-		input.RouteCoordinator = &w13g3Coordinator{completeErr: errW13g3}
-		if _, err := pipeline.PrepareDispatchAccounts(context.Background(), input); !errors.Is(err, errW13g3) {
-			t.Fatalf("expected complete failure error, got %v", err)
-		}
-	})
-
-	t.Run("quota check error surfaces", func(t *testing.T) {
-		pipeline, _, _, _ := newPipeline(t)
-		input := w13g3DispatchPrepInput(t, req, testAccounts("a-1"), &w13g3Coordinator{})
-		if _, err := pipeline.PrepareDispatchAccounts(context.Background(), input); !errors.Is(err, errW13g3) {
-			t.Fatalf("expected quota error, got %v", err)
-		}
-	})
+	// （"quota fallback error and complete failure error" / "quota check error
+	// surfaces" 两个子测随授权额度域退役：prepare 管道不再有 quota 门，
+	// coordinator 的 fallback/complete 错误面由下方空候选与回退子测覆盖。）
 
 	t.Run("no available account completes with error surface", func(t *testing.T) {
 		pipeline, engine, _, _ := newPipeline(t)

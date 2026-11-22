@@ -26,7 +26,6 @@ type fakeRuntimeEffects struct {
 	failureGuardCleared   []string
 	transientCleared      []string
 	healthCheckDispatches [][2]string
-	quotaExceeded         bool
 	poolAllUnavailable    bool
 	failClearRuntime      bool
 }
@@ -76,10 +75,6 @@ func (f *fakeRuntimeEffects) DispatchAccountHealthCheck(accountID, reason string
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.healthCheckDispatches = append(f.healthCheckDispatches, [2]string{accountID, reason})
-}
-
-func (f *fakeRuntimeEffects) AuthorizationQuotaExceeded(context.Context, AuthorizationQuotaCheckInput) (bool, error) {
-	return f.quotaExceeded, nil
 }
 
 func (f *fakeRuntimeEffects) APIKeyPoolAllUnavailable(context.Context, string) (bool, error) {

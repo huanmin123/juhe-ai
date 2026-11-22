@@ -550,8 +550,8 @@ func TestRouteStrategyAuthorizedGroupBinding(t *testing.T) {
 		VALUES ('auth-active', 'group', ?, ?, 'active', 'manual', NULL, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, groupA, aliceID)
 	env.exec(t, `INSERT INTO resource_authorization_sources (id, authorization_id, source_type, status, created_by, created_at, updated_at)
 		VALUES ('auth-active-manual', 'auth-active', 'manual', 'active', ?, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, adminID)
-	env.exec(t, `INSERT INTO group_authorization_settings (authorization_id, system_account_id, group_id, enabled, snapshot_revision, created_at, updated_at)
-		VALUES ('auth-active', ?, ?, 1, 'snap-auth-active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, aliceID, groupA)
+	env.exec(t, `INSERT INTO group_authorization_settings (authorization_id, system_account_id, group_id, created_at, updated_at)
+		VALUES ('auth-active', ?, ?, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, aliceID, groupA)
 	code, granted := env.createStrategy(t, myPath, `{"name":"with-grant","groupBindings":[{"groupId":"`+groupA+`"}]}`)
 	if code != http.StatusCreated {
 		t.Fatalf("authorized bind: %d %v", code, granted)
@@ -934,12 +934,14 @@ func TestRouteStrategyPGFilterSQLContract(t *testing.T) {
 		t.Fatalf("bindable groups query must join authorization tables: %s", lockQuery)
 	}
 	bindingQuery := pgStore.bindingRowColumns() + " " + pgStore.bindingRowFrom()
-	// revision 28 起授权分组的 settings 缺失必须 fail-closed（默认 0），
-	// 并要求快照已建立，才允许该绑定参与调度。
+	// revision 31 起授权分组的 group_enabled fail-closed 门收敛为 claim 行
+	// （group_authorization_settings.authorization_id IS NOT NULL）；settings
+	// 的 enabled/snapshot_revision 列已随授权治理简化 DROP。
 	if !strings.Contains(bindingQuery, "resource_authorizations") ||
-		!strings.Contains(bindingQuery, "COALESCE(group_authorization_settings.enabled, 0)") ||
-		!strings.Contains(bindingQuery, "snapshot_revision") {
-		t.Fatalf("binding rows must carry the fail-closed authorized group_enabled branch: %s", bindingQuery)
+		!strings.Contains(bindingQuery, "group_authorization_settings.authorization_id IS NOT NULL") ||
+		strings.Contains(bindingQuery, "snapshot_revision") ||
+		strings.Contains(bindingQuery, "COALESCE(group_authorization_settings.enabled, 0)") {
+		t.Fatalf("binding rows must gate the authorized branch on the claim row: %s", bindingQuery)
 	}
 	// UTF-16 length helper parity with String.length.
 	if utf16CodeUnits("\U0001F600") != 2 || utf16CodeUnits("aé") != 2 {

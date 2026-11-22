@@ -102,8 +102,6 @@ const routeStrategiesPGFixtureSchema = `
       authorization_id text PRIMARY KEY,
       system_account_id text NOT NULL,
       group_id text NOT NULL,
-      enabled integer NOT NULL DEFAULT 1,
-      snapshot_revision text,
       group_type text NOT NULL DEFAULT 'personal',
       scheduling_policy_json text,
       created_at text NOT NULL,

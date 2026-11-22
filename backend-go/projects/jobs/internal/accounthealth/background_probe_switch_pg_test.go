@@ -47,9 +47,9 @@ func w2bSeedInstanceChain(t *testing.T, db *sql.DB, team, sourceID, authID, inst
 	w9hSeedBusinessAccount(t, db, sourceID, "deepseek", "profile_deepseek_openai_v1", "api_key", "active", "chat_json", sql.NullString{}, sql.NullString{})
 	w9hMustExec(t, db, `INSERT INTO juhe_business.resource_authorizations (
 		id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, scope, status,
-		effective_source_type, effective_source_team_id, activated_at, limits_json, created_by, created_at, updated_at
+		effective_source_type, effective_source_team_id, activated_at, created_by, created_at, updated_at
 	) VALUES ($2, 'account', $3, 'sys_admin', 'sys_admin', 'health_check', 'active',
-		'direct', $1, $4, NULL, 'w2b', $4, $4)
+		'direct', $1, $4, 'w2b', $4, $4)
 	ON CONFLICT (id) DO NOTHING`, team, authID, sourceID, w2bFixtureNow)
 	w9hSeedBusinessAccount(t, db, instanceID, "deepseek", "profile_deepseek_openai_v1", "api_key", "active", "chat_json",
 		sql.NullString{String: sourceID, Valid: true}, sql.NullString{String: authID, Valid: true})

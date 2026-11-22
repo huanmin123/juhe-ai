@@ -41,7 +41,9 @@ func TestAccountsRuntimeResetBridgeAPIKeyRuntimePool(t *testing.T) {
 				RedisURL: cfg.RedisURL, Namespace: cfg.RedisNamespace,
 			})
 		})
-	resetEffects, err := newAccountsRuntimeResetBridge(composed, settingsValueReader(composed.settingsStore), &chainRuntimeServices{AccountAPIKeyGuard: guard}, cfg.Secret, newChainProbeRequestOutboxWriter(nil, 65_000))
+	// settings 读取器参数已随授权额度域退役从桥构造摘除（额度门不再读
+	// settings 推导）。
+	resetEffects, err := newAccountsRuntimeResetBridge(composed, &chainRuntimeServices{AccountAPIKeyGuard: guard}, cfg.Secret, newChainProbeRequestOutboxWriter(nil, 65_000))
 	if err != nil {
 		t.Fatalf("assemble runtime reset bridge: %v", err)
 	}

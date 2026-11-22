@@ -2,113 +2,177 @@ import { computed, ref } from 'vue'
 
 import { api } from '@/api/client'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import type { PlaygroundAccount, PlaygroundModelKind, PlaygroundModelOption } from '@/types/domain/playground'
+import type { ApiKeySummary } from '@/types/domain'
+import type { PlaygroundModelKind, PlaygroundModelOption } from '@/types/domain/playground'
 
 /**
- * 演练场四页共用的账户目录（设计 §3.2/§4.2）：模块级内存缓存，会话内一次拉取，
- * 失败不缓存（下次进入页面重试）。零持久化——刷新即重新拉取。
+ * 演练场六页共用的 API Key 目录（2026-11-22 Key 化：先选 Key 后选模型）：
+ * 模块级内存缓存，会话内一次拉取，失败不缓存（下次进入页面重试）。
+ * 零持久化——刷新即重新拉取。Key 列表复用控制台 self-scope 列表 API，
+ * 客户端过滤 status==='active'（契约裁决，绝不展示完整密钥，仅名称 + 掩码前/后缀）。
  */
-let accountsCache: PlaygroundAccount[] | null = null
-let accountsInflight: Promise<PlaygroundAccount[]> | null = null
+let keysCache: ApiKeySummary[] | null = null
+let keysInflight: Promise<ApiKeySummary[]> | null = null
 
-export async function loadPlaygroundAccounts(options?: { force?: boolean }): Promise<PlaygroundAccount[]> {
+export async function loadPlaygroundKeys(options?: { force?: boolean }): Promise<ApiKeySummary[]> {
   if (!options?.force) {
-    if (accountsCache) return accountsCache
-    if (accountsInflight) return accountsInflight
+    if (keysCache) return keysCache
+    if (keysInflight) return keysInflight
   }
-  const request = api.playground.accounts()
-    .then((accounts) => {
-      accountsCache = accounts
-      accountsInflight = null
-      return accounts
+  const request = api.myApiKeys.list()
+    .then((result) => {
+      const keys = result.items.filter((key) => key.status === 'active')
+      keysCache = keys
+      keysInflight = null
+      return keys
     })
     .catch((error: unknown) => {
-      accountsInflight = null
+      keysInflight = null
       throw error
     })
-  accountsInflight = request
+  keysInflight = request
   return request
 }
 
-/** 按模型分类过滤账户模型行；账户未选或无匹配返回空数组。 */
-export function resolveModelsForKind(account: PlaygroundAccount | undefined, kind: PlaygroundModelKind): PlaygroundModelOption[] {
-  return account?.models.filter((model) => model.kind === kind) ?? []
+/** Key→模型目录按 apiKeyId 缓存（会话内一次；失败不缓存，切回重试）。 */
+const keyModelsCache = new Map<string, PlaygroundModelOption[]>()
+const keyModelsInflight = new Map<string, Promise<PlaygroundModelOption[]>>()
+
+export async function loadPlaygroundKeyModels(apiKeyId: string, options?: { force?: boolean }): Promise<PlaygroundModelOption[]> {
+  if (!options?.force) {
+    const cached = keyModelsCache.get(apiKeyId)
+    if (cached) return cached
+    const inflight = keyModelsInflight.get(apiKeyId)
+    if (inflight) return inflight
+  }
+  const request = api.playground.keyModels(apiKeyId)
+    .then((models) => {
+      keyModelsCache.set(apiKeyId, models)
+      keyModelsInflight.delete(apiKeyId)
+      return models
+    })
+    .catch((error: unknown) => {
+      keyModelsInflight.delete(apiKeyId)
+      throw error
+    })
+  keyModelsInflight.set(apiKeyId, request)
+  return request
 }
 
-/** 按页面能力域过滤账户（对话页只列能对话的账户、生图页只列能生图的——AI 账户域分类口径，2026-10-31 用户裁决）。 */
-export function resolveAccountsForKind(accounts: PlaygroundAccount[], kind: PlaygroundModelKind): PlaygroundAccount[] {
-  return accounts.filter((account) => account.models.some((model) => model.kind === kind))
+/** 按页面能力域过滤模型行（契约：只展示本页 kind 的模型，不展示全部）；无匹配返回空数组。 */
+export function resolveModelsForKind(models: PlaygroundModelOption[], kind: PlaygroundModelKind): PlaygroundModelOption[] {
+  return models.filter((model) => model.kind === kind)
 }
 
-/** 账户→模型两级联动：候选变化时默认落到第一个同类模型。 */
+/** Key→模型两级联动：候选变化时默认落到第一个同类模型。 */
 export function firstModelIdOf(models: PlaygroundModelOption[]): string | undefined {
   return models[0]?.modelId
 }
 
+/** Key 下拉 label：Key 名称 + 掩码前/后缀辅助识别（同控制台 formatKeyPreview 口径），绝不拼接完整密钥。 */
+export function apiKeyOptionLabel(key: Pick<ApiKeySummary, 'name' | 'keyPrefix' | 'keySuffix'>): string {
+  const head = key.keyPrefix.slice(0, 6)
+  const tail = key.keySuffix.slice(-6)
+  return head && tail ? `${key.name}（${head}…${tail}）` : key.name
+}
+
 /**
- * 单页账户/模型目录状态：账户下拉 → 该账户下指定 kind 的模型下拉联动。
- * 每页独立持有选中的 accountId/modelId（账户或模型变更不影响其他页）。
+ * 单页 Key/模型目录状态：Key 下拉 → 该 Key 下指定 kind 的模型下拉联动。
+ * 每页独立持有选中的 apiKeyId/modelId（Key 或模型变更不影响其他页）。
  */
 export function usePlaygroundCatalog(kind: PlaygroundModelKind) {
-  const accounts = ref<PlaygroundAccount[]>([])
-  const accountsLoading = ref(false)
-  const accountsLoadError = ref('')
-  const accountId = ref<string>()
+  const keys = ref<ApiKeySummary[]>([])
+  const keysLoading = ref(false)
+  const keysLoadError = ref('')
+  const apiKeyId = ref<string>()
   const modelId = ref<string>()
 
-  const currentAccount = computed(() => accounts.value.find((account) => account.accountId === accountId.value))
-  const models = computed(() => resolveModelsForKind(currentAccount.value, kind))
+  const models = ref<PlaygroundModelOption[]>([])
+  const modelsLoading = ref(false)
+  const modelsLoadError = ref('')
+  /** 请求序号守卫：快速切换 Key 时丢弃迟到的旧 Key 模型响应。 */
+  let modelsRequestSeq = 0
+
+  const currentKey = computed(() => keys.value.find((key) => key.id === apiKeyId.value))
   const currentModel = computed(() => models.value.find((model) => model.modelId === modelId.value))
-  // 账户下拉只列本页面能力域的账户（有 ≥1 个同类模型；AI 账户已按域分类）。
-  const kindAccounts = computed(() => resolveAccountsForKind(accounts.value, kind))
-  const accountOptions = computed(() => kindAccounts.value.map((account) => ({
-    value: account.accountId,
-    label: `${account.accountName}（${account.providerCode}）`
-  })))
+  const keyOptions = computed(() => keys.value.map((key) => ({ value: key.id, label: apiKeyOptionLabel(key) })))
   const modelOptions = computed(() => models.value.map((model) => ({ value: model.modelId, label: model.modelId })))
 
-  /** 账户下拉 change：重置为该账户第一个同类模型。 */
-  function handleAccountChange(): void {
-    modelId.value = firstModelIdOf(models.value)
-  }
-
-  async function loadCatalog(options?: { force?: boolean }): Promise<void> {
-    if (accountsLoading.value) return
-    accountsLoading.value = true
-    accountsLoadError.value = ''
+  /** 拉取所选 Key 的模型并按本页能力域过滤；seq 守卫下旧响应静默丢弃（返回空数组）。 */
+  async function loadModelsForKey(keyId: string, options?: { force?: boolean }): Promise<PlaygroundModelOption[]> {
+    const seq = ++modelsRequestSeq
+    modelsLoading.value = true
+    modelsLoadError.value = ''
     try {
-      const result = await loadPlaygroundAccounts(options)
-      accounts.value = result
-      const candidates = kindAccounts.value
-      if (!accountId.value || !candidates.some((account) => account.accountId === accountId.value)) {
-        // 默认落第一个具备本页能力域的账户（无则不选，下拉空态承接）。
-        accountId.value = candidates[0]?.accountId
-        modelId.value = firstModelIdOf(resolveModelsForKind(candidates[0], kind))
-        return
-      }
-      if (modelId.value && !models.value.some((model) => model.modelId === modelId.value)) {
-        modelId.value = firstModelIdOf(models.value)
-      }
+      const kindModels = resolveModelsForKind(await loadPlaygroundKeyModels(keyId, options), kind)
+      if (seq !== modelsRequestSeq) return []
+      models.value = kindModels
+      return kindModels
     } catch (error) {
-      console.error(error)
-      accountsLoadError.value = extractApiErrorMessage(error, '加载演练场账户目录失败')
+      if (seq === modelsRequestSeq) {
+        console.error(error)
+        modelsLoadError.value = extractApiErrorMessage(error, '加载演练场模型列表失败')
+      }
+      return []
     } finally {
-      accountsLoading.value = false
+      if (seq === modelsRequestSeq) modelsLoading.value = false
     }
   }
 
+  /** Key 下拉 change：模型下拉重置并加载该 Key 的本域模型，默认落第一个同类模型。 */
+  function handleApiKeyChange(): void {
+    const keyId = apiKeyId.value
+    modelId.value = undefined
+    if (!keyId) {
+      modelsRequestSeq += 1
+      models.value = []
+      modelsLoading.value = false
+      modelsLoadError.value = ''
+      return
+    }
+    void loadModelsForKey(keyId).then((kindModels) => {
+      if (apiKeyId.value === keyId) modelId.value = firstModelIdOf(kindModels)
+    })
+  }
+
+  async function loadCatalog(options?: { force?: boolean }): Promise<void> {
+    if (keysLoading.value) return
+    keysLoading.value = true
+    keysLoadError.value = ''
+    try {
+      keys.value = await loadPlaygroundKeys(options)
+      if (!apiKeyId.value || !keys.value.some((key) => key.id === apiKeyId.value)) {
+        // 默认落第一个 active Key（无则不选，下拉空态承接）。
+        apiKeyId.value = keys.value[0]?.id
+      }
+    } catch (error) {
+      console.error(error)
+      keysLoadError.value = extractApiErrorMessage(error, '加载演练场 API Key 列表失败')
+    } finally {
+      keysLoading.value = false
+    }
+    // Key 就绪后联动加载模型；已有选中模型仍在本域清单内则保留，否则落第一个同类模型。
+    if (!apiKeyId.value) return
+    const kindModels = await loadModelsForKey(apiKeyId.value, options)
+    if (modelId.value && kindModels.some((model) => model.modelId === modelId.value)) return
+    modelId.value = firstModelIdOf(kindModels)
+  }
+
   return {
-    accounts,
-    accountsLoading,
-    accountsLoadError,
-    accountId,
+    keys,
+    keysLoading,
+    keysLoadError,
+    apiKeyId,
     modelId,
-    currentAccount,
+    currentKey,
     models,
+    modelsLoading,
+    modelsLoadError,
     currentModel,
-    accountOptions,
+    keyOptions,
     modelOptions,
-    handleAccountChange,
+    handleApiKeyChange,
+    loadModelsForKey,
     loadCatalog
   }
 }

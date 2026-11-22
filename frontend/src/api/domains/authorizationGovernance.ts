@@ -44,29 +44,13 @@ export interface AuthorizationSourceSummary {
   sourceType: 'manual' | 'team'
   status: AuthorizationStatus
   runtimeStatus: string
-  vendorCode?: string
-  proxySummary?: string
   expiresAt?: string
   acceptedAt?: string
-  instanceId?: string
   bound: boolean
-  groupEnabled: boolean
   createdAt: string
   canAccept: boolean
   canDecline: boolean
   canReturn: boolean
-}
-
-export interface AuthorizationConnection {
-  connectionPresetCode: string
-  protocolSurfaceCode: string
-  baseUrl: string
-  endpointModes: string[]
-}
-
-export interface AuthorizationSourceDetail extends AuthorizationSourceSummary {
-  connections: AuthorizationConnection[]
-  supportedModels: string[]
 }
 
 export interface AuthorizationOfferSummary {
@@ -120,11 +104,10 @@ export const myAuthorizationCenterApi = {
   inboxSummary: () => unwrap<AuthorizationInboxSummary>(http.get(`/my-authorizations/inbox-summary`)),
   inbound: async () => (await unwrap<{ items: AuthorizationSourceSummary[] }>(http.get('/my-authorizations', { params: { direction: 'inbound' } }))).items,
   outbound: async () => (await unwrap<{ items: AuthorizationOfferSummary[] }>(http.get('/my-authorizations', { params: { direction: 'outbound' } }))).items,
-  owned: async () => (await unwrap<{ items: AuthorizationOfferSummary[] }>(http.get('/my-authorizations', { params: { direction: 'owned' } }))).items,
-  sourceDetail: (sourceId: string) => unwrap<AuthorizationSourceDetail>(http.get(`/my-authorization-sources/${sourceId}`)),
-  // 领取即生效：账户授权携带 targetGroupId 一步进组；分组授权直接生效。
-  accept: (sourceId: string, body: { targetGroupId?: string }) =>
-    unwrap<unknown>(http.post(`/my-authorization-sources/${sourceId}/accept`, body)),
+  // 领取即生效：分组授权直接生效；账户授权不选分组时由后端绑入接收人
+  // 供应商默认分组（defaultGroupIDForProvider 兜底）。
+  accept: (sourceId: string) =>
+    unwrap<unknown>(http.post(`/my-authorization-sources/${sourceId}/accept`)),
   decline: (sourceId: string) => unwrap<unknown>(http.post(`/my-authorization-sources/${sourceId}/decline`)),
   return: (sourceId: string) => unwrap<unknown>(http.post(`/my-authorization-sources/${sourceId}/return`)),
   pause: (grantId: string) => unwrap<unknown>(http.post(`/my-authorizations/${grantId}/pause`)),

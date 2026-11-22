@@ -357,6 +357,24 @@ func ScheduledEntries() []Entry {
 			GoStatus: GoWired, GoPackage: "retention",
 			GoBinding: "MediaJobsRetentionJob + retention.MediaJobsSQLStore（worker_retention.go 组合根接线：retention-business 句柄复用；未终态置 expired；completed/failed/cancelled 按 created_at、expired 按 updated_at 各保留一个 TTL 后删除，id 子查询 LIMIT 500 限流）",
 		},
+		{
+			// Go 新增条目：演练场图像产物保留清理（演练场设计 §3.4.5/§3.8/
+			// §5.1，v1.2 异步生图框架；归档 Node 无对应 scheduled job——演练场
+			// 域新表）。每小时按 expires_at 扫到期任务行：按
+			// (system_account_id, job_id) 删 playground_artifacts 的
+			// image_result+image_reference 字节并置任务行 images_expired=true
+			//（「图像资源已清理」标记：completed 图像到期与 failed 参考图超窗
+			// 两类共用；任务记录行永不删除）；另两条批量语句清 v1.0 覆盖式暂存
+			// 退役遗留 kind='image'（7d 窗口）与孤儿参考图（job_id=''，24h 窗口）。
+			// 每批 500 行 × 单轮 ≤20 批分批限流，表缺席（老库未跑 maintenance
+			// 迁移）按零任务处理，过期清理不产生计费（演练场设计 §3.7）。业务
+			// 库 playground_image_jobs/playground_artifacts（gateway 演练场写入）。
+			JobName: "playground-images-retention", Category: CategoryScheduled, Kind: "maintenance", DefaultRole: "ops-worker",
+			SingleOwner: true, LeaseRequired: true,
+			Writes:   []string{"business:playground_image_jobs", "business:playground_artifacts"},
+			GoStatus: GoWired, GoPackage: "retention",
+			GoBinding: "PlaygroundImagesRetentionJob + retention.PlaygroundImagesSQLStore（worker_retention.go 组合根接线：retention-business 句柄复用；到期臂走 expires_at 部分索引、不足一批补扫 failed 臂（status='failed' 且 updated_at 超 7d，其绑定参考图一并清理），删字节后置 images_expired（未置位守卫防竞态），v1.0 kind='image' 遗留按 7d、孤儿参考图按 24h 各一条批量删除，扫描 LIMIT 500 分批限流）",
+		},
 	}
 }
 

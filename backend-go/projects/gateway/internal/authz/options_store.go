@@ -149,8 +149,7 @@ func (s *Store) ListAuthorizationGranteeTeamsScoped(ctx context.Context, viewerI
 		`(system_teams.created_by = ? OR EXISTS (
 			SELECT 1 FROM ` + s.table("system_team_members") + ` members
 			WHERE members.team_id = system_teams.id
-			  AND members.system_account_id = ?
-			  AND members.status = 'active'))`,
+			  AND members.system_account_id = ?))`,
 	}
 	params := []any{viewerID, viewerID}
 	if ids := normalizeTextList(options.IDs); len(ids) > 0 {

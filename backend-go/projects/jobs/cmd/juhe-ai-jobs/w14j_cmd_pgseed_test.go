@@ -76,7 +76,7 @@ func w14jPGSeedStatements() []string {
       id text PRIMARY KEY, resource_type text NOT NULL, resource_id text NOT NULL,
       resource_owner_system_account_id text NOT NULL, grantee_type text NOT NULL,
       grantee_system_account_id text, grantee_team_id text, scope text NOT NULL DEFAULT 'use',
-      status text NOT NULL DEFAULT 'active', remark text, expires_at text, limits_json text,
+      status text NOT NULL DEFAULT 'active', remark text, expires_at text,
       created_by text NOT NULL, created_at text NOT NULL, revoked_by text, revoked_at text,
       updated_at text NOT NULL,
       CHECK ((grantee_type = 'system_account' AND grantee_system_account_id IS NOT NULL AND grantee_team_id IS NULL)
@@ -154,7 +154,6 @@ func w14jPGSeedStatements() []string {
 		`ALTER TABLE juhe_business.resource_authorizations ADD COLUMN IF NOT EXISTS activated_at text`,
 		`ALTER TABLE juhe_business.resource_authorizations ADD COLUMN IF NOT EXISTS last_source_changed_at text`,
 		`ALTER TABLE juhe_business.resource_authorizations ADD COLUMN IF NOT EXISTS remark text`,
-		`ALTER TABLE juhe_business.resource_authorizations ADD COLUMN IF NOT EXISTS limits_json text`,
 		`ALTER TABLE juhe_business.resource_authorizations ADD COLUMN IF NOT EXISTS created_by text`,
 		`ALTER TABLE juhe_business.resource_authorizations ADD COLUMN IF NOT EXISTS created_at text`,
 		`ALTER TABLE juhe_business.resource_authorizations ADD COLUMN IF NOT EXISTS revoked_by text`,

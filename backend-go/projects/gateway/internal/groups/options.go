@@ -135,7 +135,7 @@ const optionOuterSelectColumns = `id, system_account_id, name,
 // and scheduling policy always come from the source group (the retired
 // per-grantee group_type/scheduling_policy_json overrides are ignored).
 const authorizedOptionRowSelectColumns = `g.id, g.system_account_id, g.name,
-		CASE WHEN g.enabled = 1 AND COALESCE(s.enabled, 0) = 1 AND COALESCE(s.snapshot_revision, '') <> '' THEN 1 ELSE 0 END AS enabled,
+		g.enabled AS enabled,
 		g.is_default,
 		g.group_type,
 		g.group_kind,
@@ -392,7 +392,7 @@ func (s *Store) RouteStrategyOptions(ctx context.Context, access AccessScope, qu
 				WHERE g.system_account_id = ?
 				UNION ALL
 				SELECT g.id, g.name, g.group_kind,
-					CASE WHEN g.enabled = 1 AND COALESCE(s.enabled, 0) = 1 AND COALESCE(s.snapshot_revision, '') <> '' THEN 1 ELSE 0 END AS enabled,
+					g.enabled AS enabled,
 					g.is_default,
 					COALESCE(s.updated_at, g.updated_at) AS updated_at
 				FROM ` + s.table("resource_authorizations") + ` ra
@@ -515,7 +515,7 @@ func (s *Store) EditDetail(ctx context.Context, id string, access AccessScope) (
 			WHERE g.id = ? AND g.system_account_id = ?
 			UNION ALL
 			SELECT g.name, g.description,
-				CASE WHEN g.enabled = 1 AND COALESCE(s.enabled, 0) = 1 AND COALESCE(s.snapshot_revision, '') <> '' THEN 1 ELSE 0 END AS enabled,
+				g.enabled AS enabled,
 				g.group_type,
 				g.scheduling_policy_json,
 				COALESCE(s.updated_at, g.updated_at) AS updated_at,

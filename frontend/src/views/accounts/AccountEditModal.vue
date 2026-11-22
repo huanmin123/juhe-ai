@@ -17,7 +17,7 @@
     <template #title>
       <span v-if="!editing || loading">{{ displayTitle }}</span>
       <div v-else class="modal-title-bar">
-        <span class="modal-title-static">编辑账户</span>
+        <span class="modal-title-static">{{ authorizedEditing ? '授权账户详情' : '编辑账户' }}</span>
         <a-input
           v-model:value="form.name"
           class="modal-title-name"
@@ -36,7 +36,7 @@
         />
       </div>
     </template>
-    <a-form layout="vertical" class="account-form">
+    <a-form layout="vertical" class="account-form" :disabled="authorizedEditing">
       <div v-if="loading" class="account-form-loading">
         <!-- tip 必须嵌套才渲染（自闭合 spin 在 antd 中不显示 tip,加载态曾是"空白弹窗"）。 -->
         <a-spin>
@@ -156,42 +156,6 @@
                 @model-options-open="$emit('model-options-open', $event)"
                 @model-options-search="$emit('model-options-search', $event)"
               />
-
-              <section v-if="authorizedEditing" class="form-section readonly-config-section">
-                <a-descriptions bordered size="small" :column="2">
-                  <a-descriptions-item label="Base URL" :span="2">{{ form.baseUrl || '-' }}</a-descriptions-item>
-                  <a-descriptions-item label="支持模型" :span="2">
-                    <a-space v-if="form.supportedModels.length" wrap>
-                      <a-tag v-for="model in form.supportedModels" :key="model" class="mono-cell">{{ model }}</a-tag>
-                    </a-space>
-                    <span v-else>-</span>
-                  </a-descriptions-item>
-                  <a-descriptions-item label="来源账户状态">{{ sourceAccountStatusText }}</a-descriptions-item>
-                  <a-descriptions-item label="来源套餐到期">{{ sourceAccountExpiresAtText }}</a-descriptions-item>
-                  <a-descriptions-item v-for="item in publicCredentialItems" :key="item.key" :label="item.label">
-                    {{ item.value }}
-                  </a-descriptions-item>
-                  <a-descriptions-item label="模型映射" :span="2">
-                    <div v-if="readonlyModelMappings.length" class="readonly-model-mappings">
-                      <a-tag v-for="item in readonlyModelMappings" :key="`${item.sourceModel}:${item.sourceEndpointFamily}:${item.upstreamModel}:${item.upstreamEndpointFamily}`">
-                        {{ item.sourceModel }} / {{ readonlyMappingProtocolText(item) }} -> {{ item.upstreamModel }}{{ item.enabled === false ? '（停用）' : '' }}
-                      </a-tag>
-                    </div>
-                    <span v-else>-</span>
-                  </a-descriptions-item>
-                </a-descriptions>
-                <div v-if="isApiKeyForm" class="readonly-meta-fields">
-                  <AccountMetaFields
-                    :deleting-tag-id="deletingTagId"
-                    :form="form"
-                    readonly
-                    :tag-options="tagOptions"
-                    :tag-options-loading="tagOptionsLoading"
-                    @delete-tag="$emit('delete-tag', $event)"
-                    @tag-options-dropdown="$emit('tag-options-dropdown', $event)"
-                  />
-                </div>
-              </section>
 
               <!-- 火山方舟音频域双值凭据（D7 清单表定案）：与统一向导同屏，不再由
                    独立媒体表单承载。 -->
@@ -740,19 +704,16 @@ import AccountBalanceQuerySection from './AccountBalanceQuerySection.vue'
 import AccountFormSelector from './AccountFormSelector.vue'
 import AccountGptRequestOverridesSection from './AccountGptRequestOverridesSection.vue'
 import AccountGroupField from './AccountGroupField.vue'
-import AccountMetaFields from './AccountMetaFields.vue'
 import AccountOAuthSection from './AccountOAuthSection.vue'
 import AccountProxyField from './AccountProxyField.vue'
 import AccountResponseInspectionPolicyCard from './AccountResponseInspectionPolicyCard.vue'
 import AccountStrategySection from './AccountStrategySection.vue'
 import { statusText } from './accountFormatters'
 import {
-  accountEndpointModeText,
   defaultAccountEndpointModes,
   endpointModesEqual
 } from './accountEndpointModes'
 import { DEFAULT_ACCOUNT_CONCURRENCY_LIMIT, FALLBACK_PROVIDERS } from './accountOptions'
-import { accountModelMappingEndpointFamilyText } from './accountModelMappingProtocolMatrix'
 import { accountValidationErrorStep, validateAccountSaveForm } from './accountSavePayload'
 import { mergeAccountProviderDefinitions } from './useAccountEditForm'
 import { allowedEndpointModesFor, capabilityDomainAccountTypes, capabilityDomainIsMedia, capabilityDomainSupportsDeclaration } from './accountCapabilityDomains'
@@ -789,7 +750,8 @@ const providerPickerExpanded = ref(true)
 // 编辑态不渲染供应商选择；克隆豁免阶段一（克隆打开即配置态，「更换」只在表单内展开卡片墙）。
 const providerSelectionStage = computed(() => !props.editing && !props.cloning && providerPickerExpanded.value)
 const displayTitle = computed(() => (providerSelectionStage.value ? '添加账户' : props.title))
-const modalFooter = computed(() => (providerSelectionStage.value ? null : undefined))
+// 供应商选择阶段一与授权账户详情态都不渲染底部按钮（详情只读、无测试/保存动作）。
+const modalFooter = computed(() => (providerSelectionStage.value || props.authorizedEditing ? null : undefined))
 
 // 编辑态 6 张折叠摘要卡的展开 key。
 const benchCardAllKeys = ['dispatch', 'strategy', 'stability', 'balance', 'schedule', 'policy']
@@ -806,6 +768,7 @@ const props = withDefaults(defineProps<{
   advancedLoaded?: boolean
   advancedLoading?: boolean
   apiKeyTestDetails?: AccountApiKeyRuntimeDetail[]
+  /** 授权实例详情态：复用编辑表单渲染，表单级只读、凭据区不渲染、无底部按钮。 */
   authorizedEditing: boolean
   authLoading: boolean
   authResult?: OAuthAuthURLResult
@@ -1064,27 +1027,6 @@ watch(
 // OAuth 账户新建态没有可测凭据（授权码/token 一次性，落库后才能测）：
 // 隐藏底部测试按钮，编辑态（accountDetail 已加载）保留。
 const oauthCreateTestHidden = computed(() => props.isOAuthForm && !props.accountDetail?.id)
-const publicCredentialItems = computed(() => {
-  const credentials = props.accountDetail?.credentials ?? {}
-  const items = [
-    credentialItem('expires_at', 'Token 到期时间', formatCredentialDate(credentials.expires_at)),
-    credentialItem('client_id', 'Client ID', credentials.client_id),
-    credentialItem('email', '邮箱', credentials.email),
-    credentialItem('account_id', 'OpenAI 账户 ID', credentials.account_id),
-    credentialItem('chatgpt_user_id', 'ChatGPT 用户 ID', credentials.chatgpt_user_id),
-    credentialItem('plan_type', '套餐类型', credentials.plan_type),
-    // 五域退役（AI账户上游接口能力设计 §3）：只读凭证行仅对话域展示该键。
-    ...(capabilityDomainSupportsDeclaration(props.capabilityDomain)
-      ? [credentialItem('supported_endpoint_modes', '上游接口能力', accountEndpointModeText(credentials.supported_endpoint_modes, props.accountDetail ?? props.form))]
-      : [])
-  ]
-  return items.filter((item): item is { key: string; label: string; value: string } => Boolean(item))
-})
-
-function authorizedSourceAccountDetail(): AccountAdvancedDetail | undefined {
-  const detail = props.accountAdvancedDetail
-  return detail?.accessType === 'authorized' ? detail : undefined
-}
 
 // 锁死运行态只读展示：来自高级详情投影，不进入任何保存 payload。
 const lockRuntimeStateText = computed(() => {
@@ -1139,18 +1081,6 @@ watch(() => props.form.backgroundProbeEnabled, (next) => {
   }
 })
 
-const sourceAccountStatusText = computed(() => {
-  const detail = authorizedSourceAccountDetail()
-  const status = detail?.authorizationInstanceSourceAccountStatus
-  const parts = [
-    status ? statusText(status) : '-',
-    detail?.authorizationInstanceSourceAccountSchedulable === false ? '已关闭调度' : ''
-  ].filter(Boolean)
-  return parts.join(' / ')
-})
-
-const sourceAccountExpiresAtText = computed(() => formatDateTime(authorizedSourceAccountDetail()?.accountExpiresAt))
-const readonlyModelMappings = computed(() => props.form.modelMappings ?? [])
 const mappingUpstreamModelOptions = computed<SelectOption[]>(() => {
   const output: SelectOption[] = []
   const seen = new Set<string>()
@@ -1164,13 +1094,6 @@ const mappingUpstreamModelOptions = computed<SelectOption[]>(() => {
   return output
 })
 
-// 只读展示单协议（跨协议退役契约）：协议等价行（同族改名 / Gemini 流式归一）
-// 只显示一个协议；升级前遗留的双族行仍按「source -> target」显示两族。
-function readonlyMappingProtocolText(item: AccountFormModel['modelMappings'][number]): string {
-  const sourceText = accountModelMappingEndpointFamilyText(item.sourceEndpointFamily)
-  if (item.sourceEndpointFamily === item.upstreamEndpointFamily) return sourceText
-  return `${sourceText} -> ${accountModelMappingEndpointFamilyText(item.upstreamEndpointFamily)}`
-}
 const confirmButtonProps = computed(() => ({
   ...props.okButtonProps,
   disabled: Boolean(props.okButtonProps.disabled) || props.loading || props.testLoading
@@ -1335,17 +1258,6 @@ function goToNextWizardStep(): void {
     }
   }
   wizardStep.value += 1
-}
-
-function credentialItem(key: string, label: string, value: unknown): { key: string; label: string; value: string } | undefined {
-  if (typeof value !== 'string') return undefined
-  const text = value.trim()
-  return text ? { key, label, value: text } : undefined
-}
-
-function formatCredentialDate(value: unknown): string | undefined {
-  if (typeof value !== 'string' || !value.trim()) return undefined
-  return formatDateTime(value)
 }
 
 const emit = defineEmits<{
@@ -1605,19 +1517,6 @@ const emit = defineEmits<{
 .probe-toggle-help {
   color: var(--juhe-muted);
   cursor: help;
-}
-
-.readonly-config-section {
-  padding: 12px;
-  border: 1px solid var(--juhe-border);
-  border-radius: var(--juhe-radius-sm);
-  background: var(--juhe-soft);
-}
-
-.readonly-model-mappings {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
 }
 
 .account-form,

@@ -88,7 +88,9 @@ func newMinimaxRecordedUpstream(t *testing.T) (*minimaxUpstreamRecorder, *platfo
 // （openai 族词表：video_* 四值 + audio_speech，opt-in 语义；minimax 档案
 // Capabilities 只声明媒体，无 chat 模式）。模型约束种 MiniMax-Hailuo-2.3 与
 // speech-02-turbo。
-func seedMediaMinimaxAccount(t *testing.T, fixture *chainFixture, id, baseURL, apiKey string) string {
+// domain 传 video（视频组）或 audio（speech 用例自种音频账户）：域闸门按
+// accounts.capability_domain 单值匹配，混域用例各自种账户。
+func seedMediaMinimaxAccount(t *testing.T, fixture *chainFixture, id, baseURL, apiKey, domain string) string {
 	t.Helper()
 	// v2 版本根语义：minimax base_url 承载 /v1，adapter opPath 不含版本段。
 	baseURL = strings.TrimRight(baseURL, "/") + "/v1"
@@ -107,8 +109,8 @@ func seedMediaMinimaxAccount(t *testing.T, fixture *chainFixture, id, baseURL, a
 		},
 	}
 	seed(`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('group_minimax_media', ?, 1, 'personal')`, fixture.systemAccount)
-	seed(`INSERT INTO accounts (id, system_account_id, vendor_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at) VALUES (?, ?, 'minimax', 'profile_minimax_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
-		id, fixture.systemAccount, id, mustEncryptCredentials(t, credentials))
+	seed(`INSERT INTO accounts (id, system_account_id, vendor_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, priority, capability_domain, credentials_encrypted, deleted_at) VALUES (?, ?, 'minimax', 'profile_minimax_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, ?, NULL)`,
+		id, fixture.systemAccount, id, domain, mustEncryptCredentials(t, credentials))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
 		VALUES ('group_minimax_media', ?, ?, 1, '2026-10-04T00:00:00.000Z')`, fixture.systemAccount, id)
 	seed(`INSERT INTO models (id, vendor_code, public_model, upstream_model, scope, status, supported_endpoint_modes_json, created_at, updated_at)
@@ -139,7 +141,7 @@ func seedMediaMinimaxAccount(t *testing.T, fixture *chainFixture, id, baseURL, a
 func TestChainMediaMinimaxVideoFullFlowLifecycle(t *testing.T) {
 	fixture := newChainFixture(t)
 	recorder, mock, upstreamURL := newMinimaxRecordedUpstream(t)
-	apiKey := seedMediaMinimaxAccount(t, fixture, "acc_minimax_media", upstreamURL, "minimax-key-a")
+	apiKey := seedMediaMinimaxAccount(t, fixture, "acc_minimax_media", upstreamURL, "minimax-key-a", "video")
 
 	spoolDir := filepath.Join(t.TempDir(), "spool")
 	chain := composeMediaVideoChain(t, fixture, spoolDir)
@@ -302,7 +304,7 @@ func TestChainMediaMinimaxVideoFullFlowLifecycle(t *testing.T) {
 func TestChainMediaMinimaxVideoFailedTerminal(t *testing.T) {
 	fixture := newChainFixture(t)
 	_, _, upstreamURL := newMinimaxRecordedUpstream(t)
-	apiKey := seedMediaMinimaxAccount(t, fixture, "acc_minimax_media_fail", upstreamURL, "minimax-key-fail")
+	apiKey := seedMediaMinimaxAccount(t, fixture, "acc_minimax_media_fail", upstreamURL, "minimax-key-fail", "video")
 
 	spoolDir := filepath.Join(t.TempDir(), "spool")
 	chain := composeMediaVideoChain(t, fixture, spoolDir)
@@ -341,7 +343,7 @@ func TestChainMediaMinimaxVideoFailedTerminal(t *testing.T) {
 func TestChainMediaMinimaxVideoCancel(t *testing.T) {
 	fixture := newChainFixture(t)
 	recorder, _, upstreamURL := newMinimaxRecordedUpstream(t)
-	apiKey := seedMediaMinimaxAccount(t, fixture, "acc_minimax_media_cancel", upstreamURL, "minimax-key-cancel")
+	apiKey := seedMediaMinimaxAccount(t, fixture, "acc_minimax_media_cancel", upstreamURL, "minimax-key-cancel", "video")
 
 	chain := composeMediaVideoChain(t, fixture, filepath.Join(t.TempDir(), "spool"))
 	server := httptest.NewServer(chain)
@@ -389,7 +391,7 @@ func TestChainMediaMinimaxVideoCancel(t *testing.T) {
 func TestChainMediaMinimaxSpeechFullChain(t *testing.T) {
 	fixture := newChainFixture(t)
 	recorder, _, upstreamURL := newMinimaxRecordedUpstream(t)
-	apiKey := seedMediaMinimaxAccount(t, fixture, "acc_minimax_tts", upstreamURL, "minimax-key-tts")
+	apiKey := seedMediaMinimaxAccount(t, fixture, "acc_minimax_tts", upstreamURL, "minimax-key-tts", "audio")
 
 	spoolDir := filepath.Join(t.TempDir(), "spool")
 	chain := composeMediaVideoChain(t, fixture, spoolDir)
@@ -434,7 +436,7 @@ func TestChainMediaMinimaxSpeechFullChain(t *testing.T) {
 func TestChainMediaMinimaxSpeechSpeedOutOfRangeLocal400(t *testing.T) {
 	fixture := newChainFixture(t)
 	recorder, _, upstreamURL := newMinimaxRecordedUpstream(t)
-	apiKey := seedMediaMinimaxAccount(t, fixture, "acc_minimax_tts_400", upstreamURL, "minimax-key-400")
+	apiKey := seedMediaMinimaxAccount(t, fixture, "acc_minimax_tts_400", upstreamURL, "minimax-key-400", "audio")
 
 	chain := composeMediaVideoChain(t, fixture, filepath.Join(t.TempDir(), "spool"))
 	server := httptest.NewServer(chain)

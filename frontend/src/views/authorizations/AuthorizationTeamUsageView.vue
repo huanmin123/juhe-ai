@@ -365,7 +365,6 @@ const {
   dateRange,
   dateRangeExplicit,
   displayRange,
-  rangeLabel,
   handleDateRangeChange,
   selectedRangeParams,
   handleCalendarChange,
@@ -420,9 +419,6 @@ const activeFilterCount = computed(() => countAuthorizationTeamUsageActiveFilter
 const advancedFilterCount = computed(() => countAuthorizationUsageAdvancedFilters(filters, resourceGroupDisabled.value))
 const visibleTeamRows = computed(() => rowsResolvedSignature.value === currentUsageSignature() ? teamRows.value : [])
 const summaryCards = computed(() => buildAuthorizationTeamUsageSummaryCards({
-  hasMore: rowsResolvedSignature.value === currentUsageSignature() ? overview.value?.hasMore : undefined,
-  loadedCount: visibleTeamRows.value.length,
-  rangeLabel: rangeLabel.value,
   summary: summaryResolvedSignature.value === currentUsageSignature() ? usageSummary.value?.summary : undefined
 }))
 

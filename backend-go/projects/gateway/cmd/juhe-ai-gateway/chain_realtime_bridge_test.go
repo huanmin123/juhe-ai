@@ -61,7 +61,7 @@ func seedRealtimeAccount(t *testing.T, fixture *chainFixture, id, baseURL, apiKe
 			"chat_json", "chat_sse", "responses_json", "responses_sse", "realtime_session",
 		},
 	}
-	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO accounts (id, system_account_id, vendor_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at) VALUES (?, ?, 'gpt', 'prof_1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, ?, ?, NULL)`),
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO accounts (id, system_account_id, vendor_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, priority, capability_domain, credentials_encrypted, deleted_at) VALUES (?, ?, 'gpt', 'prof_1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, ?, 'audio', ?, NULL)`),
 		id, fixture.systemAccount, id, priority, mustEncryptCredentials(t, credentials)); err != nil {
 		t.Fatalf("seed realtime account: %v", err)
 	}

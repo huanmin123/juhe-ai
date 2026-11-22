@@ -5,7 +5,6 @@ package main
 // quota stub).
 
 import (
-	"context"
 	"encoding/json"
 	"net/http/httptest"
 	"os"
@@ -17,7 +16,6 @@ import (
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayclientip"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
@@ -121,21 +119,8 @@ func composeChainWithSpool(t *testing.T, fixture *chainFixture, mutate func(*cha
 	return chain, spoolDir, shutdown
 }
 
-// stubQuotaChecker 是解析期配额批查的测试桩。
-type stubQuotaChecker struct {
-	denied    map[string]bool
-	deniedAll bool
-	calls     int
-}
-
-func (q *stubQuotaChecker) CheckBatchAsync(_ context.Context, _ gatewayruntimecache.GroupUsageAccessMetadata, accounts []gatewaydispatch.AccountCandidate) (map[string]gatewaydispatch.QuotaDecision, error) {
-	q.calls++
-	decisions := make(map[string]gatewaydispatch.QuotaDecision, len(accounts))
-	for _, account := range accounts {
-		decisions[account.ID] = gatewaydispatch.QuotaDecision{Allowed: !q.deniedAll && !q.denied[account.ID]}
-	}
-	return decisions, nil
-}
+// （stubQuotaChecker 随解析期配额批查退役删除：chainRouteResolver 不再有
+// quota 门，候选过滤只做能力/模型/并发。）
 
 // capturingAuditDispatcher 捕获最终化审计日志。审计派发发生在响应返回之后
 // 的异步 finalize goroutine，与测试轮询读取并发：logs 必须由互斥锁保护，

@@ -162,14 +162,15 @@ func TestComposeSystemAPIWiresAuthzUsageStatsReads(t *testing.T) {
 // for the system-teams committed-write side effects (C9): a team status
 // transition through the composed store must mark the group-account-stats
 // dirty row (groupdirtycursor.Store via WithSideEffects) and invalidate the
-// gateway runtime + authorization quota caches through the K5 bus.
+// gateway runtime cache through the K5 bus.（授权额度缓存随授权额度域退役，
+// K5 总线不再广播 TopicAuthorizationQuota。）
 func TestComposeSystemAPIWiresSystemTeamsSideEffects(t *testing.T) {
 	fixture := newComposeStatsWiringFixture(t)
 	composed := fixture.composed
 
 	var mu sync.Mutex
 	var invalidations []string
-	for _, topic := range []string{inval.TopicGatewayRuntime, inval.TopicAuthorizationQuota} {
+	for _, topic := range []string{inval.TopicGatewayRuntime} {
 		watched := topic
 		composed.Bus.Subscribe(watched, func(topic, reason string) {
 			mu.Lock()
@@ -205,8 +206,7 @@ func TestComposeSystemAPIWiresSystemTeamsSideEffects(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	want := map[string]bool{
-		inval.TopicGatewayRuntime + "|team_authorization_changed":     false,
-		inval.TopicAuthorizationQuota + "|team_authorization_changed": false,
+		inval.TopicGatewayRuntime + "|team_authorization_changed": false,
 	}
 	for _, call := range invalidations {
 		if _, ok := want[call]; ok {

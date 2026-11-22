@@ -1,19 +1,26 @@
 package playground
 
-// 演练场产物暂存（docs/functions/演练场设计.md §3.8）：图片/语音字节与视频任
-// 务引用存 juhe_business.playground_artifacts（2026-11-09 用户裁决：由本地文件
-// 改为 PG bytea，多节点无需共享盘）。零新 env；组合根注入 *sql.DB。
+// 演练场产物暂存（docs/functions/演练场设计.md §3.8，v1.2 双保留期）：语音
+// 字节、视频任务引用与图像工作台的结果图/参考图存 juhe_business.playground_
+// artifacts（PG bytea，多节点无需共享盘；job_id 列关联图像产物与任务）。零新
+// env；组合根注入 *sql.DB。
 //
-// 边界（§3.8 原文）：**暂存是展示缓存非资产库**——后端不保证 24h 之外的留存，
-// 用户留档靠下载；存储总量 = 每用户最近一批图（≤4×16MiB）+ 一条音频 + 一条
-// 视频任务引用，受覆盖式替换自然封顶；24h 懒清理按 created_at 全局删除。
+// 保留期（§3.8 v1.2 裁决）：
+//   - image_result / image_reference：随所属任务 7 天（expires_at 记在任务
+//     行），字节删除由 jobs 项目定时任务执行（记录行永不删）；
+//   - 孤儿参考图（image_reference 且 job_id=''）：24h 懒清理；
+//   - speech / video_task：24h 覆盖式（v1.0 口径不变）。
+//
+// 边界（§3.8 原文）：**暂存是展示缓存非资产库**——图像字节不保证 beyond 7 天，
+// 用户留档靠下载；语音/视频受覆盖式替换自然封顶。
 //
 // 安全面：
 //   - id 白名单 sanitizeArtifactID（仅 [A-Za-z0-9._-]，≤128 字符，显式拒绝
 //     "."/".."），非法直接 400；
 //   - 查询按 system_account_id + id 定位，跨用户不可达；
-//   - content 端点仅开放媒体产物（kind=image/speech），视频任务引用 JSON 一律
-//     404——视频产物本体走 §3.5 jobId 代理，不经此端点。
+//   - content 端点仅开放媒体产物（kind=image_result/image_reference/speech），
+//     视频任务引用 JSON 一律 404——视频产物本体走 §3.5 jobId 代理，不经此端
+//     点；v1.0 退役的 kind='image' 行不再开放（存量由 jobs 清理任务顺带删除）。
 
 import (
 	"bytes"
@@ -43,8 +50,8 @@ const (
 // 最大值 = 语音 32MiB；超限文件只可能来自带外写入，按产物不存在收敛）。
 const artifactContentMaxBytes = speechAudioMaxBytes
 
-// artifactImageMIME / artifactAudioMIME 是暂存文件扩展名 → MIME 词表（图片与
-// 语音各一：同 kind 覆盖替换与清单分类按词表判定；语音扩展名来源是
+// artifactImageMIME / artifactAudioMIME 是暂存文件扩展名 → MIME 词表（图像与
+// 语音各一：文件替身的 kind 归类与语音覆盖替换按词表判定；语音扩展名来源是
 // normalizeSpeechFormat 词表，mp3/wav/ogg/m4a 四值）。artifactMediaMIME 是两
 // 者合并视图（content 端点开放面）。
 var (
@@ -96,14 +103,9 @@ type videoTaskRef struct {
 	CreatedAt int64  `json:"createdAt"`
 }
 
-// artifactsImageEntry / artifactsSpeechEntry / artifactsVideoEntry 是恢复端点
-// GET /artifacts 的清单条目（§3.8 响应形状）；speech/video 无产物时为 null。
-type artifactsImageEntry struct {
-	ID        string `json:"id"`
-	URL       string `json:"url"`
-	CreatedAt int64  `json:"createdAt"`
-}
-
+// artifactsSpeechEntry / artifactsVideoEntry 是恢复端点 GET /artifacts 的清单
+// 条目（§3.8 响应形状）；speech/video 无产物时为 null。v1.2 起 images 字段退
+// 役——图片历史改走 GET /images/jobs（§3.4.3）。
 type artifactsSpeechEntry struct {
 	ID        string `json:"id"`
 	URL       string `json:"url"`
@@ -120,7 +122,6 @@ type artifactsVideoEntry struct {
 }
 
 type artifactsResponse struct {
-	Images []artifactsImageEntry `json:"images"`
 	Speech *artifactsSpeechEntry `json:"speech"`
 	Video  *artifactsVideoEntry  `json:"video"`
 }
@@ -130,7 +131,12 @@ type artifactsResponse struct {
 // 产物端点显式降级 503（设计 §1.1 功能不设开关）。
 type ArtifactStore interface {
 	available() bool
-	replaceImages(viewerID string, images []decodedImage) ([]imageResultEntry, error)
+	// saveImageReference 落一张参考图（kind='image_reference'，孤儿态
+	// job_id=''；任务创建时事务内绑定 job_id）。
+	saveImageReference(viewerID string, image decodedImage) (string, error)
+	// saveImageResult 落一张生成结果图（kind='image_result'，job_id=任务 id；
+	// 保留期 7d 由 jobs 清理任务按任务到期删字节）。
+	saveImageResult(viewerID, jobID string, image decodedImage) (string, error)
 	replaceSpeech(viewerID string, data []byte, ext string) (string, error)
 	replaceVideoTask(viewerID string, ref videoTaskRef) error
 	list(viewerID string) (*artifactsResponse, error)
@@ -213,43 +219,39 @@ func artifactMIMEByExtension(ext string) string {
 	return "application/octet-stream"
 }
 
-// replaceImages 同 kind 覆盖写入一批生图产物：事务内先删该用户全部旧图，再写
-// 新批（n≤4 由上游校验保证），返回响应条目（id + 取流 url）。
-func (s *pgArtifactStore) replaceImages(viewerID string, images []decodedImage) ([]imageResultEntry, error) {
+// saveImageReference 落一张参考图（§3.4.1：kind='image_reference'，孤儿态
+// job_id=”；绑定在任务创建事务内完成）。单行 INSERT，无覆盖语义（每张独立
+// id，参考图可复用跨任务）。
+func (s *pgArtifactStore) saveImageReference(viewerID string, image decodedImage) (string, error) {
+	return s.saveImageArtifact(viewerID, "", "image_reference", image)
+}
+
+// saveImageResult 落一张生成结果图（§3.8：kind='image_result'，
+// job_id=任务 id；字节保留 7 天按任务，删除由 jobs 清理任务执行）。
+func (s *pgArtifactStore) saveImageResult(viewerID, jobID string, image decodedImage) (string, error) {
+	return s.saveImageArtifact(viewerID, jobID, "image_result", image)
+}
+
+// saveImageArtifact 是两类图像产物（参考图/结果图）的共用写入路径。
+func (s *pgArtifactStore) saveImageArtifact(viewerID, jobID, kind string, image decodedImage) (string, error) {
 	if err := validateArtifactViewer(viewerID); err != nil {
-		return nil, err
+		return "", err
 	}
 	if !s.available() {
-		return nil, errArtifactStoreUnavailable
+		return "", errArtifactStoreUnavailable
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	tx, err := s.db.BeginTx(context.Background(), nil)
-	if err != nil {
-		return nil, err
+	id, idErr := newArtifactID()
+	if idErr != nil {
+		return "", idErr
 	}
-	defer tx.Rollback()
-	if _, err := tx.ExecContext(context.Background(), `DELETE FROM `+playgroundArtifactsTable+` WHERE system_account_id=$1 AND kind='image'`, viewerID); err != nil {
-		return nil, err
+	if _, err := s.db.ExecContext(context.Background(),
+		`INSERT INTO `+playgroundArtifactsTable+` (system_account_id,id,kind,mime_type,data,job_id,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		viewerID, id, kind, image.MIME, image.Data, jobID, time.Now().UnixMilli()); err != nil {
+		return "", err
 	}
-	entries := make([]imageResultEntry, 0, len(images))
-	createdAt := time.Now().UnixMilli()
-	for _, image := range images {
-		id, idErr := newArtifactID()
-		if idErr != nil {
-			return nil, idErr
-		}
-		if _, err := tx.ExecContext(context.Background(),
-			`INSERT INTO `+playgroundArtifactsTable+` (system_account_id,id,kind,mime_type,data,created_at) VALUES ($1,$2,'image',$3,$4,$5)`,
-			viewerID, id, image.MIME, image.Data, createdAt); err != nil {
-			return nil, err
-		}
-		entries = append(entries, imageResultEntry{ID: id, URL: artifactContentURL(id)})
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	return entries, nil
+	return id, nil
 }
 
 // replaceSpeech 同 kind 覆盖写入语音产物：事务内删旧音频、写新条（ext 来自
@@ -320,9 +322,9 @@ func (s *pgArtifactStore) replaceVideoTask(viewerID string, ref videoTaskRef) er
 	return tx.Commit()
 }
 
-// list 读取当前用户暂存清单（§3.8 恢复端点形状）：images 按写入时间升序；
-// speech 取最新一条音频；video 取最新任务引用（JSON 解析失败视为无引用——展示
-// 缓存不因脏行失败）。无产物返回空清单。
+// list 读取当前用户暂存清单（§3.8 恢复端点形状，v1.2 起无 images 字段）：
+// speech 取最新一条音频；video 取最新任务引用（JSON 解析失败视为无引用——展
+// 示缓存不因脏行失败）。无产物返回 null 组。
 func (s *pgArtifactStore) list(viewerID string) (*artifactsResponse, error) {
 	if err := validateArtifactViewer(viewerID); err != nil {
 		return nil, err
@@ -330,28 +332,8 @@ func (s *pgArtifactStore) list(viewerID string) (*artifactsResponse, error) {
 	if !s.available() {
 		return nil, errArtifactStoreUnavailable
 	}
-	out := &artifactsResponse{Images: []artifactsImageEntry{}}
+	out := &artifactsResponse{}
 	cutoff := time.Now().Add(-artifactsRetention).UnixMilli()
-	rows, err := s.db.QueryContext(context.Background(),
-		`SELECT id,created_at FROM `+playgroundArtifactsTable+` WHERE system_account_id=$1 AND kind='image' AND created_at >= $2 ORDER BY created_at ASC, id ASC`,
-		viewerID, cutoff)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var id string
-		var createdAt int64
-		if err := rows.Scan(&id, &createdAt); err != nil {
-			return nil, err
-		}
-		out.Images = append(out.Images, artifactsImageEntry{
-			ID: id, URL: artifactContentURL(id), CreatedAt: createdAt / 1000,
-		})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
 	var speechID, speechMIME string
 	var speechCreatedAt int64
 	speechErr := s.db.QueryRowContext(context.Background(),
@@ -390,8 +372,9 @@ type artifactContent struct {
 	Data    []byte
 }
 
-// openArtifact 按 id 定位本用户媒体产物（仅 kind=image/speech；视频任务引用
-// 一律 errArtifactNotFound——视频内容走 §3.5 jobId 代理，不经此端点）。
+// openArtifact 按 id 定位本用户媒体产物（kind=image_result/image_reference/
+// speech；视频任务引用一律 errArtifactNotFound——视频内容走 §3.5 jobId 代理，
+// 不经此端点。v1.0 退役的 kind='image' 行不再开放，存量由 jobs 清理任务删除）。
 func (s *pgArtifactStore) openArtifact(viewerID, id string) (*artifactContent, error) {
 	if err := validateArtifactViewer(viewerID); err != nil {
 		return nil, err
@@ -403,7 +386,7 @@ func (s *pgArtifactStore) openArtifact(viewerID, id string) (*artifactContent, e
 	var data []byte
 	var createdAt int64
 	err := s.db.QueryRowContext(context.Background(),
-		`SELECT mime_type,data,created_at FROM `+playgroundArtifactsTable+` WHERE system_account_id=$1 AND id=$2 AND kind IN ('image','speech')`,
+		`SELECT mime_type,data,created_at FROM `+playgroundArtifactsTable+` WHERE system_account_id=$1 AND id=$2 AND kind IN ('image_result','image_reference','speech')`,
 		viewerID, id).Scan(&mimeType, &data, &createdAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, errArtifactNotFound
@@ -422,9 +405,12 @@ func (s *pgArtifactStore) openArtifact(viewerID, id string) (*artifactContent, e
 	}, nil
 }
 
-// cleanupExpired 是 24h 懒清理（§3.8）：按 created_at 全表删除过期行。挂全部
-// 产物读写点（POST images/speech/videos、GET artifacts、GET content）同步执行；
-// 清理失败静默吞掉（缓存 GC 失败不得阻断主生成路径，下一读写点自然重试）。
+// cleanupExpired 是 24h 懒清理（§3.8 v1.2 口径）：只删 speech/video_task 与
+// 孤儿参考图（kind='image_reference' AND job_id=”）三类过期行；绑定任务的
+// image_result/image_reference 由 jobs 项目定时任务按 7 天保留期删字节并置
+// images_expired（§3.8），此处不动。挂产物读写点（POST references、
+// GET artifacts、GET images/jobs、GET content）同步执行；清理失败静默吞掉
+// （缓存 GC 失败不得阻断主生成路径，下一读写点自然重试）。
 func (s *pgArtifactStore) cleanupExpired() {
 	if !s.available() {
 		return
@@ -433,7 +419,8 @@ func (s *pgArtifactStore) cleanupExpired() {
 	defer s.mu.Unlock()
 	cutoff := time.Now().Add(-artifactsRetention).UnixMilli()
 	_, _ = s.db.ExecContext(context.Background(),
-		`DELETE FROM `+playgroundArtifactsTable+` WHERE created_at < $1`, cutoff)
+		`DELETE FROM `+playgroundArtifactsTable+` WHERE created_at < $1
+		 AND (kind IN ('speech','video_task') OR (kind='image_reference' AND job_id=''))`, cutoff)
 }
 
 // artifactsReady 报告产物暂存后端是否已接线（nil 接口 = 未接线，端点显式

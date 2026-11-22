@@ -226,12 +226,43 @@ func seedChainBusinessSchema(t *testing.T, db *sql.DB) {
 			created_at TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '')`,
 		`CREATE TABLE resource_authorizations (
 			id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL,
-			resource_owner_system_account_id TEXT, grantee_system_account_id TEXT NOT NULL,
-			scope TEXT, status TEXT NOT NULL, expires_at TEXT,
-			effective_source_type TEXT, effective_source_team_id TEXT, limits_json TEXT)`,
+			resource_owner_system_account_id TEXT NOT NULL, grantee_system_account_id TEXT NOT NULL,
+			scope TEXT NOT NULL DEFAULT 'use', status TEXT NOT NULL DEFAULT 'active',
+			effective_source_type TEXT, effective_source_team_id TEXT,
+			activated_at TEXT, last_source_changed_at TEXT, remark TEXT, expires_at TEXT,
+			created_by TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT '',
+			revoked_by TEXT, revoked_at TEXT, revoked_reason TEXT,
+			updated_at TEXT NOT NULL DEFAULT '')
+		`,
+		// revision 31 授权大简化：resource_authorizations 无 limits_json，
+		// group_authorization_settings 无 enabled（目标 7 列形态）。
+		// send-and-claim 授权链两表（runtimeSourceRevisionOK 的 JOIN 读面）：
+		// 形态与 maintenance 基础 DDL + 授权治理 ALTER 同构去 FK。
+		`CREATE TABLE IF NOT EXISTS resource_authorization_grants (
+			id TEXT PRIMARY KEY,
+			resource_type TEXT NOT NULL, resource_id TEXT NOT NULL,
+			resource_owner_system_account_id TEXT NOT NULL,
+			grantee_type TEXT NOT NULL, grantee_system_account_id TEXT, grantee_team_id TEXT,
+			scope TEXT NOT NULL DEFAULT 'use', status TEXT NOT NULL DEFAULT 'active',
+			remark TEXT, expires_at TEXT, created_by TEXT NOT NULL,
+			created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT,
+			source_revision TEXT, expiry_cycle INTEGER NOT NULL DEFAULT 0,
+			ended_at TEXT, ended_reason TEXT, updated_at TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS resource_authorization_sources (
+			id TEXT PRIMARY KEY, authorization_id TEXT NOT NULL,
+			source_type TEXT NOT NULL, source_team_id TEXT,
+			status TEXT NOT NULL DEFAULT 'active',
+			activated_at TEXT, ended_at TEXT, ended_reason TEXT,
+			created_by TEXT NOT NULL, created_at TEXT NOT NULL,
+			revoked_by TEXT, revoked_at TEXT,
+			grant_id TEXT, accepted_at TEXT, accepted_by TEXT,
+			declined_at TEXT, declined_by TEXT, returned_at TEXT, returned_by TEXT,
+			expiry_cycle INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL)`,
+		// 组级授权领取行（send-and-claim 的 whole visibility contract；
+		// recordGroupAuthorizationClaim 写侧同形状）。
 		`CREATE TABLE group_authorization_settings (
 			authorization_id TEXT NOT NULL, system_account_id TEXT NOT NULL, group_id TEXT NOT NULL,
-			enabled INTEGER, group_type TEXT, scheduling_policy_json TEXT)`,
+			group_type TEXT, scheduling_policy_json TEXT)`,
 		`CREATE TABLE account_supported_models (account_id TEXT NOT NULL, model TEXT NOT NULL, model_id TEXT, created_at TEXT NOT NULL)`,
 		`CREATE TABLE account_api_key_runtime_states (
 			account_id TEXT NOT NULL, key_fingerprint TEXT NOT NULL, key_index INTEGER,
@@ -433,6 +464,55 @@ func chainSeedAccountConnection(t *testing.T, db *sql.DB, accountID, baseURL str
 
 // seedChainStatsSchema creates the stats-side read surface the fresh
 // dispatch quality rows come from (account_quality_scores).
+// chainSeedAuthorizationClaimChain 钉住 send-and-claim 授权链的完整行族：
+// runtime 行（active + effective source 投影）+ active grant + grant 背书的
+// active source（runtimeSourceRevisionOK 的三表 JOIN 全部在场）；teamID 非空
+// 时 grant 走 team 臂，否则 system_account 臂。settings 领取行由组级用例按需
+// 自种（recordGroupAuthorizationClaim 同形状：authorization_id, grantee,
+// group_id, group_type 'personal'）。
+func chainSeedAuthorizationClaimChain(t *testing.T, db *sql.DB, authzID, resourceType, resourceID, owner, grantee, sourceType, teamID, expiresAt string) {
+	t.Helper()
+	now := "2026-09-04T00:00:00.000Z"
+	var teamArg any
+	granteeType := "system_account"
+	var granteeArg any
+	if teamID != "" {
+		granteeType = "team"
+		teamArg = teamID
+	} else {
+		granteeArg = grantee
+	}
+	seed := func(query string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(fixtureBind(query), args...); err != nil {
+			t.Fatalf("seed claim chain %s: %v: %v", authzID, query, err)
+		}
+	}
+	seed(`INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id,
+		grantee_system_account_id, scope, status, effective_source_type, effective_source_team_id,
+		expires_at, activated_at, created_by, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, 'use', 'active', ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (id) DO NOTHING`,
+		authzID, resourceType, resourceID, owner, grantee, sourceType, nullIfEmptyString(teamID),
+		nullIfEmptyString(expiresAt), now, owner, now, now)
+	seed(`INSERT INTO resource_authorization_grants (id, resource_type, resource_id,
+		resource_owner_system_account_id, grantee_type, grantee_system_account_id, grantee_team_id,
+		scope, status, created_by, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 'use', 'active', ?, ?, ?)`,
+		"grant_"+authzID, resourceType, resourceID, owner, granteeType, granteeArg, teamArg, owner, now, now)
+	seed(`INSERT INTO resource_authorization_sources (id, authorization_id, source_type, source_team_id,
+		status, activated_at, created_by, created_at, grant_id, updated_at)
+		VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`,
+		"src_"+authzID, authzID, sourceType, nullIfEmptyString(teamID), now, owner, now, "grant_"+authzID, now)
+}
+
+func nullIfEmptyString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
 func seedChainStatsSchema(t *testing.T, statsDB *sql.DB) {
 	t.Helper()
 	statements := []string{
@@ -1017,7 +1097,8 @@ func TestComposeGatewayChainFailsFastNamingMissingPorts(t *testing.T) {
 	}
 	for _, name := range []string{
 		"PreAuthCircuits", "ClientIPPolicy", "UserRequestLimits", "AuthenticatedModelsRateLimit",
-		"APIKeyQuota", "AuthorizationQuota", "InflightQuota", "Avoidance", "Affinity",
+		//（"AuthorizationQuota" 随授权额度域退役：装配门缺失项命名清单同步收窄。）
+		"APIKeyQuota", "InflightQuota", "Avoidance", "Affinity",
 	} {
 		if !strings.Contains(err.Error(), name) {
 			t.Fatalf("missing port not named (%s): %v", name, err)
@@ -1162,22 +1243,13 @@ func chainSmokeDeps(t *testing.T, fixture *chainFixture, clock gatewaypreauth.Cl
 	if err != nil {
 		t.Fatalf("create api-key quota: %v", err)
 	}
-	authzQuota, err := gatewayquota.NewAuthorizationQuotaService(gatewayquota.AuthorizationQuotaConfig{
-		Business: fixture.db,
-		Stats:    statsStore,
-		Timezone: timezone,
-		Snapshot: snapshot,
-		Now:      time.Now,
-	})
-	if err != nil {
-		t.Fatalf("create authz quota: %v", err)
-	}
+	// （授权额度服务装配随授权额度域退役删除：链级额度只剩 API Key 侧。）
 	// T93-1：与生产装配同源（目录估算器 + 精确成本兜底），链级额度用例才能按
 	// 真实请求成本预留；Estimator 缺席会让在途预留恒 no-op。
 	inflightQuota, err := gatewayquota.NewInflightQuotaService(gatewayquota.InflightQuotaConfig{
 		APIKeys:   apiKeyQuota,
 		Estimator: newChainCostEstimator(fixture.cache),
-		DBService: newChainQuotaDBService(apiKeyQuota, authzQuota),
+		DBService: newChainQuotaDBService(apiKeyQuota),
 	})
 	if err != nil {
 		t.Fatalf("create inflight quota: %v", err)
@@ -1201,7 +1273,6 @@ func chainSmokeDeps(t *testing.T, fixture *chainFixture, clock gatewaypreauth.Cl
 		UserLimits:          userLimits,
 		ModelsRateLimit:     modelsRateLimit,
 		APIKeyQuota:         apiKeyQuota,
-		AuthzQuota:          authzQuota,
 		InflightQuota:       inflightQuota,
 		Avoidance:           avoidance,
 		Affinity:            gatewaygemini.NewInteractionAffinity(nil),

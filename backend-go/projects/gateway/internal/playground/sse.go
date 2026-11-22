@@ -32,25 +32,18 @@ type playgroundSSEWriter struct {
 	done     chan struct{}
 }
 
-// sseEventFrame 是归一 SSE 事件帧载荷（设计 §3.3 表：type 为判别字段；各键
-// 按事件类型互斥出现，omitempty 收敛输出形状）。事件语义：
+// sseEventFrame 是归一 SSE 事件帧载荷（设计 §3.3 真实 Key 化修订表：type 为
+// 判别字段；各键按事件类型互斥出现，omitempty 收敛输出形状）。事件语义：
 //
-//	round {round} / delta {text} / tool_start {callId,name,args} /
-//	tool_end {callId,name,ok,summary} / usage {promptTokens,completionTokens,
-//	totalTokens} / done {rounds} / error {code,message}。
+//	delta {text} / usage {promptTokens,completionTokens,totalTokens} /
+//	error {code,message}（原 round/tool_start/tool_end/done 随服务端
+//	fetch_url 工具注入与多轮工具循环退役；流式响应体关闭即结束信号）。
 type sseEventFrame struct {
 	Type             string `json:"type"`
-	Round            int    `json:"round,omitempty"`
 	Text             string `json:"text,omitempty"`
-	CallID           string `json:"callId,omitempty"`
-	Name             string `json:"name,omitempty"`
-	Args             string `json:"args,omitempty"`
-	OK               *bool  `json:"ok,omitempty"`
-	Summary          string `json:"summary,omitempty"`
 	PromptTokens     *int64 `json:"promptTokens,omitempty"`
 	CompletionTokens *int64 `json:"completionTokens,omitempty"`
 	TotalTokens      *int64 `json:"totalTokens,omitempty"`
-	Rounds           *int   `json:"rounds,omitempty"`
 	Code             string `json:"code,omitempty"`
 	Message          string `json:"message,omitempty"`
 }

@@ -38,14 +38,21 @@ type UsageRowSummary struct {
 }
 
 // UsageAggregateSummary mirrors AuthorizationUsageAggregateSummary
-// (authorizationUsageAggregateSummary :688-698).
+// (authorizationUsageAggregateSummary :688-698)；成功/失败与首 Token/总耗时
+// 均值字段对齐用量分析 4 卡口径。
 type UsageAggregateSummary struct {
-	RequestCount     float64 `json:"requestCount"`
-	InputTokens      float64 `json:"inputTokens"`
-	CacheWriteTokens float64 `json:"cacheWriteTokens"`
-	TotalTokens      float64 `json:"totalTokens"`
-	TotalCost        float64 `json:"totalCost"`
-	LastUsedAt       *string `json:"lastUsedAt,omitempty"`
+	RequestCount        float64 `json:"requestCount"`
+	SuccessCount        float64 `json:"successCount"`
+	ErrorCount          float64 `json:"errorCount"`
+	InputTokens         float64 `json:"inputTokens"`
+	OutputTokens        float64 `json:"outputTokens"`
+	CacheReadTokens     float64 `json:"cacheReadTokens"`
+	CacheWriteTokens    float64 `json:"cacheWriteTokens"`
+	TotalTokens         float64 `json:"totalTokens"`
+	TotalCost           float64 `json:"totalCost"`
+	AverageFirstTokenMs float64 `json:"averageFirstTokenMs"`
+	AverageDurationMs   float64 `json:"averageDurationMs"`
+	LastUsedAt          *string `json:"lastUsedAt,omitempty"`
 }
 
 // TeamUsageRow mirrors AuthorizationTeamUsageRow (:1920-1931 domain/types.ts):
@@ -138,7 +145,15 @@ type usageWindowRow struct {
 	InputImageTokens   float64
 	OutputImageTokens  float64
 	TotalCostUsd       float64
-	LastUsedAt         sql.NullString
+	// 成功/失败与首 Token/总耗时聚合（用量分析 4 卡口径），由日表
+	// success_count/error_count/first_token_ms_*/duration_ms_* 列 SUM 而来。
+	SuccessCount      float64
+	ErrorCount        float64
+	FirstTokenMsSum   float64
+	FirstTokenMsCount float64
+	DurationMsSum     float64
+	DurationMsCount   float64
+	LastUsedAt        sql.NullString
 }
 
 // statsQueryDB resolves the stats database handle: PostgreSQL shares the
@@ -200,7 +215,11 @@ const usageDailyAggregateColumns = `COALESCE(SUM(report.request_count), 0), COAL
 	COALESCE(SUM(report.output_tokens), 0), COALESCE(SUM(report.cache_read_tokens), 0), COALESCE(SUM(report.cache_read_cost_usd), 0),
 	COALESCE(SUM(report.cache_write_tokens), 0), COALESCE(SUM(report.cache_write_1h_tokens), 0), COALESCE(SUM(report.cache_write_cost_usd), 0),
 	COALESCE(SUM(report.thinking_tokens), 0), COALESCE(SUM(report.input_image_tokens), 0), COALESCE(SUM(report.output_image_tokens), 0),
-	COALESCE(SUM(report.total_cost_usd), 0), MAX(report.last_used_at)`
+	COALESCE(SUM(report.total_cost_usd), 0),
+	COALESCE(SUM(report.success_count), 0), COALESCE(SUM(report.error_count), 0),
+	COALESCE(SUM(report.first_token_ms_sum), 0), COALESCE(SUM(report.first_token_ms_count), 0),
+	COALESCE(SUM(report.duration_ms_sum), 0), COALESCE(SUM(report.duration_ms_count), 0),
+	MAX(report.last_used_at)`
 
 // usageDailyNonEmptyHaving mirrors the window writer's HAVING (all-zero groups
 // never surface): retention deductions can zero out daily rows, and the former
@@ -223,7 +242,9 @@ func scanUsageWindowRow(scanner interface{ Scan(...any) error }) (usageWindowRow
 	err := scanner.Scan(&row.RequestCount, &row.InputTokens, &row.OutputTokens,
 		&row.CacheReadTokens, &row.CacheReadCostUsd, &row.CacheWriteTokens, &row.CacheWrite1hTokens,
 		&row.CacheWriteCostUsd, &row.ThinkingTokens, &row.InputImageTokens, &row.OutputImageTokens,
-		&row.TotalCostUsd, &row.LastUsedAt)
+		&row.TotalCostUsd, &row.SuccessCount, &row.ErrorCount,
+		&row.FirstTokenMsSum, &row.FirstTokenMsCount, &row.DurationMsSum, &row.DurationMsCount,
+		&row.LastUsedAt)
 	return row, err
 }
 
@@ -239,13 +260,28 @@ func summaryAggregate(row *usageWindowRow) UsageAggregateSummary {
 		lastUsedAt = &value
 	}
 	return UsageAggregateSummary{
-		RequestCount:     row.RequestCount,
-		InputTokens:      row.InputTokens,
-		CacheWriteTokens: row.CacheWriteTokens,
-		TotalTokens:      row.InputTokens + row.OutputTokens,
-		TotalCost:        row.TotalCostUsd,
-		LastUsedAt:       lastUsedAt,
+		RequestCount:        row.RequestCount,
+		SuccessCount:        row.SuccessCount,
+		ErrorCount:          row.ErrorCount,
+		InputTokens:         row.InputTokens,
+		OutputTokens:        row.OutputTokens,
+		CacheReadTokens:     row.CacheReadTokens,
+		CacheWriteTokens:    row.CacheWriteTokens,
+		TotalTokens:         row.InputTokens + row.OutputTokens,
+		TotalCost:           row.TotalCostUsd,
+		AverageFirstTokenMs: averageMs(row.FirstTokenMsSum, row.FirstTokenMsCount),
+		AverageDurationMs:   averageMs(row.DurationMsSum, row.DurationMsCount),
+		LastUsedAt:          lastUsedAt,
 	}
+}
+
+// averageMs derives a millisecond mean from the daily sum/count columns;
+// zero-count windows report 0（前端展示为 -）。
+func averageMs(sum, count float64) float64 {
+	if count <= 0 {
+		return 0
+	}
+	return sum / count
 }
 
 // rowSummary mirrors authorizationUsageRowSummary (:683-686).
@@ -300,7 +336,9 @@ func (s *Store) teamUsageRows(ctx context.Context, filters UsageFilters, access 
 			&aggregate.RequestCount, &aggregate.InputTokens, &aggregate.OutputTokens,
 			&aggregate.CacheReadTokens, &aggregate.CacheReadCostUsd, &aggregate.CacheWriteTokens, &aggregate.CacheWrite1hTokens,
 			&aggregate.CacheWriteCostUsd, &aggregate.ThinkingTokens, &aggregate.InputImageTokens, &aggregate.OutputImageTokens,
-			&aggregate.TotalCostUsd, &aggregate.LastUsedAt); err != nil {
+			&aggregate.TotalCostUsd, &aggregate.SuccessCount, &aggregate.ErrorCount,
+			&aggregate.FirstTokenMsSum, &aggregate.FirstTokenMsCount, &aggregate.DurationMsSum, &aggregate.DurationMsCount,
+			&aggregate.LastUsedAt); err != nil {
 			return nil, err
 		}
 		aggregate.TeamFilterID = teamID
@@ -431,7 +469,9 @@ func (s *Store) userUsageRows(ctx context.Context, filters UsageFilters, access 
 			&aggregate.RequestCount, &aggregate.InputTokens, &aggregate.OutputTokens,
 			&aggregate.CacheReadTokens, &aggregate.CacheReadCostUsd, &aggregate.CacheWriteTokens, &aggregate.CacheWrite1hTokens,
 			&aggregate.CacheWriteCostUsd, &aggregate.ThinkingTokens, &aggregate.InputImageTokens, &aggregate.OutputImageTokens,
-			&aggregate.TotalCostUsd, &aggregate.LastUsedAt); err != nil {
+			&aggregate.TotalCostUsd, &aggregate.SuccessCount, &aggregate.ErrorCount,
+			&aggregate.FirstTokenMsSum, &aggregate.FirstTokenMsCount, &aggregate.DurationMsSum, &aggregate.DurationMsCount,
+			&aggregate.LastUsedAt); err != nil {
 			return nil, err
 		}
 		aggregate.TeamFilterID = teamID

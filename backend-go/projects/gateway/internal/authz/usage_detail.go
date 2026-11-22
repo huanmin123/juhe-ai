@@ -411,7 +411,7 @@ func (s *Store) findScopedUsageGrant(ctx context.Context, id string, access acce
 	if grant.GranteeTeamID.Valid {
 		var exists int
 		if err := s.db.QueryRowContext(ctx, s.bind(`SELECT 1 FROM `+s.table("system_team_members")+`
-			WHERE team_id = ? AND system_account_id = ? AND status = 'active' LIMIT 1`),
+			WHERE team_id = ? AND system_account_id = ? LIMIT 1`),
 			grant.GranteeTeamID.String, viewer).Scan(&exists); err == nil {
 			return grant, nil
 		} else if err != sql.ErrNoRows {

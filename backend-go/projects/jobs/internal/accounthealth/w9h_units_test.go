@@ -45,35 +45,6 @@ func TestW9HCredentialEnvelopeArms(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Quota limits
-// ---------------------------------------------------------------------------
-
-func TestW9HParseDirectQuotaLimitsArms(t *testing.T) {
-	if _, err := ParseDirectQuotaLimits("{bad"); err == nil || !strings.Contains(err.Error(), "解析 authorization limits 失败") {
-		t.Fatalf("bad json err=%v", err)
-	}
-	if _, err := ParseDirectQuotaLimits(`{"daily":{"enabled":true,"limit":-1}}`); err == nil || !strings.Contains(err.Error(), "quota limit 无效") {
-		t.Fatalf("negative limit err=%v", err)
-	}
-	if _, err := ParseDirectQuotaLimits(`{"hourly":{"enabled":true,"limit":5,"hours":0}}`); err == nil || !strings.Contains(err.Error(), "hourly quota limit 无效") {
-		t.Fatalf("hourly hours err=%v", err)
-	}
-	limits, err := ParseDirectQuotaLimits(`{"daily":{"enabled":true,"limit":10},"weekly":{"enabled":false,"limit":0},"total":{"enabled":true,"limit":100}}`)
-	if err != nil || limits.Daily == nil || limits.Total == nil || limits.Weekly == nil {
-		t.Fatalf("limits=%+v err=%v", limits, err)
-	}
-	if DirectQuotaExceeded(limits, DirectQuotaCosts{Daily: 9.9, Total: 99.9}) {
-		t.Fatal("below-limit costs must not exceed")
-	}
-	if !DirectQuotaExceeded(limits, DirectQuotaCosts{Daily: 1, Total: 100}) {
-		t.Fatal("total at limit must exceed")
-	}
-	if DirectQuotaExceeded(DirectQuotaLimits{}, DirectQuotaCosts{Total: 9999}) {
-		t.Fatal("no limits never exceeds")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Probe request file validation
 // ---------------------------------------------------------------------------
 

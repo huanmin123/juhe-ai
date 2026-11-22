@@ -236,11 +236,14 @@ const ApiKeyMenuIcon = () =>
   ])
 
 const menuIconMap = {
-  // 演练场四页（演练场设计 §2）：模型能力试玩台，对话/图片/视频/语音同组区分图标。
+  // 演练场六页（演练场设计 §2）：模型能力试玩台，对话/图片/视频/语音/向量/重排
+  // 同组区分图标（向量 ClusterOutlined、重排 SortAscendingOutlined 与 AI 账户六域同款）。
   '/playground/chat': ExperimentOutlined,
   '/playground/images': PictureOutlined,
   '/playground/videos': VideoCameraOutlined,
   '/playground/speech': AudioOutlined,
+  '/playground/embeddings': ClusterOutlined,
+  '/playground/rerank': SortAscendingOutlined,
   '/my-models': AppstoreOutlined,
   // 模型广场（模型广场页与供应商目录退役设计 §4）：双路由同组件，沿用同款网格图标。
   '/models': AppstoreOutlined,

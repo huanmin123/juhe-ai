@@ -48,7 +48,6 @@ describe('systemTeamsApi 请求形状', () => {
     await systemTeamsApi.list()
     await systemTeamsApi.detail('t-1')
     await systemTeamsApi.members('t-1')
-    await systemTeamsApi.memberHistory('t-1')
     await systemTeamsApi.create({ name: '团队' })
     await systemTeamsApi.update('t-1', { expectedUpdatedAt: 'ts', name: '改名' } as never)
     await systemTeamsApi.addMembers('t-1', { systemAccountIds: ['sa-1'], expectedUpdatedAt: 'ts' } as never)
@@ -57,7 +56,6 @@ describe('systemTeamsApi 请求形状', () => {
       ['GET', '/system-teams'],
       ['GET', '/system-teams/t-1'],
       ['GET', '/system-teams/t-1/members'],
-      ['GET', '/system-teams/t-1/members/history'],
       ['POST', '/system-teams'],
       ['PATCH', '/system-teams/t-1'],
       ['POST', '/system-teams/t-1/members'],
@@ -93,12 +91,10 @@ describe('myTeamsApi 请求形状', () => {
     await myTeamsApi.list()
     await myTeamsApi.detail('t-1')
     await myTeamsApi.members('t-1')
-    await myTeamsApi.memberHistory('t-1')
     expect(requestShapes()).toEqual([
       ['GET', '/my-teams'],
       ['GET', '/my-teams/t-1'],
-      ['GET', '/my-teams/t-1/members'],
-      ['GET', '/my-teams/t-1/members/history']
+      ['GET', '/my-teams/t-1/members']
     ])
   })
 

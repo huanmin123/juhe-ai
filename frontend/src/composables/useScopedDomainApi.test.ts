@@ -35,8 +35,8 @@ vi.mock('@/api/client', () => {
       myOperationLogs: ns(['list', 'detail']),
       routeStrategies: ns(['list', 'options', 'detail', 'speedFirstRuntime', 'editBasicDetail', 'create', 'update', 'delete']),
       myRouteStrategies: ns(['list', 'options', 'detail', 'speedFirstRuntime', 'editBasicDetail', 'create', 'update', 'delete']),
-      systemTeams: ns(['list', 'detail', 'members', 'memberHistory']),
-      myTeams: ns(['list', 'detail', 'members', 'memberHistory'])
+      systemTeams: ns(['list', 'detail', 'members']),
+      myTeams: ns(['list', 'detail', 'members'])
     }
   }
 })
@@ -171,7 +171,6 @@ const scopes: ScopeSpec[] = [
       list: { args: [{ page: 1 }] },
       detail: { args: ['id-1', undefined], selfArgs: ['id-1'] },
       members: { args: ['id-1', undefined], selfArgs: ['id-1'] },
-      memberHistory: { args: ['id-1', { page: 1 }] }
     }
   }
 ]

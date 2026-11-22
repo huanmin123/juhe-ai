@@ -61,10 +61,6 @@ func (f *fakeRevalidateEffects) ClearAPIKeyTransientFailure(context.Context, str
 
 func (f *fakeRevalidateEffects) DispatchAccountHealthCheck(string, string) {}
 
-func (f *fakeRevalidateEffects) AuthorizationQuotaExceeded(context.Context, AuthorizationQuotaCheckInput) (bool, error) {
-	return false, nil
-}
-
 func (f *fakeRevalidateEffects) APIKeyPoolAllUnavailable(context.Context, string) (bool, error) {
 	return false, nil
 }

@@ -535,9 +535,7 @@ var postgresSchemaBusinessTables = []PGStatement{
       team_id text NOT NULL,
       system_account_id text NOT NULL,
       member_role text NOT NULL DEFAULT 'member',
-      status text NOT NULL DEFAULT 'active',
       joined_at text NOT NULL,
-      removed_at text,
       created_by text NOT NULL,
       created_at text NOT NULL,
       updated_at text NOT NULL,
@@ -3073,5 +3071,51 @@ $$`,
 		SchemaName: "juhe_business",
 		Source:     "playground-artifacts",
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_playground_artifacts_created_at ON playground_artifacts (created_at)`,
+	},
+	{
+		// 演练场图像工作台（2026-11-22 用户裁决：生图改异步任务 + 生成历史
+		// 卡片；结果图/参考图保留 7 天到期删字节，任务记录长期保留）。
+		// playground_artifacts 加 job_id 列关联图像产物与参考图（speech/video
+		// 为空串）；任务记录独立成表，记录行永不删除。DEFAULT + jsonb_typeof
+		// CHECK 与 models 能力声明三列同构。
+		SchemaName: "juhe_business",
+		Source:     "playground-artifacts",
+		SQL:        `ALTER TABLE playground_artifacts ADD COLUMN IF NOT EXISTS job_id text NOT NULL DEFAULT ''`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "playground-image-jobs",
+		SQL: `CREATE TABLE IF NOT EXISTS playground_image_jobs (
+	      system_account_id text NOT NULL,
+	      id text NOT NULL,
+	      status text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','running','completed','failed')),
+	      account_id text NOT NULL,
+	      model_id text NOT NULL,
+	      prompt text NOT NULL,
+	      params jsonb NOT NULL DEFAULT '{}' CHECK (jsonb_typeof(params::jsonb) = 'object'),
+	      result_artifact_ids jsonb NOT NULL DEFAULT '[]' CHECK (jsonb_typeof(result_artifact_ids::jsonb) = 'array'),
+	      reference_artifact_ids jsonb NOT NULL DEFAULT '[]' CHECK (jsonb_typeof(reference_artifact_ids::jsonb) = 'array'),
+	      input_tokens bigint NOT NULL DEFAULT 0,
+	      output_tokens bigint NOT NULL DEFAULT 0,
+	      total_tokens bigint NOT NULL DEFAULT 0,
+	      cost_usd double precision,
+	      error_message text NOT NULL DEFAULT '',
+	      images_expired boolean NOT NULL DEFAULT false,
+	      expires_at bigint NOT NULL DEFAULT 0,
+	      created_at bigint NOT NULL,
+	      updated_at bigint NOT NULL,
+	      completed_at bigint NOT NULL DEFAULT 0,
+	      PRIMARY KEY (system_account_id, id)
+	    )`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "playground-image-jobs",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_playground_image_jobs_account_created ON playground_image_jobs (system_account_id, created_at DESC)`,
+	},
+	{
+		SchemaName: "juhe_business",
+		Source:     "playground-image-jobs",
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_playground_image_jobs_expiry ON playground_image_jobs (expires_at) WHERE expires_at > 0`,
 	},
 }

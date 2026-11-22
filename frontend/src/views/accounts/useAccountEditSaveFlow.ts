@@ -15,7 +15,6 @@ import { ref, watch, type ComputedRef, type Ref } from 'vue'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
-import { isAuthorizedAccount } from './accountFormatters'
 import { buildOAuthCreatePayload, openAIOAuthClientPayload } from './accountOAuthPayload'
 import type { AccountScopeParams } from './accountOperationScope'
 import {
@@ -34,7 +33,6 @@ import { managedOAuthProviderKind, type ManagedOAuthProviderKind } from './accou
 import { normalizeGrokSsoTokens } from './grokSsoTokens'
 import {
   normalizeFormTagNames,
-  sameTagNames,
   type AccountModelSelectOption
 } from './accountEditFormPayload'
 import {
@@ -60,7 +58,6 @@ interface UseAccountEditSaveFlowOptions {
   editingAdvancedBaseline: Ref<AccountSavePayload | undefined>
   editingBasicBaseline: ReadonlyValue<AccountBasicEditSnapshot | undefined>
   editingAccountScopeParams: () => AccountScopeParams
-  editingAuthorizedAccount: ComputedRef<boolean>
   editingId: Ref<string | undefined>
   extractApiErrorMessage: (error: unknown, fallback: string) => string
   form: AccountFormModel
@@ -107,10 +104,6 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
   const saveAccount = submitAction('accounts.save', async () => {
     if (pendingCreatedLock.value) {
       await retryPendingCreatedLock()
-      return
-    }
-    if (options.editingAuthorizedAccount.value) {
-      await saveAuthorizedAccountEdit()
       return
     }
 
@@ -285,63 +278,6 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       message.error(options.extractApiErrorMessage(error, '生成授权链接失败'))
     } finally {
       authLoading.value = false
-    }
-  }
-
-  async function saveAuthorizedAccountEdit(): Promise<void> {
-    const account = options.accounts.value.find((item) => item.id === options.editingId.value)
-    if (!options.editingId.value || !account || !isAuthorizedAccount(account)) {
-      message.warning('请选择要编辑的授权账户')
-      return
-    }
-    if (!options.form.groupId) {
-      message.warning('请选择加入分组')
-      return
-    }
-    const priority = Number(options.form.priority)
-    if (!Number.isFinite(priority) || priority < 0) {
-      message.warning('优先级必须是大于等于 0 的整数')
-      return
-    }
-    const nextPriority = Math.trunc(priority)
-    const scopeParams = options.editingAccountScopeParams()
-    const expectedConfigRevision = account.configRevision
-    if (!Number.isInteger(expectedConfigRevision) || Number(expectedConfigRevision) < 1) {
-      message.error('账户配置版本缺失，请刷新列表后重试')
-      return
-    }
-    const payload: Record<string, unknown> & { expectedConfigRevision: number } = {
-      expectedConfigRevision: Number(expectedConfigRevision)
-    }
-    if (options.form.groupId !== account.boundGroupId) payload.groupId = options.form.groupId
-    if (nextPriority !== account.priority) payload.priority = nextPriority
-    if (!sameTagNames(options.form.tags, account.tags)) {
-      payload.tags = normalizeFormTagNames(options.form.tags)
-    }
-    const lockConfigChanged = accountLockConfigChanged(options.form, options.editingAccountAdvancedDetail.value)
-    if (Object.keys(payload).length === 1 && !lockConfigChanged) {
-      finishUnchangedEdit()
-      return
-    }
-    try {
-      let lockConfigRevision = Number(expectedConfigRevision)
-      if (Object.keys(payload).length > 1) {
-        const updated = options.isManagementView.value
-          ? await api.accounts.update(account.id, payload, scopeParams)
-          : await api.myAccounts.update(account.id, payload)
-        await refreshEditedAccountRows(updated)
-        lockConfigRevision = updated.configRevision
-        syncLoadedAccountRevision(updated.configRevision)
-      }
-      if (lockConfigChanged) {
-        await updateAccountLockConfig(account.id, lockConfigRevision)
-        syncLoadedAccountLockConfig(lockConfigRevision + 1)
-      }
-      message.success('授权账户已更新')
-      options.modalOpen.value = false
-    } catch (error) {
-      console.error(error)
-      message.error(options.extractApiErrorMessage(error, '保存授权账户失败'))
     }
   }
 

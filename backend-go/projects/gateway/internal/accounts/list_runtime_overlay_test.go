@@ -16,8 +16,7 @@ import (
 	"errors"
 	"net/http"
 	"testing"
-
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authz"
+	"time"
 )
 
 // fakeRuntimeAvailabilitySource records the requested runtime keys and serves
@@ -258,18 +257,20 @@ func TestListPageRuntimeOverlaySourceErrorDegrades(t *testing.T) {
 //
 // 修复前必红：overlay 字段不存在，且 effective.status 恒基线实例臂。
 func TestListPageAuthorizedInstanceRuntimeOverlayKeyDerivation(t *testing.T) {
-	env, authzStore := newAuthorizedTestEnv(t)
+	env, _ := newAuthorizedTestEnv(t)
 	ownerID := env.login(t, "owner1", "owner-pass", "user")
 	memberID := env.login(t, "member1", "member-pass", "user")
 	env.seedAccount(t, "acc-rt-src", ownerID, "运行态源账户", "active")
 	env.seedProviderAndDefaultGroup(t, memberID)
 	env.seedTeamMember(t, "team-rt", ownerID, memberID)
-	if _, err := authzStore.Create(context.Background(), authz.CreateInput{
-		ResourceType: "account", ResourceID: "acc-rt-src",
-		GranteeType: "team", GranteeID: "team-rt",
-	}, ownerID); err != nil {
-		t.Fatal(err)
-	}
+	// 授权大简化后团队发放不直接落 runtime 行；本测只关注 overlay 派生键，
+	// 直接种一条已领取形态的 runtime 行。
+	nowSeed := time.Now().UTC().Format(time.RFC3339Nano)
+	env.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id,
+		resource_owner_system_account_id, grantee_system_account_id, scope, status,
+		effective_source_type, effective_source_team_id, created_by, created_at, updated_at)
+		VALUES ('ra-rt-inst', 'account', 'acc-rt-src', ?, ?, 'use', 'active',
+		'manual', 'team-rt', ?, ?, ?)`, ownerID, memberID, ownerID, nowSeed, nowSeed)
 	runtimeID := env.queryCell(t, `SELECT id FROM resource_authorizations
 		WHERE grantee_system_account_id = ? AND resource_id = 'acc-rt-src'`, memberID)
 	if runtimeID == "" {

@@ -50,7 +50,8 @@ function handleActionClick(key: string) {
     emit('delete')
     return
   }
-  if (key === 'edit') {
+  // 授权实例详情复用编辑弹窗链路（openEdit 内部按 accessType 走只读授权分支）。
+  if (key === 'edit' || key === 'detail') {
     emit('edit')
     return
   }

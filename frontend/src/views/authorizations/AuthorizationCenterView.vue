@@ -2,9 +2,20 @@
   <a-card class="page-card responsive-page-card authorization-center">
     <template #title>
       <div class="authorization-center__title">
-        <span>{{ isManagementView ? '统一授权' : '授权中心' }}</span>
-        <a-tag v-if="summary && !isManagementView" color="blue">待领取 {{ summary.pendingSources }}</a-tag>
-        <a-tag v-if="summary && !isManagementView" color="green">生效中 {{ summary.activeSources ?? 0 }}</a-tag>
+        <nav class="authorization-center__tabs-nav" aria-label="授权中心页签">
+          <button
+            v-for="tab in tabs"
+            :key="tab.key"
+            type="button"
+            class="authorization-center__tab"
+            :class="{ 'is-active': activeTab === tab.key }"
+            @click="switchTab(tab.key)"
+          >{{ tab.label }}</button>
+        </nav>
+        <template v-if="summary && !isManagementView">
+          <a-tag color="blue">待领取 {{ summary.pendingSources }}</a-tag>
+          <a-tag color="green">生效中 {{ summary.activeSources ?? 0 }}</a-tag>
+        </template>
       </div>
     </template>
     <template #extra>
@@ -14,24 +25,21 @@
       </a-space>
     </template>
 
-    <a-tabs v-model:active-key="activeTab" class="authorization-center__tabs" @change="handleTabChange">
-      <a-tab-pane v-for="tab in tabs" :key="tab.key" :tab="tab.label">
-        <a-alert
-          v-if="tab.key === 'inbound'"
-          type="info"
-          show-icon
-          message="收到的授权需要你主动领取：分组授权领取后直接生效；账户授权领取时选择你的一个分组，一步进组生效。"
-          style="margin-bottom: 12px"
-        />
+    <div v-show="activeTab === 'inbound'" class="authorization-center__pane">
+      <a-alert
+        type="info"
+        show-icon
+        message="收到的授权需要你主动领取：分组授权领取后直接生效；账户授权领取后绑入你的默认分组并生效。"
+        style="margin-bottom: 12px"
+      />
 
-        <template v-if="tab.key === 'inbound'">
-          <ResponsiveDataList
-            table-class="page-table authorization-center-table"
-            :columns="sourceColumns"
+      <ResponsiveDataList
+        table-class="page-table authorization-center-table"
+        :columns="sourceColumns"
             :data-source="sources"
             row-key="sourceId"
             :loading="loading"
-            :scroll-x="1270"
+            :scroll-x="990"
             size="middle"
           >
             <template #emptyText>
@@ -43,6 +51,7 @@
               </template>
               <template v-else-if="column.key === 'resourceType'">
                 <a-tag>{{ record.resourceType === 'group' ? '分组' : '账户' }}</a-tag>
+                <a-tag v-if="record.resourceType === 'account' && record.bound" color="green">绑定</a-tag>
               </template>
               <template v-else-if="column.key === 'owner'">
                 {{ record.resourceOwnerName || record.resourceOwnerSystemAccountId }}
@@ -52,31 +61,27 @@
                   {{ record.sourceType === 'team' ? `团队：${record.teamName || record.teamId}` : '个人' }}
                 </a-tag>
               </template>
-              <template v-else-if="column.key === 'vendor'">
-                {{ record.vendorCode || '—' }}
-              </template>
               <template v-else-if="column.key === 'status'">
                 <a-tag :color="statusColor(record.status)">{{ statusLabel(record.status) }}</a-tag>
               </template>
               <template v-else-if="column.key === 'expiry'">
                 {{ record.expiresAt ? formatTime(record.expiresAt) : '长期有效' }}
               </template>
-              <template v-else-if="column.key === 'binding'">
-                <a-tag v-if="record.resourceType === 'account'" :color="record.bound ? 'green' : 'default'">
-                  {{ record.bound ? '已绑定分组' : '未绑定分组' }}
-                </a-tag>
-                <span v-else class="authorization-center__muted">—</span>
-              </template>
               <template v-else-if="column.key === 'actions'">
                 <a-space wrap>
-                  <a-button v-if="record.canAccept" size="small" type="primary" @click="openAccept(record)">领取</a-button>
+                  <a-popconfirm
+                    v-if="record.canAccept"
+                    :title="record.resourceType === 'account' ? '领取后绑入你的默认分组并生效，确定领取？' : '领取后该授权立即生效，确定领取？'"
+                    @confirm="run(() => api.myAuthorizationCenter.accept(record.sourceId), '已领取，授权已生效')"
+                  >
+                    <a-button size="small" type="primary">领取</a-button>
+                  </a-popconfirm>
                   <a-popconfirm v-if="record.canReturn" title="归还后该来源立即不可用，确定归还？" @confirm="run(() => api.myAuthorizationCenter.return(record.sourceId), '已归还来源')">
                     <a-button size="small" danger>归还</a-button>
                   </a-popconfirm>
                   <a-popconfirm v-if="record.canDecline" title="拒绝后该授权作废，确定拒绝？" @confirm="run(() => api.myAuthorizationCenter.decline(record.sourceId), '已拒绝授权')">
                     <a-button size="small" danger>拒绝</a-button>
                   </a-popconfirm>
-                  <a-button size="small" type="link" @click="openDetail(record)">详情</a-button>
                 </a-space>
               </template>
             </template>
@@ -86,6 +91,7 @@
                   <div class="mobile-list-card-title">{{ record.resourceName || record.resourceId }}</div>
                   <div class="mobile-list-card-tags">
                     <a-tag>{{ record.resourceType === 'group' ? '分组' : '账户' }}</a-tag>
+                    <a-tag v-if="record.resourceType === 'account' && record.bound" color="green">绑定</a-tag>
                     <a-tag :color="statusColor(record.status)">{{ statusLabel(record.status) }}</a-tag>
                   </div>
                 </div>
@@ -104,21 +110,26 @@
                   </div>
                 </div>
                 <a-space wrap style="margin-top: 10px">
-                  <a-button v-if="record.canAccept" size="small" type="primary" @click="openAccept(record)">领取</a-button>
+                  <a-popconfirm
+                    v-if="record.canAccept"
+                    :title="record.resourceType === 'account' ? '领取后绑入你的默认分组并生效，确定领取？' : '领取后该授权立即生效，确定领取？'"
+                    @confirm="run(() => api.myAuthorizationCenter.accept(record.sourceId), '已领取，授权已生效')"
+                  >
+                    <a-button size="small" type="primary">领取</a-button>
+                  </a-popconfirm>
                   <a-popconfirm v-if="record.canReturn" title="归还后该来源立即不可用，确定归还？" @confirm="run(() => api.myAuthorizationCenter.return(record.sourceId), '已归还来源')">
                     <a-button size="small" danger>归还</a-button>
                   </a-popconfirm>
                   <a-popconfirm v-if="record.canDecline" title="拒绝后该授权作废，确定拒绝？" @confirm="run(() => api.myAuthorizationCenter.decline(record.sourceId), '已拒绝授权')">
                     <a-button size="small" danger>拒绝</a-button>
                   </a-popconfirm>
-                  <a-button size="small" type="link" @click="openDetail(record)">详情</a-button>
                 </a-space>
               </article>
             </template>
           </ResponsiveDataList>
-        </template>
+    </div>
 
-        <template v-else-if="tab.key === 'outbound' || tab.key === 'owned' || tab.key === 'all'">
+    <div v-show="activeTab !== 'inbound'" class="authorization-center__pane">
           <ResponsiveDataList
             table-class="page-table authorization-center-table"
             :columns="offerColumns"
@@ -202,82 +213,7 @@
               </article>
             </template>
           </ResponsiveDataList>
-        </template>
-      </a-tab-pane>
-    </a-tabs>
-
-    <a-modal v-model:open="detailOpen" title="授权来源详情" :footer="null" width="760px">
-      <template v-if="detail">
-        <a-descriptions :column="2" bordered size="small">
-          <a-descriptions-item label="资源">{{ detail.resourceName || detail.resourceId }}</a-descriptions-item>
-          <a-descriptions-item label="类型">{{ detail.resourceType === 'group' ? '授权分组' : '授权账户' }}</a-descriptions-item>
-          <a-descriptions-item label="授权方">{{ detail.resourceOwnerName || detail.resourceOwnerSystemAccountId }}</a-descriptions-item>
-          <a-descriptions-item label="来源">{{ detail.sourceType === 'team' ? `团队 ${detail.teamName || detail.teamId}` : '个人授权' }}</a-descriptions-item>
-          <a-descriptions-item label="供应商">{{ detail.vendorCode || '—' }}</a-descriptions-item>
-          <a-descriptions-item label="到期">{{ detail.expiresAt ? formatTime(detail.expiresAt) : '长期有效' }}</a-descriptions-item>
-          <a-descriptions-item label="运行态">{{ detail.runtimeStatus || '—' }}</a-descriptions-item>
-          <a-descriptions-item label="代理">{{ detail.proxySummary || '—' }}</a-descriptions-item>
-        </a-descriptions>
-        <a-divider orientation="left">可使用的上游连接</a-divider>
-        <a-empty v-if="!detail.connections?.length" description="无连接信息" />
-        <a-list v-else size="small" :data-source="detail.connections">
-          <template #renderItem="{ item }">
-            <a-list-item>
-              <div>
-                <div>{{ item.protocolSurfaceCode }} · {{ item.connectionPresetCode }}</div>
-                <div class="authorization-center__muted">{{ item.baseUrl }}</div>
-                <div class="authorization-center__muted">endpoint modes：{{ item.endpointModes?.join('、') || '默认' }}</div>
-              </div>
-            </a-list-item>
-          </template>
-        </a-list>
-        <a-divider orientation="left">支持模型</a-divider>
-        <a-space wrap>
-          <a-tag v-for="model in detail.supportedModels || []" :key="model">{{ model }}</a-tag>
-          <span v-if="!detail.supportedModels?.length" class="authorization-center__muted">未限制/未配置</span>
-        </a-space>
-      </template>
-    </a-modal>
-
-    <a-modal
-      v-model:open="acceptOpen"
-      title="领取授权"
-      :confirm-loading="acting"
-      ok-text="确认领取"
-      @ok="confirmAccept"
-    >
-      <template v-if="acceptTarget">
-        <a-alert
-          type="info"
-          show-icon
-          :message="acceptTarget.resourceType === 'account'
-            ? '账户授权领取时选择你的一个分组，领取即一步进组生效。'
-            : '分组授权领取后直接生效。'"
-          style="margin-bottom: 12px"
-        />
-        <a-descriptions :column="1" bordered size="small">
-          <a-descriptions-item label="资源">{{ acceptTarget.resourceName || acceptTarget.resourceId }}</a-descriptions-item>
-          <a-descriptions-item label="授权方">{{ acceptTarget.resourceOwnerName || acceptTarget.resourceOwnerSystemAccountId }}</a-descriptions-item>
-          <a-descriptions-item label="上游地址">{{ acceptConnectionHosts.join('、') || '—' }}</a-descriptions-item>
-          <a-descriptions-item label="代理摘要">{{ acceptTarget.proxySummary || '—' }}</a-descriptions-item>
-          <a-descriptions-item label="支持模型数">{{ acceptModelCount }}</a-descriptions-item>
-          <a-descriptions-item label="到期">{{ acceptTarget.expiresAt ? formatTime(acceptTarget.expiresAt) : '长期有效' }}</a-descriptions-item>
-        </a-descriptions>
-        <a-form-item v-if="acceptTarget.resourceType === 'account'" required label="领取到分组" style="margin-top: 12px">
-          <a-select
-            v-model:value="acceptTargetGroupId"
-            :options="acceptGroupOptions"
-            :loading="acceptGroupLoading"
-            show-search
-            option-filter-prop="label"
-            placeholder="选择你的一个分组"
-          />
-          <div v-if="!acceptGroupLoading && !acceptGroupOptions.length" class="authorization-center__muted" style="margin-top: 8px">
-            暂无可选分组，请先创建分组后再领取。
-          </div>
-        </a-form-item>
-      </template>
-    </a-modal>
+    </div>
 
     <a-modal
       v-model:open="extendOpen"
@@ -374,7 +310,6 @@ import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import type {
   AuthorizationInboxSummary,
   AuthorizationOfferSummary,
-  AuthorizationSourceDetail,
   AuthorizationSourceSummary
 } from '@/api/domains/authorizationGovernance'
 import { createAuthorizationSearchScheduler } from '@/views/authorizations/authorizationSearchScheduler'
@@ -403,29 +338,6 @@ const sources = ref<AuthorizationSourceSummary[]>([])
 const offers = ref<AuthorizationOfferSummary[]>([])
 // 列表数据由后端单次全量返回（上限 500 条）：分页交给 ResponsiveDataList
 // 的默认客户端分页（每页 20 条 + 总数），滚动高度由组件按容器量测。
-const detail = ref<AuthorizationSourceDetail>()
-const detailOpen = ref(false)
-const acceptOpen = ref(false)
-const acceptTarget = ref<AuthorizationSourceSummary>()
-const acceptTargetGroupId = ref<string>()
-const acceptGroupOptions = ref<ResourceOption[]>([])
-const acceptGroupLoading = ref(false)
-// 上游地址从详情连接派生；列表摘要不再承载该聚合字段。
-const acceptConnectionHosts = computed(() => {
-  const connections = (acceptTarget.value as AuthorizationSourceDetail | undefined)?.connections ?? []
-  const hosts = new Set<string>()
-  for (const conn of connections) {
-    try {
-      hosts.add(new URL(conn.baseUrl).host)
-    } catch {
-      hosts.add(conn.baseUrl)
-    }
-  }
-  return [...hosts]
-})
-const acceptModelCount = computed(() =>
-  (acceptTarget.value as AuthorizationSourceDetail | undefined)?.supportedModels?.length ?? 0
-)
 const extendOpen = ref(false)
 const extendTarget = ref<AuthorizationOfferSummary>()
 const extendDate = ref<Dayjs>(dayjs().add(30, 'day'))
@@ -464,23 +376,20 @@ const tabs = computed(() => {
   }
   return [
     { key: 'inbound', label: '收到的授权' },
-    { key: 'outbound', label: '我发出的授权' },
-    { key: 'owned', label: '我的资源授权' }
+    { key: 'outbound', label: '我发出的授权' }
   ]
 })
 
-// 列设计约束：一列只承载一个字段；grant ID、来源细分数、代理摘要等
-// 次要信息走 rowKey 或「详情」弹窗，不挤进表格列。
+// 列设计约束：一列只承载一个字段；grant ID、来源细分数等次要信息走
+// rowKey，不挤进表格列。
 const sourceColumns = [
   { title: '资源名称', key: 'resource', width: 170 },
-  { title: '类型', key: 'resourceType', width: 80 },
+  { title: '类型', key: 'resourceType', width: 130 },
   { title: '授权方', key: 'owner', width: 120 },
   { title: '来源', key: 'source', width: 120 },
-  { title: '供应商', key: 'vendor', width: 100 },
   { title: '状态', key: 'status', width: 120 },
   { title: '到期时间', key: 'expiry', width: 140 },
-  { title: '绑定', key: 'binding', width: 120 },
-  { title: '操作', key: 'actions', width: 300 }
+  { title: '操作', key: 'actions', width: 240 }
 ]
 
 const offerColumns = [
@@ -571,14 +480,14 @@ async function loadActiveTab() {
     sources.value = await api.myAuthorizationCenter.inbound()
   } else if (activeTab.value === 'outbound') {
     offers.value = await api.myAuthorizationCenter.outbound()
-  } else if (activeTab.value === 'owned') {
-    offers.value = await api.myAuthorizationCenter.owned()
   } else if (activeTab.value === 'all') {
     offers.value = await api.authorizationCenter.list()
   }
 }
 
-function handleTabChange() {
+function switchTab(key: string) {
+  if (activeTab.value === key) return
+  activeTab.value = key
   refresh()
 }
 
@@ -587,65 +496,6 @@ async function run(action: () => Promise<unknown>, success: string) {
   try {
     await action()
     message.success(success)
-    await refresh()
-  } catch (error) {
-    message.error(errorMessage(error))
-  } finally {
-    acting.value = false
-  }
-}
-
-async function openDetail(record: AuthorizationSourceSummary) {
-  try {
-    detail.value = await api.myAuthorizationCenter.sourceDetail(record.sourceId)
-    detailOpen.value = true
-  } catch (error) {
-    message.error(errorMessage(error))
-  }
-}
-
-async function openAccept(record: AuthorizationSourceSummary) {
-  acceptTarget.value = record
-  acceptTargetGroupId.value = undefined
-  acceptGroupOptions.value = []
-  acceptOpen.value = true
-  if (record.resourceType === 'account') {
-    void loadAcceptGroupOptions()
-  }
-  try {
-    // 上游地址与模型明细不在列表摘要里，领取前按需拉取完整来源详情。
-    acceptTarget.value = await api.myAuthorizationCenter.sourceDetail(record.sourceId)
-  } catch {
-    // 详情拉取失败时保留列表摘要，领取动作仍可继续。
-  }
-}
-
-async function loadAcceptGroupOptions() {
-  acceptGroupLoading.value = true
-  try {
-    const groups = await api.myGroups.authorizationOptions()
-    acceptGroupOptions.value = groups.map((item) => ({ value: item.id, label: item.name }))
-  } catch (error) {
-    message.error(errorMessage(error))
-  } finally {
-    acceptGroupLoading.value = false
-  }
-}
-
-async function confirmAccept() {
-  const target = acceptTarget.value
-  if (!target) return
-  if (target.resourceType === 'account' && !acceptTargetGroupId.value) {
-    message.error('请选择领取到的分组')
-    return
-  }
-  acting.value = true
-  try {
-    await api.myAuthorizationCenter.accept(target.sourceId, {
-      ...(target.resourceType === 'account' ? { targetGroupId: acceptTargetGroupId.value } : {})
-    })
-    message.success('已领取，授权已生效')
-    acceptOpen.value = false
     await refresh()
   } catch (error) {
     message.error(errorMessage(error))
@@ -847,12 +697,6 @@ onMounted(refresh)
 </script>
 
 <style scoped>
-.authorization-center__title {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-}
 .authorization-center__muted {
   color: var(--text-color-secondary, #8a919f);
   font-size: 12px;
@@ -863,25 +707,44 @@ onMounted(refresh)
   font-size: 12px;
   line-height: 1.5;
 }
+/* 头部一行：标题 + 页签 + 摘要 tag（按钮在 #extra），页签为轻量自绘样式。 */
+.authorization-center__title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+}
+.authorization-center__tabs-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.authorization-center__tab {
+  border: none;
+  background: none;
+  padding: 6px 12px;
+  color: var(--text-color-secondary, #8a919f);
+  font-size: 14px;
+  line-height: 22px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: color 0.2s;
+}
+.authorization-center__tab:hover {
+  color: var(--text-color, #22282b);
+}
+.authorization-center__tab.is-active {
+  color: var(--juhe-primary, #1677ff);
+  font-weight: 500;
+  border-bottom-color: var(--juhe-primary, #1677ff);
+}
 /* responsive-page-card 契约（固定高度 + overflow hidden）要求页面自管内部
-   滚动：把 tabs 高度链打通到视口，ResponsiveDataList 按容器量测出表格
-   scroll.y，列表在卡片内滚动、分页钉在表格底部。 */
-.authorization-center__tabs {
+   滚动：pane 自持高度链，ResponsiveDataList 按容器量测出表格 scroll.y，
+   列表在卡片内滚动、分页钉在表格底部。 */
+.authorization-center__pane {
   display: flex;
   flex: 1 1 auto;
   min-height: 0;
-  flex-direction: column;
-}
-.authorization-center__tabs :deep(.ant-tabs-content-holder) {
-  flex: 1 1 auto;
-  min-height: 0;
-}
-.authorization-center__tabs :deep(.ant-tabs-content),
-.authorization-center__tabs :deep(.ant-tabs-tabpane-active) {
-  height: 100%;
-}
-.authorization-center__tabs :deep(.ant-tabs-tabpane-active) {
-  display: flex;
   flex-direction: column;
   overflow-y: auto;
   overscroll-behavior: contain;

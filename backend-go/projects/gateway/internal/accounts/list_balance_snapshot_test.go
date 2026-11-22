@@ -13,8 +13,7 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
-
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authz"
+	"time"
 )
 
 // 列表余额投影用的固定代次（账户 config_revision 默认 1）。
@@ -227,18 +226,20 @@ func TestListPageBalanceSnapshotEmptyStatsDegrades(t *testing.T) {
 // authorized rows never project the balance trio, even with the query
 // enabled and a matching snapshot stored.
 func TestMyAccountsAuthorizedInstanceHidesBalanceFields(t *testing.T) {
-	env, authzStore := newAuthorizedTestEnv(t)
+	env, _ := newAuthorizedTestEnv(t)
 	ownerID := env.login(t, "owner1", "owner-pass", "user")
 	memberID := env.login(t, "member1", "member-pass", "user")
 	env.seedAccount(t, "acc-bal-src", ownerID, "余额源账户", "active")
 	env.seedProviderAndDefaultGroup(t, memberID)
 	env.seedTeamMember(t, "team-bal", ownerID, memberID)
-	if _, err := authzStore.Create(context.Background(), authz.CreateInput{
-		ResourceType: "account", ResourceID: "acc-bal-src",
-		GranteeType: "team", GranteeID: "team-bal",
-	}, ownerID); err != nil {
-		t.Fatal(err)
-	}
+	// 授权大简化后团队发放不直接落 runtime 行；本测只关注余额字段投影，
+	// 直接种一条已领取形态的 runtime 行。
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	env.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id,
+		resource_owner_system_account_id, grantee_system_account_id, scope, status,
+		effective_source_type, effective_source_team_id, created_by, created_at, updated_at)
+		VALUES ('ra-bal-inst', 'account', 'acc-bal-src', ?, ?, 'use', 'active',
+		'manual', 'team-bal', ?, ?, ?)`, ownerID, memberID, ownerID, now, now)
 	runtimeID := env.queryCell(t, `SELECT id FROM resource_authorizations
 		WHERE grantee_system_account_id = ? AND resource_id = 'acc-bal-src'`, memberID)
 	if runtimeID == "" {

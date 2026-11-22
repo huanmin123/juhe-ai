@@ -139,7 +139,7 @@ export function accountTypeChoicesForProvider(
 
 export function accountEditModalTitle(options: AccountEditModalTitleOptions): string {
   if (options.editingAuthorizedAccount) {
-    return accountEditEditingModalTitle('编辑授权账户', options.editingSystemAccountLabel)
+    return accountEditEditingModalTitle('授权账户详情', options.editingSystemAccountLabel)
   }
   if (options.editingId) {
     return accountEditEditingModalTitle('编辑账户', options.editingSystemAccountLabel)

@@ -10,8 +10,7 @@ import (
 
 // UsageRecordInput 是 shared/platform/usagewriter.UsageRecordInput 的类型别名
 // （2026-11-09 T188）：网关用量记录直投 PG 时与 writer 使用同一内存类型，
-// 热路径不再做 JSON 序列化/反序列化；字段契约由编译期保证。SuppressUsage
-// 仍是 gateway 进程内字段（json:"-"），随别名保留。
+// 热路径不再做 JSON 序列化/反序列化；字段契约由编译期保证。
 type UsageRecordInput = usagewriter.UsageRecordInput
 
 // CostBreakdown / CostLineItem 同样是 usagewriter 的类型别名：异步媒体终态

@@ -12,7 +12,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync"
+	"testing"
+	"time"
 )
 
 // muxRegisterer 用 http.ServeMux 实现 Registerer（pattern 键与 kernel 同格式）。
@@ -166,6 +170,228 @@ func doJSON(mux *http.ServeMux, method, target string, body []byte) *httptest.Re
 	recorder := httptest.NewRecorder()
 	mux.ServeHTTP(recorder, request)
 	return recorder
+}
+
+// fakeImageJobStore 是图像任务存储的内存替身（接口全实现：状态机、卡片归一、
+// 过滤与启动恢复走真实 imageJobCardOf/过滤逻辑的存储语义近似——行数据在内存，
+// 断言聚焦 handler/执行器行为）。terminal 通道在 Complete/Fail 时投递任务 ID
+// 供执行器测试同步等待。
+type fakeImageJobStore struct {
+	mu       sync.Mutex
+	records  map[string]*ImageJobRecord
+	order    []string
+	terminal chan string
+	listErr  error
+}
+
+func newFakeImageJobStore() *fakeImageJobStore {
+	return &fakeImageJobStore{
+		records:  map[string]*ImageJobRecord{},
+		terminal: make(chan string, 16),
+	}
+}
+
+func (s *fakeImageJobStore) Create(job *ImageJobRecord) (ImageJobRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record := *job
+	record.ID = "job_" + strconv.Itoa(len(s.records)+1) + "-fake"
+	record.Status = imageJobStatusQueued
+	now := time.Now().UnixMilli()
+	record.CreatedAt = now
+	record.UpdatedAt = now
+	for _, id := range record.ReferenceIDs {
+		if id == "ref_missing" {
+			return ImageJobRecord{}, errImageJobReferenceNotFound
+		}
+	}
+	s.records[record.ID] = &record
+	s.order = append(s.order, record.ID)
+	return record, nil
+}
+
+func (s *fakeImageJobStore) Claim(viewerID, jobID string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.records[jobID]
+	if !ok || record.ViewerID != viewerID || record.Status != imageJobStatusQueued {
+		return false, nil
+	}
+	record.Status = imageJobStatusRunning
+	record.UpdatedAt = time.Now().UnixMilli()
+	return true, nil
+}
+
+func (s *fakeImageJobStore) Complete(viewerID, jobID string, resultIDs []string, usage ImageJobUsage, costUSD *float64, size string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.records[jobID]
+	if !ok || record.ViewerID != viewerID {
+		return errImageJobNotFound
+	}
+	now := time.Now().UnixMilli()
+	record.Status = imageJobStatusCompleted
+	record.ResultIDs = resultIDs
+	record.InputTokens, record.OutputTokens, record.TotalTokens = usage.InputTokens, usage.OutputTokens, usage.TotalTokens
+	record.CostUSD = costUSD
+	record.CompletedAt = now
+	record.ExpiresAt = now + int64(imageJobRetention/time.Millisecond)
+	record.UpdatedAt = now
+	if size != "" {
+		record.Size = size
+	}
+	s.terminal <- jobID
+	return nil
+}
+
+func (s *fakeImageJobStore) Fail(viewerID, jobID, message string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.records[jobID]
+	if !ok || record.ViewerID != viewerID {
+		return errImageJobNotFound
+	}
+	record.Status = imageJobStatusFailed
+	record.ErrorMessage = message
+	record.UpdatedAt = time.Now().UnixMilli()
+	s.terminal <- jobID
+	return nil
+}
+
+func (s *fakeImageJobStore) Get(viewerID, jobID string) (ImageJobCard, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.records[jobID]
+	if !ok || record.ViewerID != viewerID {
+		return ImageJobCard{}, errImageJobNotFound
+	}
+	return imageJobCardOf(*record, time.Now()), nil
+}
+
+func (s *fakeImageJobStore) List(viewerID string, filter ImageJobFilter) (ImageJobPage, error) {
+	if s.listErr != nil {
+		return ImageJobPage{}, s.listErr
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 24
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	matched := make([]*ImageJobRecord, 0, len(s.records))
+	nowMilli := time.Now().UnixMilli()
+	for _, id := range s.order {
+		record := s.records[id]
+		if record.ViewerID != viewerID {
+			continue
+		}
+		// status 派生态与 pgImageJobStore.List 同口径：active = queued|running；
+		// expired = completed 且（images_expired 或 expires_at 已过）；completed
+		// 收敛为未删完成。
+		deleted := record.ImagesExpired || (record.ExpiresAt > 0 && record.ExpiresAt < nowMilli)
+		switch filter.Status {
+		case imageJobStatusActive:
+			if record.Status != imageJobStatusQueued && record.Status != imageJobStatusRunning {
+				continue
+			}
+		case imageJobStatusExpired:
+			if record.Status != imageJobStatusCompleted || !deleted {
+				continue
+			}
+		case imageJobStatusCompleted:
+			if record.Status != imageJobStatusCompleted || deleted {
+				continue
+			}
+		case imageJobStatusQueued, imageJobStatusRunning, imageJobStatusFailed:
+			if record.Status != filter.Status {
+				continue
+			}
+		case "":
+		}
+		matched = append(matched, record)
+	}
+	// created_at DESC, id DESC（与 pgImageJobStore.List 同序）。
+	for i := 1; i < len(matched); i++ {
+		for j := i; j > 0; j-- {
+			a, b := matched[j-1], matched[j]
+			if a.CreatedAt < b.CreatedAt || (a.CreatedAt == b.CreatedAt && a.ID < b.ID) {
+				matched[j-1], matched[j] = b, a
+			} else {
+				break
+			}
+		}
+	}
+	page := ImageJobPage{Jobs: []ImageJobCard{}}
+	now := time.Now()
+	for _, record := range matched {
+		if len(page.Jobs) >= limit {
+			break
+		}
+		page.Jobs = append(page.Jobs, imageJobCardOf(*record, now))
+	}
+	if len(matched) > len(page.Jobs) && len(page.Jobs) > 0 {
+		page.NextCursor = page.Jobs[len(page.Jobs)-1].CreatedAt
+	}
+	return page, nil
+}
+
+func (s *fakeImageJobStore) RecoverAtBoot() ([]ImageJobRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	queued := make([]ImageJobRecord, 0, len(s.records))
+	for _, id := range s.order {
+		record := s.records[id]
+		switch record.Status {
+		case imageJobStatusQueued:
+			queued = append(queued, *record)
+		case imageJobStatusRunning:
+			record.Status = imageJobStatusFailed
+			record.ErrorMessage = "网关重启，任务中断"
+		}
+	}
+	return queued, nil
+}
+
+// snapshot 返回任务记录副本（执行器终态断言用）。
+func (s *fakeImageJobStore) snapshot(jobID string) (ImageJobRecord, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.records[jobID]
+	if !ok {
+		return ImageJobRecord{}, false
+	}
+	return *record, true
+}
+
+// waitTerminal 等待任务到达终态（Complete/Fail 投递），超时 fatal。
+func (s *fakeImageJobStore) waitTerminal(t *testing.T, timeout time.Duration) string {
+	t.Helper()
+	select {
+	case jobID := <-s.terminal:
+		return jobID
+	case <-time.After(timeout):
+		t.Fatalf("任务 %v 内未到达终态", timeout)
+		return ""
+	}
+}
+
+// fakeImageCost 是计价端口替身（按 (providerCode, model) 查表返回固定价或
+// false，供 costUsd 注入/无价断言）。
+type fakeImageCost struct {
+	price float64
+	ok    bool
+	calls []string
+}
+
+func (f *fakeImageCost) ImageCost(providerCode, model, size string, imageCount int, inputTokens, outputTokens int64) (float64, bool) {
+	f.calls = append(f.calls, providerCode+"\x00"+model+"\x00"+size)
+	if !f.ok {
+		return 0, false
+	}
+	return f.price, true
 }
 
 // pngOnePixel 是最小合法 PNG 字节（魔数 + IHDR 头长度足够过魔数嗅探）。

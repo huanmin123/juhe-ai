@@ -100,20 +100,32 @@ func TestW1ResolveGroupAccessBadGroupType(t *testing.T) {
 	}
 }
 
-// TestW1ResolveGroupAccessAuthorizedGroupLocalSettings 覆盖：
-// 授权组 + local settings enabled=0 时返回 nil。
-func TestW1ResolveGroupAccessAuthorizedGroupLocalSettings(t *testing.T) {
+// TestW1ResolveGroupAccessAuthorizedGroupClaimRowFailClosed 覆盖：授权链
+// 齐全 + 领取行在场 -> authorized；删除领取行 -> nil（settings 行即领取行，
+// fail-closed；enabled/snapshot_revision 列已随授权治理简化退役）。
+func TestW1ResolveGroupAccessAuthorizedGroupClaimRowFailClosed(t *testing.T) {
 	db := newChainFixturePGDatabase(t)
 	for _, ddl := range []string{
 		`CREATE TABLE groups (id TEXT PRIMARY KEY, system_account_id TEXT, enabled INTEGER, group_type TEXT, scheduling_policy_json TEXT)`,
 		`CREATE TABLE resource_authorizations (
 			id TEXT PRIMARY KEY, resource_type TEXT, resource_id TEXT, resource_owner_system_account_id TEXT,
 			grantee_system_account_id TEXT, scope TEXT, status TEXT, expires_at TEXT,
-			effective_source_type TEXT, effective_source_team_id TEXT, limits_json TEXT
+			effective_source_type TEXT, effective_source_team_id TEXT, activated_at TEXT,
+			created_by TEXT, created_at TEXT, updated_at TEXT
 		)`,
+		//（limits_json / enabled / snapshot_revision 列随授权额度域与治理简化退役。）
 		`CREATE TABLE group_authorization_settings (
 			authorization_id TEXT, system_account_id TEXT, group_id TEXT,
-			enabled INTEGER, group_type TEXT, scheduling_policy_json TEXT
+			group_type TEXT, scheduling_policy_json TEXT
+		)`,
+		`CREATE TABLE resource_authorization_grants (
+			id TEXT PRIMARY KEY, resource_type TEXT, resource_id TEXT,
+			resource_owner_system_account_id TEXT, grantee_system_account_id TEXT, scope TEXT,
+			status TEXT, expires_at TEXT, created_by TEXT, created_at TEXT, updated_at TEXT
+		)`,
+		`CREATE TABLE resource_authorization_sources (
+			id TEXT PRIMARY KEY, authorization_id TEXT, source_type TEXT, source_team_id TEXT,
+			status TEXT, grant_id TEXT, activated_at TEXT, created_by TEXT, created_at TEXT, updated_at TEXT
 		)`,
 	} {
 		if _, err := db.Exec(ddl); err != nil {
@@ -123,10 +135,9 @@ func TestW1ResolveGroupAccessAuthorizedGroupLocalSettings(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO groups VALUES ('g_auth', 'sys_owner', 1, 'personal', NULL)`); err != nil {
 		t.Fatalf("insert group: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO resource_authorizations VALUES ('auth_1', 'group', 'g_auth', 'sys_owner', 'grantee_1', 'use', 'active', NULL, NULL, NULL, NULL)`); err != nil {
-		t.Fatalf("insert authz: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO group_authorization_settings VALUES ('auth_1', 'grantee_1', 'g_auth', 0, NULL, NULL)`); err != nil {
+	// 授权链三表齐全（ra + grant 背书 source）。
+	chainSeedAuthorizationClaimChain(t, db, "auth_1", "group", "g_auth", "sys_owner", "grantee_1", "manual", "", "")
+	if _, err := db.Exec(`INSERT INTO group_authorization_settings (authorization_id, system_account_id, group_id) VALUES ('auth_1', 'grantee_1', 'g_auth')`); err != nil {
 		t.Fatalf("insert settings: %v", err)
 	}
 	selector, err := newChainAccountsSelector(db, "test-secret", time.Now, 20)
@@ -134,11 +145,19 @@ func TestW1ResolveGroupAccessAuthorizedGroupLocalSettings(t *testing.T) {
 		t.Fatalf("create selector: %v", err)
 	}
 	meta, err := selector.resolveGroupAccess(context.Background(), "g_auth", "grantee_1")
+	if err != nil || meta == nil || meta.GroupAccessType != gatewayruntimecache.GroupAccessTypeAuthorized {
+		t.Fatalf("链齐全 + 领取行 = (%+v, %v)", meta, err)
+	}
+	// 领取行删除：settings 缺失 fail-closed -> nil。
+	if _, err := db.Exec(`DELETE FROM group_authorization_settings WHERE authorization_id = 'auth_1'`); err != nil {
+		t.Fatalf("delete settings: %v", err)
+	}
+	meta, err = selector.resolveGroupAccess(context.Background(), "g_auth", "grantee_1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if meta != nil {
-		t.Fatalf("must return nil for local-enabled=0: %+v", meta)
+		t.Fatalf("must return nil without the claim row: %+v", meta)
 	}
 }
 
@@ -179,10 +198,17 @@ func TestW1ResolveChainAccountAccessAuthorizedGroupOwnerAccount(t *testing.T) {
 	}
 	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO resource_authorizations (
 		id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id,
-		scope, status, expires_at, effective_source_type, effective_source_team_id, limits_json
-	) VALUES ('authz_g2', 'group', ?, ?, ?, 'use', 'active', '2999-01-01T00:00:00.000Z', NULL, NULL, NULL)`),
+		scope, status, expires_at, effective_source_type, effective_source_team_id
+	) VALUES ('authz_g2', 'group', ?, ?, ?, 'use', 'active', '2999-01-01T00:00:00.000Z', 'manual', NULL)`),
 		fixture.groupID, fixture.systemAccount, grantee); err != nil {
 		t.Fatalf("insert authz: %v", err)
+	}
+	//（send-and-claim 门：授权组 authorized 需 grant 背书 source + 领取行。）
+	chainSeedAuthorizationClaimChain(t, fixture.db, "authz_g2", "group", fixture.groupID,
+		fixture.systemAccount, grantee, "manual", "", "2999-01-01T00:00:00.000Z")
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO group_authorization_settings (authorization_id, system_account_id, group_id)
+		VALUES ('authz_g2', ?, ?)`), grantee, fixture.groupID); err != nil {
+		t.Fatalf("seed settings claim row: %v", err)
 	}
 	groupAccess, err := fixture.selector.resolveGroupAccess(context.Background(), fixture.groupID, grantee)
 	if err != nil {
@@ -225,10 +251,16 @@ func TestW1ResolveChainAccountAccessAuthorizedGroupNonOwnerFiltered(t *testing.T
 	}
 	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO resource_authorizations (
 		id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id,
-		scope, status, expires_at, effective_source_type, effective_source_team_id, limits_json
-	) VALUES ('authz_filtered', 'group', ?, ?, ?, 'use', 'active', '2999-01-01T00:00:00.000Z', NULL, NULL, NULL)`),
+		scope, status, expires_at, effective_source_type, effective_source_team_id
+	) VALUES ('authz_filtered', 'group', ?, ?, ?, 'use', 'active', '2999-01-01T00:00:00.000Z', 'manual', NULL)`),
 		fixture.groupID, fixture.systemAccount, grantee); err != nil {
 		t.Fatalf("insert authz: %v", err)
+	}
+	chainSeedAuthorizationClaimChain(t, fixture.db, "authz_filtered", "group", fixture.groupID,
+		fixture.systemAccount, grantee, "manual", "", "2999-01-01T00:00:00.000Z")
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO group_authorization_settings (authorization_id, system_account_id, group_id)
+		VALUES ('authz_filtered', ?, ?)`), grantee, fixture.groupID); err != nil {
+		t.Fatalf("seed settings claim row: %v", err)
 	}
 	groupAccess, err := fixture.selector.resolveGroupAccess(context.Background(), fixture.groupID, grantee)
 	if err != nil {
@@ -255,11 +287,14 @@ func TestW1ResolveChainAccountAccessOwnerScopeWithPrefetch(t *testing.T) {
 	fixture := newChainFixture(t)
 	if _, err := fixture.db.Exec(`INSERT INTO resource_authorizations (
 		id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id,
-		scope, status, expires_at, effective_source_type, effective_source_team_id, limits_json
+		scope, status, expires_at, effective_source_type, effective_source_team_id
 	) VALUES ('authz_prefetch_id', 'account', 'acc_authz_prefetch', 'sys_owner', 'sys_owner',
-		'use', 'active', '2999-01-01T00:00:00.000Z', 'team', 'team_1', NULL)`); err != nil {
+		'use', 'active', '2999-01-01T00:00:00.000Z', 'team', 'team_1')`); err != nil {
 		t.Fatalf("insert authz: %v", err)
 	}
+	//（send-and-claim 门：authorized 实例读取同样要求 grant 背书 source 在场。）
+	chainSeedAuthorizationClaimChain(t, fixture.db, "authz_prefetch_id", "account", "acc_authz_prefetch",
+		"sys_owner", "sys_owner", "team", "team_1", "2999-01-01T00:00:00.000Z")
 	row := &chainCandidateRow{
 		ID:                                   "acc_authz_prefetch",
 		SystemAccountID:                      "sys_owner",
@@ -298,10 +333,16 @@ func TestW1LoadAccountAuthorizationsForSelectionAuthorizedGroupReturnsNil(t *tes
 	}
 	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO resource_authorizations (
 		id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id,
-		scope, status, expires_at, effective_source_type, effective_source_team_id, limits_json
-	) VALUES ('authz_no_pf', 'group', ?, ?, ?, 'use', 'active', '2999-01-01T00:00:00.000Z', NULL, NULL, NULL)`),
+		scope, status, expires_at, effective_source_type, effective_source_team_id
+	) VALUES ('authz_no_pf', 'group', ?, ?, ?, 'use', 'active', '2999-01-01T00:00:00.000Z', 'manual', NULL)`),
 		fixture.groupID, fixture.systemAccount, grantee); err != nil {
 		t.Fatalf("insert authz: %v", err)
+	}
+	chainSeedAuthorizationClaimChain(t, fixture.db, "authz_no_pf", "group", fixture.groupID,
+		fixture.systemAccount, grantee, "manual", "", "2999-01-01T00:00:00.000Z")
+	if _, err := fixture.db.Exec(fixtureBind(`INSERT INTO group_authorization_settings (authorization_id, system_account_id, group_id)
+		VALUES ('authz_no_pf', ?, ?)`), grantee, fixture.groupID); err != nil {
+		t.Fatalf("seed settings claim row: %v", err)
 	}
 	groupAccess, err := fixture.selector.resolveGroupAccess(context.Background(), fixture.groupID, grantee)
 	if err != nil {

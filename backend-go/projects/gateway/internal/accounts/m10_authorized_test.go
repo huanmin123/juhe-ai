@@ -1,7 +1,6 @@
 package accounts
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -17,9 +16,9 @@ import (
 var m10AuthzDDL = []string{
 	`CREATE TABLE IF NOT EXISTS system_teams (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'active', created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS system_team_members (id TEXT PRIMARY KEY, team_id TEXT NOT NULL, system_account_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', joined_at TEXT NOT NULL, removed_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS resource_authorizations (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, resource_owner_system_account_id TEXT NOT NULL, grantee_system_account_id TEXT NOT NULL, scope TEXT NOT NULL DEFAULT 'use', status TEXT NOT NULL DEFAULT 'active', effective_source_type TEXT, effective_source_team_id TEXT, activated_at TEXT, last_source_changed_at TEXT, remark TEXT, expires_at TEXT, limits_json TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT, revoked_reason TEXT, updated_at TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS resource_authorizations (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, resource_owner_system_account_id TEXT NOT NULL, grantee_system_account_id TEXT NOT NULL, scope TEXT NOT NULL DEFAULT 'use', status TEXT NOT NULL DEFAULT 'active', effective_source_type TEXT, effective_source_team_id TEXT, activated_at TEXT, last_source_changed_at TEXT, remark TEXT, expires_at TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT, revoked_reason TEXT, updated_at TEXT NOT NULL)`,
 	`CREATE TABLE IF NOT EXISTS resource_authorization_sources (id TEXT PRIMARY KEY, authorization_id TEXT NOT NULL, source_type TEXT NOT NULL, source_team_id TEXT, status TEXT NOT NULL DEFAULT 'active', activated_at TEXT, ended_at TEXT, ended_reason TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT, updated_at TEXT NOT NULL)`,
-	`CREATE TABLE IF NOT EXISTS resource_authorization_grants (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, resource_owner_system_account_id TEXT NOT NULL, grantee_type TEXT NOT NULL, grantee_system_account_id TEXT, grantee_team_id TEXT, scope TEXT NOT NULL DEFAULT 'use', status TEXT NOT NULL DEFAULT 'active', remark TEXT, expires_at TEXT, limits_json TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT, updated_at TEXT NOT NULL)`,
+	`CREATE TABLE IF NOT EXISTS resource_authorization_grants (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, resource_owner_system_account_id TEXT NOT NULL, grantee_type TEXT NOT NULL, grantee_system_account_id TEXT, grantee_team_id TEXT, scope TEXT NOT NULL DEFAULT 'use', status TEXT NOT NULL DEFAULT 'active', remark TEXT, expires_at TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL, revoked_by TEXT, revoked_at TEXT, updated_at TEXT NOT NULL)`,
 	`CREATE UNIQUE INDEX IF NOT EXISTS idx_m10_resource_authorizations_user_unique ON resource_authorizations(resource_type, resource_id, grantee_system_account_id)`,
 }
 
@@ -97,6 +96,22 @@ func (e *testEnv) seedTeamMemberRow(t *testing.T, teamID, memberID string) {
 		VALUES (?, ?, ?, 'active', ?, ?, ?)`, "teammem-"+memberID, teamID, memberID, now, now, now)
 }
 
+// seedAcceptedRuntimeAuthorization 直接种一条已领取形态的 runtime 授权行。
+// 授权大简化（revision 31）后发放不再直接落 runtime 行：团队发放展开成员
+// pending source，直发在接收方领取时才装载 runtime 行（authz pgkit 外部
+// PG 钉值测试覆盖装载链）；本文件只关注列表/详情读面投影，用确定性 id
+// 直接种行等价于「已领取」状态。
+func (e *testEnv) seedAcceptedRuntimeAuthorization(t *testing.T, id, resourceID, ownerID, granteeID, sourceType, teamID string) string {
+	t.Helper()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	e.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id,
+		resource_owner_system_account_id, grantee_system_account_id, scope, status,
+		effective_source_type, effective_source_team_id, activated_at, created_by, created_at, updated_at)
+		VALUES (?, 'account', ?, ?, ?, 'use', 'active', ?, ?, ?, ?, ?, ?)`,
+		id, resourceID, ownerID, granteeID, sourceType, teamID, now, ownerID, now, now)
+	return id
+}
+
 func listItems(t *testing.T, payload map[string]any) map[string]map[string]any {
 	t.Helper()
 	data, ok := payload["data"].(map[string]any)
@@ -118,7 +133,7 @@ func listItems(t *testing.T, payload map[string]any) map[string]map[string]any {
 }
 
 func TestMyAccountsAuthorizedInstanceVisibility(t *testing.T) {
-	env, authzStore := newAuthorizedTestEnv(t)
+	env, _ := newAuthorizedTestEnv(t)
 	ownerID := env.login(t, "owner1", "owner-pass", "user")
 	memberID := env.login(t, "member1", "member-pass", "user")
 	env.login(t, "outsider1", "outsider-pass", "user")
@@ -126,15 +141,7 @@ func TestMyAccountsAuthorizedInstanceVisibility(t *testing.T) {
 	env.seedProviderAndDefaultGroup(t, memberID)
 	env.seedTeamMember(t, "team-m10", ownerID, memberID)
 
-	grant, err := authzStore.Create(context.Background(), authz.CreateInput{
-		ResourceType: "account", ResourceID: "acc-src",
-		GranteeType: "team", GranteeID: "team-m10",
-	}, ownerID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	runtimeID := env.queryCell(t, `SELECT id FROM resource_authorizations
-		WHERE grantee_system_account_id = ? AND resource_id = 'acc-src'`, memberID)
+	runtimeID := env.seedAcceptedRuntimeAuthorization(t, "ra-m10-member", "acc-src", ownerID, memberID, "team", "team-m10")
 	if runtimeID == "" {
 		t.Fatal("team runtime row missing")
 	}
@@ -211,9 +218,7 @@ func TestMyAccountsAuthorizedInstanceVisibility(t *testing.T) {
 	}
 
 	// After the grant is revoked the member loses the instance.
-	if _, err := authzStore.Revoke(context.Background(), grant.Item.ID, grant.Item.UpdatedAt, ownerID); err != nil {
-		t.Fatal(err)
-	}
+	env.exec(t, `UPDATE resource_authorizations SET status = 'revoked' WHERE id = ?`, runtimeID)
 	env.login(t, "member1", "member-pass", "user")
 	code, memberList := env.do(t, http.MethodGet, "/__aisys__/api/my-accounts", "")
 	if code != http.StatusOK {
@@ -226,21 +231,14 @@ func TestMyAccountsAuthorizedInstanceVisibility(t *testing.T) {
 }
 
 func TestAccountsAdminSurfaceIgnoresAuthorizedProjection(t *testing.T) {
-	env, authzStore := newAuthorizedTestEnv(t)
+	env, _ := newAuthorizedTestEnv(t)
 	adminID := env.login(t, "root", "root-pass", "super_admin")
 	memberID := env.login(t, "member2", "member-pass", "user")
 	env.seedAccount(t, "acc-admin-src", adminID, "管理员账户", "active")
 	env.seedProviderAndDefaultGroup(t, memberID)
 	env.seedTeamMember(t, "team-admin", adminID, memberID)
 
-	if _, err := authzStore.Create(context.Background(), authz.CreateInput{
-		ResourceType: "account", ResourceID: "acc-admin-src",
-		GranteeType: "team", GranteeID: "team-admin",
-	}, adminID); err != nil {
-		t.Fatal(err)
-	}
-	runtimeID := env.queryCell(t, `SELECT id FROM resource_authorizations
-		WHERE grantee_system_account_id = ? AND resource_id = 'acc-admin-src'`, memberID)
+	runtimeID := env.seedAcceptedRuntimeAuthorization(t, "ra-m10-admin", "acc-admin-src", adminID, memberID, "team", "team-admin")
 	// Instance namespace follows the Node production write: grantee namespace
 	// (resource-authorization-write.repository.ts:1893).
 	env.seedAuthorizationInstance(t, "acc-admin-inst", memberID, runtimeID, "acc-admin-src")
@@ -280,7 +278,7 @@ func TestAccountsAdminSurfaceIgnoresAuthorizedProjection(t *testing.T) {
 // list status guard (account-management-list.repository.ts:331-334) without
 // touching the other member.
 func TestMyAccountsTeamMembersSeeOnlyOwnInstances(t *testing.T) {
-	env, authzStore := newAuthorizedTestEnv(t)
+	env, _ := newAuthorizedTestEnv(t)
 	ownerID := env.login(t, "owner2", "owner-pass", "user")
 	memberAID := env.login(t, "memberA", "member-pass", "user")
 	memberBID := env.login(t, "memberB", "member-pass", "user")
@@ -290,19 +288,10 @@ func TestMyAccountsTeamMembersSeeOnlyOwnInstances(t *testing.T) {
 	env.seedTeamMember(t, "team-pair", ownerID, memberAID)
 	env.seedTeamMemberRow(t, "team-pair", memberBID)
 
-	if _, err := authzStore.Create(context.Background(), authz.CreateInput{
-		ResourceType: "account", ResourceID: "acc-team-src",
-		GranteeType: "team", GranteeID: "team-pair",
-	}, ownerID); err != nil {
-		t.Fatal(err)
-	}
-	runtimeA := env.queryCell(t, `SELECT id FROM resource_authorizations
-		WHERE grantee_system_account_id = ? AND resource_id = 'acc-team-src'`, memberAID)
-	runtimeB := env.queryCell(t, `SELECT id FROM resource_authorizations
-		WHERE grantee_system_account_id = ? AND resource_id = 'acc-team-src'`, memberBID)
-	if runtimeA == "" || runtimeB == "" {
-		t.Fatalf("team fanout runtime rows missing: %q %q", runtimeA, runtimeB)
-	}
+	// 新契约下每成员一条 pending source、领取时各自装载 runtime 行；这里
+	// 直接种两条已领取形态的行等价成员各自的 runtime 作用域。
+	runtimeA := env.seedAcceptedRuntimeAuthorization(t, "ra-m10-a", "acc-team-src", ownerID, memberAID, "team", "team-pair")
+	runtimeB := env.seedAcceptedRuntimeAuthorization(t, "ra-m10-b", "acc-team-src", ownerID, memberBID, "team", "team-pair")
 	env.seedAuthorizationInstance(t, "acc-inst-a", memberAID, runtimeA, "acc-team-src")
 	env.seedAuthorizationInstance(t, "acc-inst-b", memberBID, runtimeB, "acc-team-src")
 
@@ -368,7 +357,7 @@ func TestMyAccountsTeamMembersSeeOnlyOwnInstances(t *testing.T) {
 // (:747-770, resource_authorizations.effective_source_type via the :296
 // join). Owner rows keep their own semantics and never carry the stamps.
 func TestMyAccountsAuthorizedInstanceSourceProjection(t *testing.T) {
-	env, authzStore := newAuthorizedTestEnv(t)
+	env, _ := newAuthorizedTestEnv(t)
 	ownerID := env.login(t, "owner5", "owner-pass", "user")
 	memberID := env.login(t, "member5", "member-pass", "user")
 	manualID := env.login(t, "manual5", "manual-pass", "user")
@@ -377,18 +366,9 @@ func TestMyAccountsAuthorizedInstanceSourceProjection(t *testing.T) {
 	env.seedTeamMember(t, "team-proj", ownerID, memberID)
 
 	// Team grant: the member's runtime row carries effective_source_type='team'
-	// (authz upsertRuntimeForUser), so canReturnAuthorization stays false.
-	if _, err := authzStore.Create(context.Background(), authz.CreateInput{
-		ResourceType: "account", ResourceID: "acc-proj-src",
-		GranteeType: "team", GranteeID: "team-proj",
-	}, ownerID); err != nil {
-		t.Fatal(err)
-	}
-	runtimeTeam := env.queryCell(t, `SELECT id FROM resource_authorizations
-		WHERE grantee_system_account_id = ? AND resource_id = 'acc-proj-src'`, memberID)
-	if runtimeTeam == "" {
-		t.Fatal("team runtime row missing")
-	}
+	//（新契约下团队来源在领取装载时落 effective_source_type='team'），so
+	// canReturnAuthorization stays false.
+	runtimeTeam := env.seedAcceptedRuntimeAuthorization(t, "ra-m10-proj", "acc-proj-src", ownerID, memberID, "team", "team-proj")
 	env.seedAuthorizationInstance(t, "acc-proj-inst", memberID, runtimeTeam, "acc-proj-src")
 
 	// Bound group with local scheduling overrides on the member's binding.
@@ -418,17 +398,7 @@ func TestMyAccountsAuthorizedInstanceSourceProjection(t *testing.T) {
 	// gpt+api_key：client_compatibility 列已退役（设计 §9.11），显示值由
 	// vendor/type 派生——gpt+api_key 缺省即 codex_responses。
 	env.seedAccount(t, "acc-key-codex", ownerID, "Codex密钥账户", "active")
-	if _, err := authzStore.Create(context.Background(), authz.CreateInput{
-		ResourceType: "account", ResourceID: "acc-oauth-src",
-		GranteeType: "team", GranteeID: "team-proj",
-	}, ownerID); err != nil {
-		t.Fatal(err)
-	}
-	runtimeOAuth := env.queryCell(t, `SELECT id FROM resource_authorizations
-		WHERE grantee_system_account_id = ? AND resource_id = 'acc-oauth-src'`, memberID)
-	if runtimeOAuth == "" {
-		t.Fatal("oauth runtime row missing")
-	}
+	runtimeOAuth := env.seedAcceptedRuntimeAuthorization(t, "ra-m10-oauth", "acc-oauth-src", ownerID, memberID, "team", "team-proj")
 	env.seedAuthorizationInstance(t, "acc-oauth-inst", memberID, runtimeOAuth, "acc-oauth-src")
 
 	// Member list: live source values, bound-group local scheduling, stamp
@@ -493,17 +463,7 @@ func TestMyAccountsAuthorizedInstanceSourceProjection(t *testing.T) {
 	now2 := time.Now().UTC().Format(time.RFC3339Nano)
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
 		VALUES ('grp-manual-default', ?, '手动授权默认分组', 1, 1, 'personal', ?, ?)`, manualID, now2, now2)
-	if _, err := authzStore.Create(context.Background(), authz.CreateInput{
-		ResourceType: "account", ResourceID: "acc-proj-src",
-		GranteeType: "system_account", GranteeID: manualID,
-	}, ownerID); err != nil {
-		t.Fatal(err)
-	}
-	runtimeManual := env.queryCell(t, `SELECT id FROM resource_authorizations
-		WHERE grantee_system_account_id = ? AND resource_id = 'acc-proj-src'`, manualID)
-	if runtimeManual == "" {
-		t.Fatal("manual runtime row missing")
-	}
+	runtimeManual := env.seedAcceptedRuntimeAuthorization(t, "ra-m10-manual", "acc-proj-src", ownerID, manualID, "manual", "")
 	env.seedAuthorizationInstance(t, "acc-proj-manual", manualID, runtimeManual, "acc-proj-src")
 	env.login(t, "manual5", "manual-pass", "user")
 	code, listed = env.do(t, http.MethodGet, "/__aisys__/api/my-accounts", "")
@@ -580,24 +540,22 @@ func TestMyAccountsAuthorizedInstanceSourceProjection(t *testing.T) {
 // cascades the new name onto each live authorization instance through the
 // uniqueness ladder (:1670-1739).
 func TestPatchRenameSyncsAuthorizationInstanceNames(t *testing.T) {
-	env, authzStore := newAuthorizedTestEnv(t)
+	env, _ := newAuthorizedTestEnv(t)
 	ownerID := env.login(t, "owner9", "owner-pass", "super_admin")
 	granteeID := env.login(t, "grantee9", "grantee-pass", "user")
 	env.seedAccount(t, "acc-rename-src", ownerID, "OriginalName", "active")
 
 	// The provision create-tail binds the instance to the grantee's enabled
-	// default group for the instance provider (archived :397-423).
+	// default group for the instance provider（新契约下这一步发生在接收方领取
+	// 装载；本测只关注改名级联，直接种已领取形态的行 + 实例 + 默认组绑定）。
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
 		VALUES ('grp-rename-default', ?, '授权默认分组', 1, 1, 'personal', ?, ?)`, granteeID, now, now)
-	if _, err := authzStore.Create(context.Background(), authz.CreateInput{
-		ResourceType: "account", ResourceID: "acc-rename-src",
-		GranteeType: "system_account", GranteeID: granteeID,
-	}, ownerID); err != nil {
-		t.Fatal(err)
-	}
-	runtimeID := env.queryCell(t, `SELECT id FROM resource_authorizations
-		WHERE grantee_system_account_id = ? AND resource_id = 'acc-rename-src'`, granteeID)
+	runtimeID := env.seedAcceptedRuntimeAuthorization(t, "ra-m10-rename", "acc-rename-src", ownerID, granteeID, "manual", "")
+	env.seedAuthorizationInstance(t, "acc-rename-inst", granteeID, runtimeID, "acc-rename-src")
+	env.exec(t, `INSERT INTO group_accounts (system_account_id, group_id, account_id, account_authorization_id,
+		enabled, created_at, updated_at) VALUES (?, 'grp-rename-default', 'acc-rename-inst', ?, 1, ?, ?)`,
+		granteeID, runtimeID, now, now)
 	instanceID := env.queryCell(t, `SELECT id FROM accounts
 		WHERE authorization_instance_authorization_id = ? AND deleted_at IS NULL`, runtimeID)
 	if instanceID == "" {

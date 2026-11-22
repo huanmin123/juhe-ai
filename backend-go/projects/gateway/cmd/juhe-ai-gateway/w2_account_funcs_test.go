@@ -937,33 +937,6 @@ func TestW2BAccountSecretInstanceOwnerArms(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// compose_accounts_reset.go：476
-// ---------------------------------------------------------------------------
-
-// TestW2BResetBridgeInstanceScanFault 覆盖授权实例清单的 Scan 错误臂（476）：
-// 包装句柄把结果集报成 0 列 → Scan 数量不匹配。夹具重钉 PG（T67 批）：
-// 桥按生产形态以 juhe_business.accounts + deleted_at 过滤查询。
-func TestW2BResetBridgeInstanceScanFault(t *testing.T) {
-	plain, dsn := w2bOpenBusinessPGFixture(t)
-	if _, err := plain.Exec(`CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY,
-			authorization_instance_authorization_id TEXT, deleted_at TEXT)`); err != nil {
-		t.Fatalf("建 accounts 失败: %v", err)
-	}
-	if _, err := plain.Exec(`INSERT INTO accounts (id, authorization_instance_authorization_id) VALUES ('inst-1', 'auth-w2b')`); err != nil {
-		t.Fatalf("seed instance: %v", err)
-	}
-	wrapped := w2bOpenFaultyPG(t, dsn,
-		&w2bFaultRule{match: func(query string) bool {
-			return strings.Contains(query, "FROM juhe_business.accounts") && strings.Contains(query, "authorization_instance_authorization_id")
-		}, action: w2bFaultZeroColumns})
-	bridge := &accountsRuntimeResetBridge{db: wrapped}
-	if _, err := bridge.authorizationInstanceIDs(context.Background(), "auth-w2b"); err == nil ||
-		!strings.Contains(err.Error(), "destination arguments") {
-		t.Fatalf("实例清单必须报 Scan 数量错误: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // chain_catalog.go：277
 // ---------------------------------------------------------------------------
 
@@ -1174,19 +1147,20 @@ func TestW2BAuthzExpirySyncReconciledLog(t *testing.T) {
 		CREATE TABLE juhe_business.resource_authorization_grants (
 			id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, resource_owner_system_account_id TEXT,
 			grantee_type TEXT NOT NULL, grantee_system_account_id TEXT, grantee_team_id TEXT, status TEXT,
-			remark TEXT, expires_at TEXT, limits_json TEXT, created_by TEXT, revoked_by TEXT, revoked_at TEXT,
+			remark TEXT, expires_at TEXT, created_by TEXT, revoked_by TEXT, revoked_at TEXT,
 			created_at TEXT, updated_at TEXT);
 		CREATE TABLE juhe_business.request_quota_hourly_window_scope_bindings (
 			scope_id TEXT, scope_type TEXT, source_type TEXT, source_id TEXT);
 		CREATE TABLE juhe_business.resource_authorizations (
 			id TEXT PRIMARY KEY, resource_type TEXT, resource_id TEXT, resource_owner_system_account_id TEXT,
-			grantee_system_account_id TEXT, status TEXT, limits_json TEXT,
+			grantee_system_account_id TEXT, status TEXT,
 			effective_source_type TEXT, effective_source_team_id TEXT);
 		CREATE TABLE juhe_business.accounts (
 			id TEXT PRIMARY KEY, system_account_id TEXT, authorization_instance_authorization_id TEXT,
 			authorization_instance_source_account_id TEXT, deleted_at TEXT);
 		CREATE TABLE juhe_business.resource_authorization_sources (
-			authorization_id TEXT, source_type TEXT, source_team_id TEXT)`)
+			authorization_id TEXT, source_type TEXT, source_team_id TEXT,
+			grant_id TEXT)`)
 		return err
 	})
 	nowText := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")

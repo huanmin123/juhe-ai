@@ -50,11 +50,27 @@ type Kernel struct {
 	opts     Options
 	mux      *http.ServeMux
 	catchAll sync.Once
+	// bodyLimitOverrides 是路由级 body limit 覆盖表（键 "METHOD /path"，仅精
+	// 确匹配）。装配期经 RegisterBodyLimitOverride 写入、请求期只读，与
+	// Register 同一写入窗口；默认为空 = 全部路由走 JSONBodyLimitBytes，行为
+	// 零变化。
+	bodyLimitOverrides map[string]int64
 }
 
 func New(options Options) *Kernel {
 	options.fill()
 	return &Kernel{opts: options, mux: http.NewServeMux()}
+}
+
+// RegisterBodyLimitOverride 为单个 method+path 路由覆盖默认 body limit。用于
+// 确需超过 JSONBodyLimitBytes 的端点（如 base64 参考图上传）：覆盖值只让请
+// 求体穿过公共层，领域层自身的读取上限仍是真实上限。仅精确匹配（方法与路径
+// 原文相等），未命中的路由不受影响；默认不注册 = 行为零变化。
+func (k *Kernel) RegisterBodyLimitOverride(method, path string, limit int64) {
+	if k.bodyLimitOverrides == nil {
+		k.bodyLimitOverrides = make(map[string]int64)
+	}
+	k.bodyLimitOverrides[strings.ToUpper(method)+" "+path] = limit
 }
 
 // Register mounts a method+pattern handler. Patterns use Go 1.22 ServeMux
@@ -100,7 +116,7 @@ func (k *Kernel) rootHandler() http.Handler {
 			WriteAPINotFound(w)
 		})
 	})
-	limited := bodyLimitMiddleware(k.opts.SystemAPIPrefix, k.opts.JSONBodyLimitBytes)(k.mux)
+	limited := bodyLimitMiddleware(k.opts.SystemAPIPrefix, k.opts.JSONBodyLimitBytes, k.bodyLimitOverrides)(k.mux)
 	rateLimited := limited
 	if k.opts.IPRateLimit != nil {
 		rateLimited = prefixMiddleware(k.opts.SystemAPIPrefix, k.opts.IPRateLimit)(limited)
@@ -146,16 +162,27 @@ func noStoreMiddleware(next http.Handler) http.Handler {
 
 // bodyLimitMiddleware wraps the request body with http.MaxBytesReader under
 // the API prefixes. Decoding goes through DecodeJSON, which reports the
-// handleJsonBodyError contract (413 请求体过大 / 400 请求体无效).
-func bodyLimitMiddleware(prefix string, limit int64) func(http.Handler) http.Handler {
+// handleJsonBodyError contract (413 请求体过大 / 400 请求体无效). Route-level
+// overrides (RegisterBodyLimitOverride) replace the default limit for their
+// exact method+path; the map is empty by default (zero behavior change).
+func bodyLimitMiddleware(prefix string, limit int64, overrides map[string]int64) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if mountPathMatch(r.URL.EscapedPath(), prefix) && r.Body != nil {
-				r.Body = http.MaxBytesReader(w, r.Body, limit)
+				r.Body = http.MaxBytesReader(w, r.Body, routeBodyLimit(r.Method, r.URL.EscapedPath(), limit, overrides))
 			}
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// routeBodyLimit 解析请求生效的 body limit：精确命中覆盖条目（方法不区分大小
+// 写、路径原文相等）用覆盖值，否则回落默认上限。
+func routeBodyLimit(method, path string, defaultLimit int64, overrides map[string]int64) int64 {
+	if override, ok := overrides[strings.ToUpper(method)+" "+path]; ok {
+		return override
+	}
+	return defaultLimit
 }
 
 var errBodyTooLarge = errors.New("request body too large")

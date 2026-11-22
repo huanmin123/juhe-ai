@@ -183,17 +183,6 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 		return
 	}
 	ctx := r.Context()
-	// AI 问答会话绑定模式的调度覆盖目标（设计 §6）：仅聊天进程内执行器注入
-	// AI 问答会话绑定账户的调度覆盖目标（账户唯一绑定设计 §5/§7）：仅聊天进程
-	// 内执行器注入的绑定账户目标生效；外部 HTTP 请求恒为空，后续候选覆盖、
-	// 分组上下文对齐与回退禁用全部短路，调度行为与现状一致。
-	chatTarget, hasChatTarget := chatDispatchTargetFromContext(ctx)
-	// 内部身份通道（AI 问答免 Key 直调）：执行器注入的未导出 context 身份在此
-	// 落到请求字段上——preauth 据此跳过 Key 鉴权，usage 抑制标记随请求全程传播。
-	if identity, ok := chatInternalIdentityFromContext(ctx); ok {
-		req.InternalOwnerSystemAccountID = identity.OwnerSystemAccountID
-		req.SuppressUsage = true
-	}
 	// SwitchTarget（切号冻结目标）请求级载体：派发链内第一个完成上游请求构造
 	// 的账户在此冻结有效上游目标，此后跨账户切换 / 分组回退 / 重派窗口一律
 	// 按冻结目标后置过滤（切号时有效上游目标设计 §3.1/§4）。初始 preflight
@@ -393,35 +382,6 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 
 	// ---- preflight (request/preflight.ts) ----
 	preflightOptions := c.preflightOptions(requestLane)
-	var chatScope chatDispatchTargetScope
-	if hasChatTarget {
-		// 派发候选装配前收敛到绑定作用域（group 固定候选组 / account 按启用
-		// 分组解析承载分组后收敛单账户）；解析失败按 preflight 缓存读失败同一
-		// 处理面退出，不脱离绑定作用域派发。
-		scope, scopeErr := c.resolveChatDispatchTargetScope(ctx, req, chatTarget)
-		if scopeErr != nil {
-			c.handleOrchestratorError(scopeErr, req, res, startedAt, endpoint)
-			return
-		}
-		chatScope = scope
-		preflightOptions.CandidateAccounts = chatScope.accounts
-		// 可靠性批次2（缺陷5）：注入候选的可恢复等待作用域——绑定作用域候选
-		// 全部临时不可用时 preflight 按该作用域等待恢复，而不是直接终态失败。
-		preflightOptions.RecoverableCandidateScope = chatScope.recoverableScope
-		// 内部身份通道（AI 问答免 Key 直调）：preauth 不解析 runtime，preflight
-		// 改走 Identity 注入分支——跳过 runtime 解析与 normal 路由策略，候选仍
-		// 走上方注入的绑定作用域窗口。APIKeyID 恒空：apiKeyUnavailable 门不触发
-		//（该门要求 APIKeyID 非空），Key 配额/在途预留面随 apiKeyRecord==nil
-		// 整体跳过（免 Key 免日志计划 §2.3：内部不计费不限额）。GroupID 取承载
-		// 分组（resolveChatDispatchTargetScope 命中组），供 groupAccess 与用量/
-		// 审计窗口身份解析。
-		if req.InternalOwnerSystemAccountID != "" {
-			preflightOptions.Identity = &gatewaypreauth.OpenAIGatewayRequestIdentity{
-				SystemAccountID: req.InternalOwnerSystemAccountID,
-				GroupID:         chatScope.groupID,
-			}
-		}
-	}
 	preflight, err := c.preauth.PrepareOpenAIGatewayDispatchContext(ctx, gatewaypreauth.PreflightInput{
 		Req:             req,
 		Res:             res,
@@ -481,7 +441,6 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 		endpoint:            endpoint,
 		traceID:             traceID,
 		releases:            releases,
-		chatTarget:          chatTarget,
 		actionVisitedGroups: map[string]bool{},
 		enteredGroups:       map[string]bool{},
 	}
@@ -507,15 +466,6 @@ func (c *gatewayChain) handleOpenAIGatewayRequest(w http.ResponseWriter, r *http
 		return
 	}
 	releases.Add(context.ReleaseClientIPConcurrency)
-	if hasChatTarget {
-		// 窗口级分组上下文对齐到生效分组（group=绑定分组；account=承载分组，
-		// 即候选解析的命中组）：调度策略 + usage/审计窗口组；绑定目标请求的
-		// 既有 preflight.completed 埋点随之反映真实窗口组。
-		if err := c.applyChatDispatchGroupContext(ctx, chatDispatchSystemAccountID(req), chatScope.groupID, context); err != nil {
-			c.handleOrchestratorError(err, req, res, startedAt, endpoint)
-			return
-		}
-	}
 	// 换代点统一回收（初始 preflight 直接产出与 RouteAction→fallback 产物都在
 	// 这里进入主循环）：compaction 的 Unbounded wall budget 等请求级实例随
 	// context 生效，coordination 构造据此携带 TimeoutsDisabled / TotalTimeLane。

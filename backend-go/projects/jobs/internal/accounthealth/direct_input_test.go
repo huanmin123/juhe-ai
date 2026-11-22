@@ -79,21 +79,21 @@ func (conn *directInputRowsLifecycleConn) QueryContext(_ context.Context, query 
 			values = [][]driver.Value{invalid}
 		} else if conn.mode == "qwen-authorized" {
 			qwen := directInputLifecycleCandidateValues()
-			qwen[33] = "qwen"
-			qwen[35] = "openai"
-			qwen[36] = "v1"
-			qwen[37] = "api_key"
-			qwen[38] = "qwen_dashscope"
-			qwen[39] = "https://dashscope.aliyuncs.com"
+			qwen[31] = "qwen"
+			qwen[33] = "openai"
+			qwen[34] = "v1"
+			qwen[35] = "api_key"
+			qwen[36] = "qwen_dashscope"
+			qwen[37] = "https://dashscope.aliyuncs.com"
 			values = [][]driver.Value{qwen}
 		} else if conn.mode == "volcengine-own" {
 			volcengine := directInputLifecycleCandidateValues()
-			// 自有账户臂：清空授权（24..30）/来源（31、32）投影，走账户自身
+			// 自有账户臂：清空授权（24..28）/来源（29、30）投影，走账户自身
 			// 身份与健康检查连接。
-			for index := 24; index <= 32; index++ {
+			for index := 24; index <= 30; index++ {
 				volcengine[index] = nil
 			}
-			volcengine[48] = nil
+			volcengine[46] = nil
 			volcengine[4] = "volcengine"
 			volcengine[6] = "openai"
 			volcengine[7] = "v1"
@@ -158,7 +158,7 @@ func (rows *directInputRowsLifecycleRows) Next(dest []driver.Value) error {
 }
 
 func directInputLifecycleCandidateColumns() []string {
-	columns := make([]string, 58)
+	columns := make([]string, 56)
 	for index := range columns {
 		columns[index] = fmt.Sprintf("c%d", index)
 	}
@@ -173,16 +173,18 @@ func directInputLifecycleCandidateValues() []driver.Value {
 // SELECT 投影逐列对齐（供应商解耦形态 + 后台探测开关两列）：身份
 // vendor_code/preset，连接面 preset/base_url 位于 13/14，expedited_recovery_enabled
 // 位于 index 19，cooldown fence 位于 20/21，a.background_probe_enabled 位于 23，
-// source_background_probe_enabled 位于 46，binding 两列后接 proxy 七列，池绑定
-// 两列（a.proxy_pool_id/source.proxy_pool_id）位于 56/57（共 58 列；本夹具为
-// 直接代理候选，池列为 NULL，不触发池解析路径）。
+// 授权实例五列位于 24..28（limits_json 与 effective_source_team_id 随授权额度
+// 域退役摘除），source 身份九列位于 29..37，source 状态七列位于 38..44（44 为
+// COALESCE 的 source_background_probe_enabled），binding 两列 45/46，proxy 七列
+// 47..53，池绑定两列（a.proxy_pool_id/source.proxy_pool_id）位于 54/55（共 56
+// 列；本夹具为直接代理候选，池列为 NULL，不触发池解析路径）。
 func directInputLifecycleCandidateValuesFor(accountID string) []driver.Value {
 	secret := "direct-input-rows-lifecycle-secret"
 	credentials, err := exactkeyprobe.EncryptV1Envelope(secret, []byte(`{"api_keys":["sk-test"]}`))
 	if err != nil {
 		panic(err)
 	}
-	values := make([]driver.Value, 58)
+	values := make([]driver.Value, 56)
 	values[0] = accountID
 	values[1] = int64(1)
 	values[2] = int64(2)
@@ -205,29 +207,28 @@ func directInputLifecycleCandidateValuesFor(accountID string) []driver.Value {
 	values[23] = int64(1) // a.background_probe_enabled
 	values[24] = "authorization-1"
 	values[25] = "active"
-	values[28] = `{}`
-	values[29] = "source-account"
-	values[30] = "owner-account"
-	values[31] = "source-account"
-	values[32] = int64(4)
-	values[33] = "gpt"
-	values[34] = nil
-	values[35] = "openai"
-	values[36] = "v1"
-	values[37] = "api_key"
-	values[38] = "gpt_openai_v1"
-	values[39] = "https://source.example.com"
-	values[40] = "active"
-	values[41] = int64(1)
-	values[45] = credentials
-	values[46] = int64(1) // source_background_probe_enabled（COALESCE 投影）
-	values[47] = "group-1"
-	values[48] = "authorization-1"
-	values[49] = "proxy-1"
-	values[50] = true
-	values[51] = "http"
-	values[52] = "127.0.0.1"
-	values[53] = int64(8080)
+	values[27] = "source-account" // ra.resource_id
+	values[28] = "owner-account"  // ra.resource_owner_system_account_id
+	values[29] = "source-account" // source.id
+	values[30] = int64(4)         // source.config_revision
+	values[31] = "gpt"            // source.vendor_code
+	values[32] = nil              // source.oauth_type
+	values[33] = "openai"
+	values[34] = "v1"
+	values[35] = "api_key"
+	values[36] = "gpt_openai_v1"
+	values[37] = "https://source.example.com"
+	values[38] = "active"
+	values[39] = int64(1)
+	values[43] = credentials
+	values[44] = int64(1) // source_background_probe_enabled（COALESCE 投影）
+	values[45] = "group-1"
+	values[46] = "authorization-1"
+	values[47] = "proxy-1"
+	values[48] = true
+	values[49] = "http"
+	values[50] = "127.0.0.1"
+	values[51] = int64(8080)
 	return values
 }
 

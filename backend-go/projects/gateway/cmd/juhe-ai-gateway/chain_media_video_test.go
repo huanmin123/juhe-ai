@@ -74,8 +74,8 @@ func seedMediaVideoAccount(t *testing.T, db *sql.DB, fixture *chainFixture, id, 
 	}
 	seed(`INSERT INTO accounts (
 			id, system_account_id, vendor_code, provider_protocol_profile_id, protocol_code, protocol_version,
-			name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at
-		) VALUES (?, ?, 'gpt', 'prof_1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, ?, ?, NULL)`,
+			name, type, status, schedulable, concurrency_limit, priority, capability_domain, credentials_encrypted, deleted_at
+		) VALUES (?, ?, 'gpt', 'prof_1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, ?, 'video', ?, NULL)`,
 		id, fixture.systemAccount, id, priority, mustEncryptCredentials(t, credentials))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at) VALUES (?, ?, ?, 1, ?)`,
 		fixture.groupID, fixture.systemAccount, id, "2026-10-04T00:00:00.000Z")

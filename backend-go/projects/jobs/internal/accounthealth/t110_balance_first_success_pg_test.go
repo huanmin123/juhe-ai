@@ -173,9 +173,9 @@ func TestW9HPgAuthorizationInstanceFirstSuccessDoesNotSeedBalance(t *testing.T) 
 	w9hSeedBusinessAccount(t, db, sourceID, "gpt", "profile_gpt_openai_v1", "api_key", "active", "chat_json", sql.NullString{}, sql.NullString{})
 	w9hMustExec(t, db, `INSERT INTO juhe_business.resource_authorizations (
 		id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, scope, status,
-		effective_source_type, activated_at, limits_json, created_by, created_at, updated_at
+		effective_source_type, activated_at, created_by, created_at, updated_at
 	) VALUES ($1, 'account', $2, 'sys_admin', 'sys_admin', 'health_check', 'active',
-		'direct', $3, '{"daily":{"enabled":true,"limit":100}}', 'w9h', $4, $5)`,
+		'direct', $3, 'w9h', $4, $5)`,
 		authorizationID, sourceID, w9hFixtureNow, w9hFixtureNow, w9hFixtureNow)
 	w9hSeedBusinessAccount(t, db, instanceID, "gpt", "profile_gpt_openai_v1", "api_key", "active", "chat_json",
 		sql.NullString{String: sourceID, Valid: true}, sql.NullString{String: authorizationID, Valid: true})

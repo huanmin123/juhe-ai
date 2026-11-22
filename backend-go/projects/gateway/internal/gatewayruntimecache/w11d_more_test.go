@@ -819,7 +819,7 @@ func TestW11DSQLAuthorizationFailureArms(t *testing.T) {
 		t.Fatal("授权查询失败必须上抛")
 	}
 	// 本地设置查询失败：drop group_authorization_settings。
-	if _, err := db.Exec(`CREATE TABLE juhe_business.resource_authorizations (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, grantee_system_account_id TEXT NOT NULL, status TEXT NOT NULL, effective_source_type TEXT, effective_source_team_id TEXT, expires_at TEXT, limits_json TEXT)`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE juhe_business.resource_authorizations (id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, grantee_system_account_id TEXT NOT NULL, status TEXT NOT NULL, effective_source_type TEXT, effective_source_team_id TEXT, expires_at TEXT)`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`DROP TABLE juhe_business.group_authorization_settings`); err != nil {

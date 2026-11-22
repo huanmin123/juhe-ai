@@ -26,7 +26,6 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authz"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaybody"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
@@ -1112,22 +1111,8 @@ func TestW1TTrafficMigrationBridgeErrorArm(t *testing.T) {
 	}
 }
 
-func TestW1TGrantReturnerNilMutationArm(t *testing.T) {
-	db := w1uOpenSeededBusinessDB(t)
-	store, err := authz.NewStore(db, time.Now)
-	if err != nil {
-		t.Fatalf("authz store: %v", err)
-	}
-	returner := authzGrantReturner{store: store}
-	// 不存在的 grant：not_found 原样透传（路由渲染 404 不可归还契约）。
-	status, err := returner.Return(context.Background(), "grant-not-exists-w1t", "2026-09-14T00:00:00Z", "user-w1t")
-	if err != nil {
-		t.Fatalf("Return(不存在 grant): %v", err)
-	}
-	if status != "not_found" {
-		t.Fatalf("不存在 grant Return = %q, want not_found", status)
-	}
-}
+// （TestW1TGrantReturnerNilMutationArm 随授权大简化退役：authzGrantReturner
+// 桥已删除，not_found 投影由 authz 域 source-return 路由承载。）
 
 func TestW1TLocalAffinityEmptyRememberedArm(t *testing.T) {
 	affinity := newLocalSessionAffinity()

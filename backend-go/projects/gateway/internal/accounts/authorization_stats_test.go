@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authz"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
@@ -111,19 +112,21 @@ func TestListAuthorizationStatsProjection(t *testing.T) {
 // TestListAuthorizationStatsAuthorizedView 锁定 isAuthorizedView 分支：授权
 // 实例行（grantee self 列表）三字段恒 0/false，即使 loader 带回了计数。
 func TestListAuthorizationStatsAuthorizedView(t *testing.T) {
-	env, store, authzStore := newStatsTestEnv(t)
+	env, store, _ := newStatsTestEnv(t)
 	ownerID := env.login(t, "owner2", "owner-pass", "user")
 	memberID := env.login(t, "member2", "member-pass", "user")
 	env.seedAccount(t, "acc-inst-src", ownerID, "源账户", "active")
 	env.seedProviderAndDefaultGroup(t, memberID)
 	env.seedTeamMember(t, "team-stats", ownerID, memberID)
 
-	if _, err := authzStore.Create(context.Background(), authz.CreateInput{
-		ResourceType: "account", ResourceID: "acc-inst-src",
-		GranteeType: "team", GranteeID: "team-stats",
-	}, ownerID); err != nil {
-		t.Fatal(err)
-	}
+	// 授权大简化后团队发放不再直接落 runtime 行（成员领取时才装载）；本测
+	// 只关注列表投影，直接种一条已领取形态的 runtime 行。
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	env.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id,
+		resource_owner_system_account_id, grantee_system_account_id, scope, status,
+		effective_source_type, effective_source_team_id, created_by, created_at, updated_at)
+		VALUES ('ra-stats-inst', 'account', 'acc-inst-src', ?, ?, 'use', 'active',
+		'manual', 'team-stats', ?, ?, ?)`, ownerID, memberID, ownerID, now, now)
 	runtimeID := env.queryCell(t, `SELECT id FROM resource_authorizations
 		WHERE grantee_system_account_id = ? AND resource_id = 'acc-inst-src'`, memberID)
 	if runtimeID == "" {

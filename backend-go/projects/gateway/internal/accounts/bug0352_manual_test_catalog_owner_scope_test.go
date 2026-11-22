@@ -15,8 +15,7 @@ package accounts
 import (
 	"context"
 	"testing"
-
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authz"
+	"time"
 )
 
 func bug0352Contains(values []string, target string) bool {
@@ -122,7 +121,7 @@ func TestBug0352ManualTestCatalogOwnerScope(t *testing.T) {
 // 结果）。修复前 AccountForTestView.manualContext() 取 item.OwnerSystemAccountID
 // （grantee），授权实例仍会被 grantee 名下的同名 personal 行遮蔽。
 func TestBug0352AuthorizedInstanceTestViewUsesSourceOwner(t *testing.T) {
-	env, authzStore := newAuthorizedTestEnv(t)
+	env, _ := newAuthorizedTestEnv(t)
 	ctx := context.Background()
 	ownerID := env.login(t, "bug0352-src-owner", "bug0352-pass", "user")
 	memberID := env.login(t, "bug0352-member", "bug0352-pass", "user")
@@ -130,12 +129,14 @@ func TestBug0352AuthorizedInstanceTestViewUsesSourceOwner(t *testing.T) {
 	env.seedProviderAndDefaultGroup(t, memberID)
 	env.seedTeamMember(t, "team-bug0352", ownerID, memberID)
 
-	if _, err := authzStore.Create(ctx, authz.CreateInput{
-		ResourceType: "account", ResourceID: "acc-bug0352-src",
-		GranteeType: "team", GranteeID: "team-bug0352",
-	}, ownerID); err != nil {
-		t.Fatal(err)
-	}
+	// 授权大简化后团队发放不再直接落 runtime 行（成员领取时才装载）；本测
+	// 只关注人工测试目录的 owner 解析，直接种一条已领取形态的 runtime 行。
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	env.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id,
+		resource_owner_system_account_id, grantee_system_account_id, scope, status,
+		effective_source_type, effective_source_team_id, created_by, created_at, updated_at)
+		VALUES ('ra-bug0352', 'account', 'acc-bug0352-src', ?, ?, 'use', 'active',
+		'manual', 'team-bug0352', ?, ?, ?)`, ownerID, memberID, ownerID, now, now)
 	runtimeID := env.queryCell(t, `SELECT id FROM resource_authorizations
 		WHERE grantee_system_account_id = ? AND resource_id = 'acc-bug0352-src'`, memberID)
 	if runtimeID == "" {

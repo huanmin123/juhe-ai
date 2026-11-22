@@ -15,7 +15,6 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayrouting"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayusage"
-
 )
 
 // superMemberGroup 描述超级分组的一个成员组及其账号。
@@ -178,7 +177,11 @@ func TestSuperGroupChainFixtures(t *testing.T) {
 		}
 	})
 
-	t.Run("outer-429-rate-limit", func(t *testing.T) {
+	t.Run("outer-all-no-candidate-terminal", func(t *testing.T) {
+		// 解析期配额门已随授权额度域退役：两个超级目标成员全部无模型能力
+		// → 全 no_candidate → 503 model_target_group_unavailable（终态聚合的
+		// 429 固定优先级由 superTargetExhaustedResult 纯函数钉值，见
+		// chain_super_group_review_test.go）。
 		fixture := seedSuperOuterFixture(t, "weighted",
 			superOuterTarget{groupID: "grp_super_a", kind: "super", members: []superOuterMember{
 				{groupID: "group_sa1", accountID: "acc_sa1"},
@@ -189,6 +192,10 @@ func TestSuperGroupChainFixtures(t *testing.T) {
 				{groupID: "group_sb2", accountID: "acc_sb2"},
 			}},
 		)
+		if _, err := fixture.db.Exec(`DELETE FROM account_supported_models WHERE account_id IN ('acc_sa1','acc_sa2','acc_sb1','acc_sb2')`); err != nil {
+			t.Fatal(err)
+		}
+		fixture.cache = w1FreshCacheFor(t, fixture)
 		normal := gatewayrouting.NewNormalModelRouteService(chainRoutingCache{cache: fixture.cache}, chainCapabilityFilter{})
 		record := &gatewayruntimecache.GatewayAPIKeyRow{
 			ID: "key_1", SystemAccountID: fixture.systemAccount,
@@ -201,34 +208,33 @@ func TestSuperGroupChainFixtures(t *testing.T) {
 					MemberGroupIDs: []string{"group_sb1", "group_sb2"}},
 			},
 		}
-		quota := &stubQuotaChecker{deniedAll: true}
-		resolver := &chainRouteResolver{cache: fixture.cache, normal: normal, quota: quota}
+		resolver := &chainRouteResolver{cache: fixture.cache, normal: normal}
 		result, err := resolver.ResolveNormalGatewayModelRoute(context.Background(), gatewaypreauth.NormalRouteInput{
 			Req: routeRequest("gpt-test"), APIKeyRecord: record,
 		})
 		if err != nil {
 			t.Fatalf("resolve: %v", err)
 		}
-		if result.Outcome != gatewaypreauth.NormalRouteOutcomeFailed || result.StatusCode != 429 ||
-			result.Code != "rate_limit_exceeded" {
-			t.Fatalf("outer 429 = %+v", result)
+		if result.Outcome != gatewaypreauth.NormalRouteOutcomeFailed || result.StatusCode != http.StatusServiceUnavailable ||
+			result.Code != "model_target_group_unavailable" {
+			t.Fatalf("outer all-no-candidate = %+v", result)
 		}
-		if quota.calls < 2 {
-			t.Fatalf("quota checks = %d, want both super targets attempted", quota.calls)
-		}
-		if len(result.TargetOutcomes) != 2 {
-			t.Fatalf("target outcomes = %+v, want both targets", result.TargetOutcomes)
-		}
-		for index, groupID := range []string{"grp_super_a", "grp_super_b"} {
-			if result.TargetOutcomes[index].GroupID != groupID || result.TargetOutcomes[index].Classification != "capacity_exhausted" {
-				t.Fatalf("outcome[%d] = %+v, want %s/capacity_exhausted", index, result.TargetOutcomes[index], groupID)
-			}
+		// 预选外层聚合失败不投影 TargetOutcomes（skippedSuperTargetOutcomes
+		// 只挂在 selected 通道）；HTTP 可观察面即 503 终态三键。
+		if len(result.TargetOutcomes) != 0 {
+			t.Fatalf("target outcomes = %+v, want empty on pre-selection outer failure", result.TargetOutcomes)
 		}
 	})
 
-	t.Run("dispatch-member-quota", func(t *testing.T) {
+	t.Run("dispatch-member-no-candidate-skip", func(t *testing.T) {
+		// 解析期配额门已随授权额度域退役；成员级剔除通道改为模型/能力过滤。
+		// 首个成员删支持模型 → no_candidate 跳过、后成员幸存并保留成员组标。
 		second := superMemberGroup{groupID: "group_compat", accountID: "acc_compat"}
 		fixture := superSeedFixture(t, second)
+		if _, err := fixture.db.Exec(fixtureBind(`DELETE FROM account_supported_models WHERE account_id = ?`), fixture.accountID); err != nil {
+			t.Fatal(err)
+		}
+		fixture.cache = w1FreshCacheFor(t, fixture)
 		normal := gatewayrouting.NewNormalModelRouteService(chainRoutingCache{cache: fixture.cache}, chainCapabilityFilter{})
 		record := &gatewayruntimecache.GatewayAPIKeyRow{
 			ID: "key_1", SystemAccountID: fixture.systemAccount,
@@ -240,8 +246,7 @@ func TestSuperGroupChainFixtures(t *testing.T) {
 				MemberGroupIDs: []string{fixture.groupID, second.groupID},
 			}},
 		}
-		resolver := &chainRouteResolver{cache: fixture.cache, normal: normal,
-			quota: &stubQuotaChecker{denied: map[string]bool{fixture.accountID: true}}}
+		resolver := &chainRouteResolver{cache: fixture.cache, normal: normal}
 		result, err := resolver.ResolveNormalGatewayModelRoute(context.Background(), gatewaypreauth.NormalRouteInput{
 			Req: routeRequest("gpt-test"), APIKeyRecord: record,
 		})
@@ -260,10 +265,10 @@ func TestSuperGroupChainFixtures(t *testing.T) {
 		if bound := result.Accounts[0].BoundGroupID; bound == nil || *bound != second.groupID {
 			t.Fatalf("survivor stamp = %v, want %s", bound, second.groupID)
 		}
-		// 设计 §4.2：成功路径也要留证被配额剔除的成员。
+		// 设计 §4.2：成功路径也要留证被剔空的成员（no_candidate）。
 		if len(result.MemberSkips) != 1 || result.MemberSkips[0].GroupID != fixture.groupID ||
-			result.MemberSkips[0].Reason != "capacity_exhausted" {
-			t.Fatalf("member skips = %+v, want [%s/capacity_exhausted]", result.MemberSkips, fixture.groupID)
+			result.MemberSkips[0].Reason != "no_candidate" {
+			t.Fatalf("member skips = %+v, want [%s/no_candidate]", result.MemberSkips, fixture.groupID)
 		}
 		var status string
 		var schedulable int
@@ -271,28 +276,30 @@ func TestSuperGroupChainFixtures(t *testing.T) {
 			t.Fatal(err)
 		}
 		if status != "active" || schedulable != 1 {
-			t.Fatalf("quota denial must not disable member account: %s/%d", status, schedulable)
+			t.Fatalf("model filter must not disable member account: %s/%d", status, schedulable)
 		}
 
-		deniedAll := &chainRouteResolver{cache: fixture.cache, normal: normal,
-			quota: &stubQuotaChecker{deniedAll: true}}
-		denied, err := deniedAll.ResolveNormalGatewayModelRoute(context.Background(), gatewaypreauth.NormalRouteInput{
+		// 两个成员都无候选 → 全 no_candidate → 503 model_target_group_unavailable，
+		// 成员跳过明细保留两条。
+		if _, err := fixture.db.Exec(fixtureBind(`DELETE FROM account_supported_models WHERE account_id = ?`), second.accountID); err != nil {
+			t.Fatal(err)
+		}
+		fixture.cache = w1FreshCacheFor(t, fixture)
+		allGone := &chainRouteResolver{cache: fixture.cache, normal: gatewayrouting.NewNormalModelRouteService(chainRoutingCache{cache: fixture.cache}, chainCapabilityFilter{})}
+		denied, err := allGone.ResolveNormalGatewayModelRoute(context.Background(), gatewaypreauth.NormalRouteInput{
 			Req: routeRequest("gpt-test"), APIKeyRecord: record,
 		})
 		if err != nil {
-			t.Fatalf("resolve denied: %v", err)
+			t.Fatalf("resolve all-no-candidate: %v", err)
 		}
-		if denied.Outcome != gatewaypreauth.NormalRouteOutcomeFailed || denied.StatusCode != 429 ||
-			denied.Code != "rate_limit_exceeded" {
-			t.Fatalf("all members denied = %+v, want 429 rate_limit_exceeded", denied)
+		if denied.Outcome != gatewaypreauth.NormalRouteOutcomeFailed || denied.StatusCode != http.StatusServiceUnavailable ||
+			denied.Code != "model_target_group_unavailable" {
+			t.Fatalf("all members no-candidate = %+v, want 503 model_target_group_unavailable", denied)
 		}
-		if len(denied.TargetOutcomes) != 1 || len(denied.TargetOutcomes[0].MemberSkips) != 2 {
-			t.Fatalf("denied outcomes = %+v, want both member skips", denied.TargetOutcomes)
-		}
-		for _, skip := range denied.TargetOutcomes[0].MemberSkips {
-			if skip.Reason != "capacity_exhausted" {
-				t.Fatalf("denied member skip = %+v, want capacity_exhausted", skip)
-			}
+		// 预选外层聚合失败不投影成员明细（成员跳过留证由 selected 通道的
+		// MemberSkips 承载，上一段已钉值）。
+		if len(denied.TargetOutcomes) != 0 {
+			t.Fatalf("denied outcomes = %+v, want empty on pre-selection outer failure", denied.TargetOutcomes)
 		}
 	})
 

@@ -32,8 +32,8 @@ func TestAdminScopedCreateRejectsAuthorizedGroupBinding(t *testing.T) {
 		VALUES ('auth-admin-guard', 'group', ?, ?, 'active', 'manual', NULL, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, groupID, receiverID)
 	env.exec(t, `INSERT INTO resource_authorization_sources (id, authorization_id, source_type, status, created_by, created_at, updated_at)
 		VALUES ('auth-admin-guard-manual', 'auth-admin-guard', 'manual', 'active', ?, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, ownerID)
-	env.exec(t, `INSERT INTO group_authorization_settings (authorization_id, system_account_id, group_id, enabled, snapshot_revision, created_at, updated_at)
-		VALUES ('auth-admin-guard', ?, ?, 1, 'snap-admin-guard', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, receiverID, groupID)
+	env.exec(t, `INSERT INTO group_authorization_settings (authorization_id, system_account_id, group_id, created_at, updated_at)
+		VALUES ('auth-admin-guard', ?, ?, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`, receiverID, groupID)
 
 	body := `{"name":"admin-proxy","groupBindings":[{"groupId":"` + groupID + `"}]}`
 	code, payload := env.createStrategy(t, "/__aisys__/api/route-strategies?systemAccountId="+receiverID, body)

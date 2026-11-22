@@ -246,7 +246,9 @@ func TestW1bPrepareDispatchAccountsEmitsGatewayDispatchCandidatesMetadata(t *tes
 	if result.Outcome != gatewaypreauth.CandidateOutcomeAccounts {
 		t.Fatalf("outcome = %s (reason %q)", result.Outcome, result.Reason)
 	}
-	if len(result.Accounts) != 1 || result.Accounts[0].ID != "a-1" {
+	// prepare 窗口不做模型秩剔除（unsupported 的过滤是 FilterCandidates 预滤
+	// 层职责）；直连秩在前，prepare 只按秩排序。
+	if len(result.Accounts) != 2 || result.Accounts[0].ID != "a-1" {
 		t.Fatalf("eligible = %#v", accountIDs(result.Accounts))
 	}
 	metadata := capture.single(t, "gateway_dispatch_candidates")
@@ -260,7 +262,7 @@ func TestW1bPrepareDispatchAccountsEmitsGatewayDispatchCandidatesMetadata(t *tes
 	if _, present := metadata["exitReason"]; present {
 		t.Fatalf("ready summary must omit exitReason: %#v", metadata)
 	}
-	if metadata["eligibleCount"].(float64) != 1 {
+	if metadata["eligibleCount"].(float64) != 2 {
 		t.Fatalf("eligibleCount = %#v", metadata["eligibleCount"])
 	}
 	if metadata["selectedAccountId"] != "a-1" {
@@ -398,7 +400,7 @@ func TestW1bPreFilterSkippedInDecisionSummary(t *testing.T) {
 		CandidateTotal: 3,
 		Eligible:       testAccounts("a-1"),
 		ModelPriority: &gatewayrouting.GatewayAccountModelPriority{RankByAccountID: map[string]int{
-			"a-1": ModelPriorityRankDirect,
+			"a-1": ModelPriorityRankDirect, "a-2": ModelPriorityRankUnsupported,
 		}},
 		PreFilterSkipped: []AccountSkip{
 			{AccountID: "pre-1", Reason: CapabilitySkipReasonMismatch},
@@ -417,8 +419,10 @@ func TestW1bPreFilterSkippedInDecisionSummary(t *testing.T) {
 	if summary.PreFilterSkippedTrunc {
 		t.Fatal("preFilterSkipped must not truncate under the cap")
 	}
-	// 既有 skipped 语义不受影响（quota 在前 + 模型 unsupported 在后）。
-	if len(summary.Skipped) != 1 || summary.Skipped[0].AccountID != "q-1" {
+	// 既有 skipped 语义不受影响（模型秩 unsupported 投影，稳定排序；quota
+	// 跳过项已随授权额度域退役，skipped 只剩 model_unsupported 来源）。
+	if len(summary.Skipped) != 1 || summary.Skipped[0].AccountID != "a-2" ||
+		summary.Skipped[0].Reason != DispatchSkipReasonModelUnsupported {
 		t.Fatalf("skipped = %#v", summary.Skipped)
 	}
 	// JSON 形状：preFilterSkipped/preFilterSkippedCount 在场；键名契约。

@@ -1,25 +1,35 @@
 package playground
 
 // 演练场路由（docs/functions/演练场设计.md §3）：经 cmd/juhe-ai-gateway 组合
-// 根挂载 GET/POST /__aisys__/api/playground/...（kernel Register，与 my-chat
-// 同级，自动获得 kernel 的 body limit / IP rate limit / no-store 包裹）；每条
-// 路由套 RequireSession(true)。端点族：
+// 根挂载 GET/POST /__aisys__/api/playground/...（kernel Register，自动获得
+// kernel 的 body limit / IP rate limit / no-store 包裹）；每条路由套
+// RequireSession(true)。端点族：
 //
-//	GET  /accounts                账户与模型目录（四页共用）
+//	GET  /key-models              所选 API Key 的模型候选（六页共用；query
+//	                              apiKeyId）
 //	POST /chat/stream             一次性对话 SSE
-//	POST /images                  同步生图（产物落暂存 §3.8）
+//	POST /images/references       参考图上传（§3.4.1，v1.2）
+//	POST /images/jobs             创建生成任务（§3.4.2，v1.2 异步）
+//	GET  /images/jobs             生成历史列表（§3.4.3）
+//	GET  /images/jobs/{id}        任务详情轮询（§3.4.4）
 //	POST /videos                  异步视频创建（任务引用落暂存）
 //	GET  /videos/{jobId}          视频任务轮询
 //	GET  /videos/{jobId}/content  视频产物字节流（jobId 代理，不落盘）
 //	POST /speech                  同步语音合成（产物落暂存 §3.8）
-//	GET  /artifacts               当前用户暂存清单（恢复端点 §3.8）
+//	POST /embeddings              同步向量生成（无产物落盘 §3.9）
+//	POST /rerank                  同步重排（无产物落盘 §3.10）
+//	GET  /artifacts               当前用户暂存清单（恢复端点 §3.8，v1.2 起无
+//	                              images 字段）
 //	GET  /artifacts/{id}/content  暂存产物字节流（视频不走此端点）
+//
+// v1.0 的 POST /images（同步生图）已随 §8/v1.2 退役。
 
 import (
 	"context"
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/kernel"
 )
@@ -28,33 +38,51 @@ import (
 // chat 面 chatSystemAPIJSONBodyLimit 同模式）。
 const playgroundJSONBodyLimit = 64 * 1024 * 1024
 
-// playgroundRoutes 是演练场路由运行时（会话/任务零落库，设计 §1.2；artifacts
-// 是产物暂存后端，生产注入 PG 实现）。
+// playgroundRoutes 是演练场路由运行时（artifacts 是产物暂存后端、imageJobs
+// 是图像任务存储，生产注入 PG 实现；imageRunner 是图像任务执行器，由 Register
+// 自动装配——功能默认生效不设开关）。
 type playgroundRoutes struct {
-	deps      *Deps
-	artifacts ArtifactStore
+	deps        *Deps
+	artifacts   ArtifactStore
+	imageJobs   ImageJobStore
+	imageRunner *ImageJobRunner
 }
 
 // Register 挂载演练场路由族到 kernel（pattern 键 "METHOD /prefix/path"，与
-// chat Deps.Register 同款挂载风格）。
+// chat Deps.Register 同款挂载风格）。ImageJobs 已注入且未显式装配 ImageRunner
+// 时在此构造执行器并回写 Deps（cmd 层随后可取它做启动恢复）。
 func (d *Deps) Register(k Registerer, prefix string) {
 	if prefix == "" {
 		prefix = "/__aisys__/api/playground"
 	}
-	if d.FetchURL == nil {
-		d.FetchURL = defaultFetchURL
+	rt := &playgroundRoutes{deps: d, artifacts: d.Artifacts, imageJobs: d.ImageJobs, imageRunner: d.ImageRunner}
+	if rt.imageJobs != nil && rt.imageRunner == nil {
+		rt.imageRunner = NewImageJobRunner(d, rt.imageJobs, d.ImageCost)
+		d.ImageRunner = rt.imageRunner
 	}
-	rt := &playgroundRoutes{deps: d, artifacts: d.Artifacts}
+	// 参考图上传的 body limit 覆盖（§3.4.1 B1 修复）：10MB 原图经 base64 膨胀
+	// 4/3 ≈ 13.34MB，JSON 包裹后仍超 kernel 默认 256KiB，故按领域读取上限
+	// referenceImageBodyMaxBytes（20MB，膨胀系数 1.5 倍余量）登记路由级覆盖；
+	// 领域校验 10MB（decodeReferenceImage）仍是真实上限。kernel 不支持该可选
+	// 能力（测试直挂 mux）时跳过，行为同直挂场景。
+	if registrar, ok := k.(bodyLimitOverrideRegistrar); ok {
+		registrar.RegisterBodyLimitOverride(http.MethodPost, prefix+"/images/references", referenceImageBodyMaxBytes)
+	}
 	mount := func(method, pattern string, handler http.HandlerFunc) {
 		k.Register(method+" "+prefix+pattern, rt.wrap(handler))
 	}
-	mount("GET", "/accounts", rt.accountsHandler)
+	mount("GET", "/key-models", rt.keyModelsHandler)
 	mount("POST", "/chat/stream", rt.chatStreamHandler)
-	mount("POST", "/images", rt.imagesHandler)
+	mount("POST", "/images/references", rt.imageReferencesHandler)
+	mount("POST", "/images/jobs", rt.imageJobsCreateHandler)
+	mount("GET", "/images/jobs", rt.imageJobsListHandler)
+	mount("GET", "/images/jobs/{id}", rt.imageJobGetHandler)
 	mount("POST", "/videos", rt.videosCreateHandler)
 	mount("GET", "/videos/{jobId}", rt.videosPollHandler)
 	mount("GET", "/videos/{jobId}/content", rt.videosContentHandler)
 	mount("POST", "/speech", rt.speechHandler)
+	mount("POST", "/embeddings", rt.embeddingsHandler)
+	mount("POST", "/rerank", rt.rerankHandler)
 	mount("GET", "/artifacts", rt.artifactsHandler)
 	mount("GET", "/artifacts/{id}/content", rt.artifactContentHandler)
 }
@@ -69,78 +97,64 @@ func (rt *playgroundRoutes) wrap(next http.HandlerFunc) http.Handler {
 	return handler
 }
 
-// accountsHandler 服务 GET /accounts（设计 §3.2：单请求四页共用；仅列 active
-// 且启用、当前用户可见者；不可派发对应协议的模型不列）。
-func (rt *playgroundRoutes) accountsHandler(w http.ResponseWriter, r *http.Request) {
+// keyModelsHandler 服务 GET /key-models?apiKeyId=（设计 §3.2 真实 Key 化修订：
+// 所选 Key 的分组模型并集 ∪ 目录分类，六页共用；Key 不存在/非本人 404）。
+func (rt *playgroundRoutes) keyModelsHandler(w http.ResponseWriter, r *http.Request) {
 	scope, err := rt.deps.ScopeResolver(r)
 	if err != nil {
 		writeHTTPError(w, unauthorizedError(err))
 		return
 	}
-	if rt.deps.Accounts == nil {
-		writeHTTPError(w, &HTTPError{Status: http.StatusServiceUnavailable, Code: codeEndpointDegraded, Message: "账户列表暂不可用，请稍后重试"})
+	if rt.deps.KeyModels == nil {
+		writeHTTPError(w, &HTTPError{Status: http.StatusServiceUnavailable, Code: codeEndpointDegraded, Message: "模型候选暂不可用，请稍后重试"})
 		return
 	}
-	options, listErr := rt.deps.Accounts.ListAccountOptions(r.Context(), scope)
-	if listErr != nil {
-		writeHTTPError(w, &HTTPError{Status: http.StatusInternalServerError, Code: codeEndpointDegraded, Message: "账户列表查询失败"})
+	apiKeyID := strings.TrimSpace(r.URL.Query().Get("apiKeyId"))
+	if apiKeyID == "" {
+		writeHTTPError(w, invalidRequest("apiKeyId 必填"))
 		return
 	}
-	accounts := make([]accountCatalogEntry, 0, len(options))
-	for _, option := range options {
-		// active 且启用（Option.Status 为生效状态原值；ref.Enabled 为生效
-		// active 投影，双口径复核防快照漂移）；无运行时快照（不在任何启用
-		// 分组）的账户无法固定派发任何协议，整户剔除（chat 面模型作用域
-		// convergeChatAccountScope 空视图同口径）。
-		if option.ID == "" || option.Status != "active" {
-			continue
-		}
-		ref, catalog, transportView, viewErr := rt.resolveAccountPlaygroundView(r.Context(), scope, option.ID)
-		// 单户查询失败/未启用/无快照时跳过该户继续列表——属列表部分结果边界：
-		// 全局「不静默降级」条款约束的是业务写入路径吞错改行为；此处是展示面
-		// 目录列表，逐户失败收敛为剔除该条目，整表查询错误已由上方 listErr →
-		// 500 显式承接，整单拒绝反而会把单户脏数据放大为整页不可用。
-		if viewErr != nil || ref == nil || !ref.Enabled || transportView == nil {
-			continue
-		}
-		accounts = append(accounts, accountCatalogEntry{
-			AccountID:   option.ID,
-			AccountName: option.Name,
-			// 响应供应商码以账户事实（ref）为准：Option 与 ref 同表同列，取
-			// ref 保证与目录分类用的 providerCode 单一来源。
-			ProviderCode: ref.ProviderCode,
-			Models:       classifyCatalogModels(normalizeProviderToken(ref.ProviderCode), catalog, transportView),
-		})
-	}
-	writeOKPayload(w, accountsResponse{Accounts: accounts})
-}
-
-// accountsResponse 是 GET /accounts 响应（设计 §3.2）。
-type accountsResponse struct {
-	Accounts []accountCatalogEntry `json:"accounts"`
-}
-
-// accountCatalogEntry 是单账户的目录条目。
-type accountCatalogEntry struct {
-	AccountID    string        `json:"accountId"`
-	AccountName  string        `json:"accountName"`
-	ProviderCode string        `json:"providerCode"`
-	Models       []ModelOption `json:"models"`
-}
-
-// resolveAccountModels 解析账户视图并按 §3.2 分类目录（各端点候选校验共用）。
-// 账户不在数据范围时 ref 为 nil（由调用方决定 404 映射），查询面错误以
-// HTTPError 返回。
-func (rt *playgroundRoutes) resolveAccountModels(ctx context.Context, scope Scope, accountID string) (*AccountRef, []ModelOption, *HTTPError) {
-	ref, catalog, transportView, httpErr := rt.resolveAccountPlaygroundView(ctx, scope, accountID)
+	rows, httpErr := rt.deps.KeyModels.ListKeyModels(r.Context(), scope.ViewerID, apiKeyID)
 	if httpErr != nil {
-		return nil, nil, httpErr
+		writeHTTPError(w, httpErr)
+		return
 	}
-	if ref == nil {
-		return nil, nil, nil
+	writeOKPayload(w, keyModelsResponse{Models: rows})
+}
+
+// keyModelsResponse 是 GET /key-models 响应（设计 §3.2：行形状
+// {modelId, kind, providerCode, imageEstimate?}）。
+type keyModelsResponse struct {
+	Models []KeyModelRow `json:"models"`
+}
+
+// resolveKeyModels 解析所选 Key 的模型候选并投影为 (modelId, kind) 集合
+// （六域请求的候选校验共用）：Key 不存在/非请求者本人/读取失败经 KeyModels
+// 端口以 *HTTPError 收敛；端口未装配显式降级 503。
+func (rt *playgroundRoutes) resolveKeyModels(ctx context.Context, viewerID, apiKeyID string) ([]ModelOption, *HTTPError) {
+	if rt.deps.KeyModels == nil {
+		return nil, &HTTPError{Status: http.StatusServiceUnavailable, Code: codeEndpointDegraded, Message: "模型候选暂不可用，请稍后重试"}
 	}
-	options := classifyCatalogModels(normalizeProviderToken(ref.ProviderCode), catalog, transportView)
-	return ref, options, nil
+	rows, httpErr := rt.deps.KeyModels.ListKeyModels(ctx, viewerID, apiKeyID)
+	if httpErr != nil {
+		return nil, httpErr
+	}
+	options := make([]ModelOption, 0, len(rows))
+	for _, row := range rows {
+		options = append(options, ModelOption{ModelID: row.ModelID, Kind: row.Kind})
+	}
+	return options, nil
+}
+
+// resolveKeyModelRows 解析所选 Key 的模型候选行（KeyModelRow 全投影，图像
+// 任务创建需要 providerCode 计价投影；六域候选校验可经 resolveKeyModels 走
+// 同一读取链）。Key 不存在/非请求者本人/读取失败经 KeyModels 端口以
+// *HTTPError 收敛；端口未装配显式降级 503。
+func (rt *playgroundRoutes) resolveKeyModelRows(ctx context.Context, viewerID, apiKeyID string) ([]KeyModelRow, *HTTPError) {
+	if rt.deps.KeyModels == nil {
+		return nil, &HTTPError{Status: http.StatusServiceUnavailable, Code: codeEndpointDegraded, Message: "模型候选暂不可用，请稍后重试"}
+	}
+	return rt.deps.KeyModels.ListKeyModels(ctx, viewerID, apiKeyID)
 }
 
 // modelOptionOf 取指定 kind 的候选条目（不在候选时返回 nil）。
@@ -201,9 +215,11 @@ type okEnvelope struct {
 	Data any `json:"data"`
 }
 
-// writeOKPayload 渲染 200 JSON 载荷（{data: payload} 成功信封，四个 JSON 成功
-// 端点共用：accounts/images/videosCreate/videosPoll；SSE 帧与二进制端点
-// （视频 content/语音音频）非 JSON 载荷，不经此通道）。
+// writeOKPayload 渲染 200 JSON 载荷（{data: payload} 成功信封，全部 JSON 成功
+// 端点共用：keyModels/chatStream 外的 imagesReferences/imagesJobsCreate/
+// imagesJobsList/imagesJob/videosCreate/videosPoll/embeddings/rerank/speech/
+// references/artifacts 清单；SSE 帧与二进制端点（视频 content/语音音频）非
+// JSON 载荷，不经此通道）。
 func writeOKPayload(w http.ResponseWriter, payload any) {
 	kernel.WriteJSON(w, http.StatusOK, okEnvelope{Data: payload})
 }

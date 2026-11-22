@@ -62,7 +62,8 @@ const systemTeamsPGFixtureSchema = `
       status text NOT NULL DEFAULT 'active',
       created_by text NOT NULL,
       created_at text NOT NULL,
-      updated_at text NOT NULL
+      updated_at text NOT NULL,
+      deleted_at text
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.system_team_members (
       id text PRIMARY KEY,
@@ -95,15 +96,11 @@ const systemTeamsPGFixtureSchema = `
       last_source_changed_at text,
       remark text,
       expires_at text,
-      limits_json text,
       created_by text NOT NULL,
       created_at text NOT NULL,
       revoked_by text,
       revoked_at text,
       revoked_reason text,
-      status_reason text,
-      status_changed_at text,
-      acceptance_mode text DEFAULT 'legacy',
       updated_at text NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.resource_authorization_sources (
@@ -120,23 +117,13 @@ const systemTeamsPGFixtureSchema = `
       revoked_by text,
       revoked_at text,
       grant_id text,
-      acceptance_mode text DEFAULT 'legacy',
       accepted_at text,
       accepted_by text,
       declined_at text,
       declined_by text,
       returned_at text,
       returned_by text,
-      needs_review_at text,
-      needs_review_reason text,
-      needs_review_detail_json text,
-      accepted_source_revision text,
-      observed_source_revision text,
-      accepted_source_revision_version integer,
-      revision_version integer DEFAULT 1,
       expiry_cycle integer DEFAULT 0,
-      expired_from_status text,
-      pending_expires_at text,
       updated_at text NOT NULL
     );
 	CREATE TABLE IF NOT EXISTS juhe_business.resource_authorization_grants (
@@ -151,26 +138,14 @@ const systemTeamsPGFixtureSchema = `
       status text NOT NULL DEFAULT 'active',
       remark text,
       expires_at text,
-      limits_json text,
       created_by text NOT NULL,
       created_at text NOT NULL,
       revoked_by text,
       revoked_at text,
-      acceptance_mode text DEFAULT 'legacy',
-      accepted_at text,
-      accepted_by text,
-      team_approved_at text,
-      team_approved_by text,
-      owner_approved_at text,
-      owner_approved_by text,
       source_revision text,
       expiry_cycle integer DEFAULT 0,
-      pending_expires_at text,
-      expired_from_status text,
       ended_at text,
       ended_reason text,
-      legacy_basis text,
-      legacy_review_deadline text,
       updated_at text NOT NULL,
       CHECK (
         (grantee_type = 'system_account' AND grantee_system_account_id IS NOT NULL AND grantee_team_id IS NULL)
@@ -202,12 +177,13 @@ const systemTeamsPGFixtureSchema = `
       authorization_id text PRIMARY KEY,
       system_account_id text NOT NULL,
       group_id text NOT NULL,
-      enabled integer NOT NULL DEFAULT 1,
-      snapshot_revision text,
-      snapshot_mode text DEFAULT 'normal',
+      group_type text NOT NULL DEFAULT 'personal',
+      scheduling_policy_json text,
       created_at text NOT NULL,
       updated_at text NOT NULL
     );
+    -- （revision 31 授权大简化：settings 无 enabled/snapshot 列，行在场即领取；
+    -- resource_authorizations / grants 无 limits_json。）
 	CREATE TABLE IF NOT EXISTS juhe_business.request_quota_hourly_window_scope_bindings (
       system_account_id text NOT NULL,
       scope_type text NOT NULL,

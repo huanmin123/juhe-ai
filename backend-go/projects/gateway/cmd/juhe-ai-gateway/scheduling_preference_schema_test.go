@@ -115,13 +115,13 @@ func TestSchedulingPreferenceSchemaPostgresArms(t *testing.T) {
 		VALUES ('schpref-builtin-chat-cost-first', NULL, '默认调度偏好', 'cost_first', 0, '2026-10-12T08:00:00Z', '2026-10-12T08:00:00Z')`
 
 	scenarios := []struct {
-		name        string
-		tableDDL    string
-		apiKeysDDL  string
-		builtinDDL  string
-		recordJSON  string
-		wantErr     string
-		wantRemedy  string
+		name       string
+		tableDDL   string
+		apiKeysDDL string
+		builtinDDL string
+		recordJSON string
+		wantErr    string
+		wantRemedy string
 	}{
 		{"pass", correctTable, correctAPIKeys, builtinInsert, schedulingPreferenceCompletedRecordJSON(t), "", ""},
 		{"missing-table", "", apiKeysNoReferenceDDL, "", "", "表缺失", "--ensure-schema"},

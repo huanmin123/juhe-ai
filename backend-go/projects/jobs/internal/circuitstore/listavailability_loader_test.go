@@ -114,28 +114,26 @@ func seedOwnerAccount(t *testing.T, db *sql.DB) {
 
 func TestAccountFilterStatusesClassification(t *testing.T) {
 	available := effectiveAvailability{available: true, status: "available"}
-	if got := accountFilterStatuses("active", &available, false); len(got) != 1 || got[0] != "active" {
+	if got := accountFilterStatuses("active", &available); len(got) != 1 || got[0] != "active" {
 		t.Fatalf("active+available 应分类为 active: %v", got)
 	}
 	cooldown := blockedAvailability("instance_cooldown", "", "", "", "", "")
-	if got := accountFilterStatuses("active", &cooldown, false); len(got) != 1 || got[0] != "temporary_unavailable" {
+	if got := accountFilterStatuses("active", &cooldown); len(got) != 1 || got[0] != "temporary_unavailable" {
 		t.Fatalf("instance_cooldown 应分类为 temporary_unavailable: %v", got)
 	}
-	// derivedStatus 缺失（无派生状态）时 quota exceeded 生效（Node 同序）。
-	if got := accountFilterStatuses("active", nil, true); len(got) != 1 || got[0] != "rate_limited" {
-		t.Fatalf("quota exceeded（无派生状态）应分类为 rate_limited: %v", got)
-	}
+	//（quota exceeded 臂随授权额度域退役：accountFilterStatuses 收窄为
+	// (itemStatus, availability) 两参，额度超限分类不再存在。）
 	degraded := effectiveAvailability{available: true, status: "runtime_degraded"}
-	if got := accountFilterStatuses("active", &degraded, false); len(got) != 1 || got[0] != "active" {
+	if got := accountFilterStatuses("active", &degraded); len(got) != 1 || got[0] != "active" {
 		t.Fatalf("runtime_degraded 应分类为 active: %v", got)
 	}
 	unschedulable := blockedAvailability("instance_unschedulable", "", "", "", "", "")
-	if got := accountFilterStatuses("active", &unschedulable, false); len(got) != 1 || got[0] != "disabled" {
+	if got := accountFilterStatuses("active", &unschedulable); len(got) != 1 || got[0] != "disabled" {
 		t.Fatalf("instance_unschedulable 应分类为 disabled: %v", got)
 	}
 	// status=active 且不可用且无派生状态：空集合 → 调用方抛错。
 	unknownBlocked := effectiveAvailability{available: false, status: ""}
-	if got := accountFilterStatuses("active", &unknownBlocked, false); len(got) != 0 {
+	if got := accountFilterStatuses("active", &unknownBlocked); len(got) != 0 {
 		t.Fatalf("active+不可用+无派生应返回空集合: %v", got)
 	}
 }

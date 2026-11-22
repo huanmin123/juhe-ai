@@ -70,7 +70,6 @@
     "test:system-team-lazy-detail": "tsx --tsconfig tsconfig.json src/scripts/regression/system-team-lazy-detail-regression.ts",
     "test:system-team-demand-write": "tsx --tsconfig tsconfig.json src/scripts/regression/system-team-demand-write-regression.ts",
     "test:system-team-list-mutation": "tsx --tsconfig tsconfig.json src/scripts/regression/system-team-list-mutation-regression.ts",
-    "test:system-team-history-lazy": "tsx --tsconfig tsconfig.json src/scripts/regression/system-team-history-lazy-regression.ts",
     "test:announcement-progressive-loading": "tsx --tsconfig tsconfig.json src/scripts/regression/announcement-progressive-loading-regression.ts",
     "test:announcement-list-mutation": "tsx --tsconfig tsconfig.json src/scripts/regression/announcement-list-mutation-regression.ts",
     "test:account-test-task-polling": "tsx --tsconfig tsconfig.json scripts/regression/account-test-task-polling-regression.ts",

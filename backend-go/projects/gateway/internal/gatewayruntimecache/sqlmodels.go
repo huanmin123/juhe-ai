@@ -395,23 +395,20 @@ func (m *SQLReadModels) ResolveGroupUsageAccessMetadata(ctx context.Context, gro
 	if authorization == nil {
 		return nil, nil
 	}
-	// Fail closed (§4.6): a missing settings row, a disabled switch, an
-	// unbuilt snapshot, or a mismatched receiver/group is a denial — never a
-	// silent allow.
-	var localEnabled int
-	var snapshotRevision, settingsOwner, settingsGroup string
-	err = m.db.QueryRowContext(ctx, m.bind(`SELECT enabled, COALESCE(snapshot_revision, ''),
-			system_account_id, group_id
+	// Fail closed (§4.6)：settings 行在领取事务内落场（revision 31 后不再有
+	// 每成员开关与快照列），行缺失或 receiver/group 不匹配即拒绝，绝不静默放行。
+	var settingsOwner, settingsGroup string
+	err = m.db.QueryRowContext(ctx, m.bind(`SELECT system_account_id, group_id
 		FROM `+m.table("group_authorization_settings")+`
 		WHERE authorization_id = ? LIMIT 1`), authorization.id).
-		Scan(&localEnabled, &snapshotRevision, &settingsOwner, &settingsGroup)
+		Scan(&settingsOwner, &settingsGroup)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	if localEnabled != 1 || snapshotRevision == "" || settingsOwner != systemAccountID || settingsGroup != groupID {
+	if settingsOwner != systemAccountID || settingsGroup != groupID {
 		return nil, nil
 	}
 	return &GroupUsageAccessMetadata{

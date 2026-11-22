@@ -50,9 +50,10 @@ func TestW1BusInvalidatorAdapters(t *testing.T) {
 		t.Fatalf("clear no-op 必须成功: %v", err)
 	}
 	for name, call := range map[string]func() error{
-		"gateway runtime":  func() error { return accountsNil.InvalidateGatewayRuntime("r") },
-		"group account":    func() error { return accountsNil.InvalidateGroupAccountIds() },
-		"authz quota":      func() error { return accountsNil.InvalidateAuthorizationQuota("r") },
+		"gateway runtime": func() error { return accountsNil.InvalidateGatewayRuntime("r") },
+		"group account":   func() error { return accountsNil.InvalidateGroupAccountIds() },
+		// （"authz quota" 臂随授权额度域退役：accountsBusInvalidator 不再有
+		// InvalidateAuthorizationQuota，K5 总线不再广播额度主题。）
 		"runtime relay":    func() error { return accountsNil.InvalidateRuntime("r") },
 		"key validation":   func() error { return accountsNil.InvalidateAPIKeyValidation("r") },
 		"authz validation": func() error { return authzNil.InvalidateAPIKeyValidation("r") },
@@ -71,7 +72,6 @@ func TestW1BusInvalidatorAdapters(t *testing.T) {
 	for name, call := range map[string]func() error{
 		"gateway runtime": func() error { return wiredAccounts.InvalidateGatewayRuntime("r") },
 		"group account":   func() error { return wiredAccounts.InvalidateGroupAccountIds() },
-		"authz quota":     func() error { return wiredAccounts.InvalidateAuthorizationQuota("r") },
 		"runtime relay":   func() error { return wiredAccounts.InvalidateRuntime("r") },
 		"key validation":  func() error { return wiredAccounts.InvalidateAPIKeyValidation("r") },
 	} {

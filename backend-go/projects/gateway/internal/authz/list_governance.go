@@ -5,8 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"strings"
-
-	"github.com/huanminabc/juhe-ai/backend-go-platform/authzrevision"
 )
 
 type SourceSummary struct {
@@ -24,11 +22,8 @@ type SourceSummary struct {
 	SourceType        string `json:"sourceType"`
 	Status            string `json:"status"`
 	RuntimeStatus     string `json:"runtimeStatus"`
-	VendorCode        string `json:"vendorCode,omitempty"`
-	ProxySummary      string `json:"proxySummary,omitempty"`
 	ExpiresAt         string `json:"expiresAt,omitempty"`
 	AcceptedAt        string `json:"acceptedAt,omitempty"`
-	InstanceID        string `json:"instanceId,omitempty"`
 	Bound             bool   `json:"bound"`
 	CreatedAt         string `json:"createdAt"`
 	CanAccept         bool   `json:"canAccept"`
@@ -36,21 +31,24 @@ type SourceSummary struct {
 	CanReturn         bool   `json:"canReturn"`
 }
 
-const inboundSourceColumns = `s.id, COALESCE(s.grant_id, ''), s.authorization_id,
+// inboundSourceQuery assembles the receiver-visible source projection with
+// the given WHERE clause. 绑定列是授权域事实（领取即绑定过分组），不看
+// group_accounts.enabled：该开关是账户域运行时投射（授权暂停/实例停用会
+// 置 0），反映的是调度可用性，不是授权绑定本身——授权中心只维护授权状态。
+func (s *Store) inboundSourceQuery(where string) string {
+	return `SELECT s.id, COALESCE(s.grant_id, ''), s.authorization_id,
 	g.resource_type, g.resource_id,
 	COALESCE(a.name, g2.name, ''), g.resource_owner_system_account_id,
 	COALESCE(owner.display_name, owner.username, ''),
 	g.grantee_type, g.status, COALESCE(g.grantee_team_id, ''), COALESCE(t.name, ''),
 	s.source_type, s.status, ra.status,
-	COALESCE(src.vendor_code, ''),
 	COALESCE(ra.expires_at, ''), COALESCE(s.accepted_at, ''),
-	COALESCE(inst.id, ''), COALESCE(ga.enabled, 0),
-	s.created_at`
-
-// inboundSourceQuery assembles the receiver-visible source projection with
-// the given WHERE clause (group bindings read the live group_accounts rows).
-func (s *Store) inboundSourceQuery(where string) string {
-	return `SELECT ` + inboundSourceColumns + `
+	COALESCE((SELECT 1 FROM ` + s.table("group_accounts") + ` ga
+		WHERE ga.account_id = inst.id
+			AND ga.system_account_id = ra.grantee_system_account_id
+			AND ga.account_authorization_id = ra.id
+		LIMIT 1), 0),
+	s.created_at
 	FROM ` + s.table("resource_authorization_sources") + ` s
 	JOIN ` + s.table("resource_authorization_grants") + ` g ON g.id = s.grant_id
 	JOIN ` + s.table("resource_authorizations") + ` ra ON ra.id = s.authorization_id
@@ -58,10 +56,8 @@ func (s *Store) inboundSourceQuery(where string) string {
 	LEFT JOIN ` + s.table("groups") + ` g2 ON g.resource_type = 'group' AND g2.id = g.resource_id
 	LEFT JOIN ` + s.table("system_accounts") + ` owner ON owner.id = g.resource_owner_system_account_id
 	LEFT JOIN ` + s.table("system_teams") + ` t ON t.id = g.grantee_team_id
-	LEFT JOIN ` + s.table("accounts") + ` src ON g.resource_type = 'account' AND src.id = g.resource_id
 	LEFT JOIN ` + s.table("accounts") + ` inst ON inst.authorization_instance_authorization_id = ra.id
 		AND inst.system_account_id = ra.grantee_system_account_id AND inst.deleted_at IS NULL
-	LEFT JOIN ` + s.table("group_accounts") + ` ga ON ga.account_id = inst.id AND ga.enabled = 1
 	WHERE ` + where
 }
 
@@ -85,9 +81,9 @@ func (s *Store) scanInboundRows(ctx context.Context, rows *sql.Rows) ([]SourceSu
 		if err := rows.Scan(&item.SourceID, &item.GrantID, &item.RuntimeID,
 			&item.ResourceType, &item.ResourceID, &item.ResourceName, &item.ResourceOwnerID,
 			&item.ResourceOwnerName, &item.GranteeType, &grantStatus, &item.TeamID, &item.TeamName,
-			&item.SourceType, &item.Status, &item.RuntimeStatus, &item.VendorCode,
+			&item.SourceType, &item.Status, &item.RuntimeStatus,
 			&item.ExpiresAt, &item.AcceptedAt,
-			&item.InstanceID, &bound, &item.CreatedAt); err != nil {
+			&bound, &item.CreatedAt); err != nil {
 			return nil, err
 		}
 		item.Bound = bound == 1
@@ -99,31 +95,9 @@ func (s *Store) scanInboundRows(ctx context.Context, rows *sql.Rows) ([]SourceSu
 		item.CanDecline = item.Status == StatusPending
 		item.CanReturn = item.Status == StatusActive ||
 			(grantStatus == StatusPaused && item.Status == StatusPending)
-		if item.ResourceType == "account" {
-			s.enrichSourceMaterial(ctx, &item)
-		}
 		out = append(out, item)
 	}
 	return out, rows.Err()
-}
-
-func (s *Store) enrichSourceMaterial(ctx context.Context, item *SourceSummary) {
-	secret, err := s.revisionSecretOrFail()
-	if err != nil {
-		return
-	}
-	snapshot, err := authzrevision.Load(ctx, s.db, item.ResourceID, secret)
-	if err != nil {
-		return
-	}
-	if snapshot.ProxyProfile != nil {
-		item.ProxySummary = snapshot.ProxyProfile.Type + " " + snapshot.ProxyProfile.Host
-	} else if snapshot.ProxyPool != nil {
-		item.ProxySummary = "pool " + snapshot.ProxyPool.ID
-	}
-	if snapshot.VendorCode != "" {
-		item.VendorCode = snapshot.VendorCode
-	}
 }
 
 // OfferSummary is one outbound/owned grant row.
@@ -155,6 +129,8 @@ type OfferSummary struct {
 }
 
 func (s *Store) listOffers(ctx context.Context, where string, args ...any) ([]OfferSummary, error) {
+	// accepted_at 取该 grant 最早领取时间；零已领取来源（pending 等）时
+	// min() 为 NULL，必须 COALESCE 空串，否则 Scan 进 string 直接 500。
 	query := `SELECT g.id, g.resource_type, g.resource_id, COALESCE(a.name, gr.name, ''),
 			g.resource_owner_system_account_id,
 			g.grantee_type, COALESCE(g.grantee_system_account_id, ''), COALESCE(gu.display_name, gu.username, ''),
@@ -162,8 +138,8 @@ func (s *Store) listOffers(ctx context.Context, where string, args ...any) ([]Of
 			g.status, COALESCE(g.ended_reason, ''), COALESCE(g.remark, ''),
 			COALESCE(g.expires_at, ''),
 			g.created_by, COALESCE(cu.display_name, cu.username, ''),
-			(SELECT min(s.accepted_at) FROM ` + s.table("resource_authorization_sources") + ` s
-				WHERE s.grant_id = g.id AND s.accepted_at IS NOT NULL),
+			COALESCE((SELECT min(s.accepted_at) FROM ` + s.table("resource_authorization_sources") + ` s
+				WHERE s.grant_id = g.id AND s.accepted_at IS NOT NULL), ''),
 			g.created_at, COALESCE(g.ended_at, ''),
 			(SELECT count(*) FROM ` + s.table("resource_authorization_sources") + ` s WHERE s.grant_id = g.id AND s.status = 'pending'),
 			(SELECT count(*) FROM ` + s.table("resource_authorization_sources") + ` s WHERE s.grant_id = g.id AND s.status = 'active')
@@ -196,12 +172,11 @@ func (s *Store) listOffers(ctx context.Context, where string, args ...any) ([]Of
 	return out, rows.Err()
 }
 
+// ListOutboundOffers is the sender view: grants on resources the account owns
+// or created on someone's behalf, both personal and team grantees（原 owned
+// 视角 = owner 维度的子集，已并入此处，页签只保留收发两面）。
 func (s *Store) ListOutboundOffers(ctx context.Context, accountID string) ([]OfferSummary, error) {
-	return s.listOffers(ctx, `(g.resource_owner_system_account_id = ? OR g.created_by = ?) AND g.grantee_type = 'system_account'`, accountID, accountID)
-}
-
-func (s *Store) ListOwnedOffers(ctx context.Context, ownerID string) ([]OfferSummary, error) {
-	return s.listOffers(ctx, `g.resource_owner_system_account_id = ?`, ownerID)
+	return s.listOffers(ctx, `(g.resource_owner_system_account_id = ? OR g.created_by = ?)`, accountID, accountID)
 }
 
 func (s *Store) ListAllOffers(ctx context.Context, status string) ([]OfferSummary, error) {
@@ -223,7 +198,7 @@ func (s *Store) ListScopedOffers(ctx context.Context, accountID, direction, stat
 	inbound := `(g.grantee_type = 'system_account' AND g.grantee_system_account_id = ?) OR ` +
 		`(g.grantee_type = 'team' AND EXISTS (
 			SELECT 1 FROM ` + s.table("system_team_members") + ` m
-			WHERE m.team_id = g.grantee_team_id AND m.system_account_id = ? AND m.status = 'active'))`
+			WHERE m.team_id = g.grantee_team_id AND m.system_account_id = ?))`
 	outbound := `g.resource_owner_system_account_id = ?`
 	where := ""
 	args := []any{}
@@ -245,67 +220,4 @@ func (s *Store) ListScopedOffers(ctx context.Context, accountID, direction, stat
 		args = append(args, status)
 	}
 	return s.listOffers(ctx, where, args...)
-}
-
-// SourceDetail is the full receiver-visible source view.
-type SourceDetail struct {
-	SourceSummary
-	Connections []authzrevision.Connection `json:"connections"`
-	Models      []string                   `json:"supportedModels"`
-}
-
-func (s *Store) GetSourceDetail(ctx context.Context, accountID, sourceID string) (*SourceDetail, error) {
-	rows, err := s.db.QueryContext(ctx, s.bind(s.inboundSourceQuery(`s.id = ? AND ra.grantee_system_account_id = ?`)+
-		` LIMIT 1`), sourceID, accountID)
-	if err != nil {
-		return nil, err
-	}
-	items, err := s.scanInboundRows(ctx, rows)
-	rows.Close()
-	if err != nil {
-		return nil, err
-	}
-	if len(items) == 0 {
-		return nil, nil
-	}
-	detail := &SourceDetail{SourceSummary: items[0]}
-	if detail.ResourceType == "account" {
-		if secret, secretErr := s.revisionSecretOrFail(); secretErr == nil {
-			snapshot, err := authzrevision.Load(ctx, s.db, detail.ResourceID, secret)
-			if err == nil {
-				detail.Connections = redactedConnections(snapshot.Connections)
-				detail.Models = snapshot.SupportedModels
-			}
-		}
-	}
-	return detail, nil
-}
-
-// redactedConnections projects the snapshot connections without URL path/query
-// or userinfo; the receiver only needs the endpoint host and protocol modes.
-func redactedConnections(in []authzrevision.Connection) []authzrevision.Connection {
-	out := make([]authzrevision.Connection, 0, len(in))
-	for _, connection := range in {
-		connection.BaseURL = connectionHost(connection.BaseURL)
-		out = append(out, connection)
-	}
-	return out
-}
-
-// connectionHost strips scheme, path, query and userinfo from a base URL; the
-// receiver-visible surface may disclose the endpoint host only.
-func connectionHost(raw string) string {
-	host := raw
-	if strings.Contains(host, "://") {
-		if idx := strings.Index(host, "://"); idx >= 0 {
-			host = host[idx+3:]
-		}
-	}
-	if idx := strings.Index(host, "@"); idx >= 0 {
-		host = host[idx+1:]
-	}
-	if idx := strings.IndexAny(host, "/?#"); idx >= 0 {
-		host = host[:idx]
-	}
-	return host
 }

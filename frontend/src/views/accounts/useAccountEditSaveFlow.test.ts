@@ -66,7 +66,6 @@ function mountedOAuthCreateFlow(capabilityDomain: AccountFormModel['capabilityDo
     editingAdvancedBaseline: ref(undefined),
     editingBasicBaseline: ref(undefined),
     editingAccountScopeParams: () => undefined,
-    editingAuthorizedAccount: computed(() => false),
     editingId: ref(undefined),
     extractApiErrorMessage: (_error, fallback) => fallback,
     form,

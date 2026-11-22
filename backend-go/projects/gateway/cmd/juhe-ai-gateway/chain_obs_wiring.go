@@ -151,7 +151,7 @@ func wireGatewayObservabilityArms(services *chainRuntimeServices, cfg runtimeCon
 	observer, err := gatewayobs.GetGatewayRoutingObservability(context.Background(), gatewayobs.RuntimeDriverConfig{
 		RuntimeMode:        "performance",
 		RuntimeStateDriver: "redis",
-		RedisURL:      cfg.RedisURL,
+		RedisURL:           cfg.RedisURL,
 		RedisNamespace:     rediscfg.DomainNamespace(cfg.RedisNamespace, rediscfg.DomainObs),
 	}, func(options *gatewayobs.ObserverOptions) {
 		if options.Logger == nil {

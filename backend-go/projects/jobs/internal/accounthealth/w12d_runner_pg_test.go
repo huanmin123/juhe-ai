@@ -40,9 +40,9 @@ func TestW12dReaderTeamGrantQuotaArms(t *testing.T) {
 	// 外键约束（schema 漂移修复补齐），后插会违反 FK。
 	if _, err := db.Exec(`INSERT INTO juhe_business.resource_authorizations (
 		id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, scope, status,
-		effective_source_type, effective_source_team_id, activated_at, limits_json, created_by, created_at, updated_at
+		effective_source_type, effective_source_team_id, activated_at, created_by, created_at, updated_at
 	) VALUES ('w12d-team-auth', 'account', 'w12d-team-src', 'sys_admin', 'sys_admin', 'health_check', 'active',
-		'direct', 'w12d-team-a', $1, NULL, 'w12d', $1, $1)`, w12dFixtureNowText); err != nil {
+		'direct', 'w12d-team-a', $1, 'w12d', $1, $1)`, w12dFixtureNowText); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO juhe_business.accounts (

@@ -225,8 +225,8 @@ func insertActiveMember(t *testing.T, env *testEnv, teamID, accountID, joinedAt 
 	t.Helper()
 	memberID := "teammem_" + randomHex()
 	_, err := env.store.db.Exec(fixtureBind(`INSERT INTO system_team_members
-		(id, team_id, system_account_id, member_role, status, joined_at, created_by, created_at, updated_at)
-		VALUES (?, ?, ?, 'member', 'active', ?, '', ?, ?)`), memberID, teamID, accountID, joinedAt, joinedAt, joinedAt)
+		(id, team_id, system_account_id, member_role, joined_at, created_by, created_at, updated_at)
+		VALUES (?, ?, ?, 'member', ?, '', ?, ?)`), memberID, teamID, accountID, joinedAt, joinedAt, joinedAt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,13 +301,14 @@ func TestTeamLifecycleWithAuthorizationCascade(t *testing.T) {
 	// runtime rows for the grantee (the authz state machine under test).
 	mustExec(t, env, `INSERT INTO groups (id, name, system_account_id) VALUES ('grp_1', 'Group grp_1', 'admin-id')`)
 	grantee := granteeID
-	_, err := env.authz.Create(context.Background(), authz.CreateInput{
+	// 直发（revision 31 send-and-claim）：组资源直发给尚不存在的团队 →
+	// team_not_found 拒绝（旧 authz.Create 直接生效契约已退役）。
+	_, err := env.authz.CreateOffer(context.Background(), authz.OfferInput{
 		ResourceType: "group", ResourceID: "grp_1",
-		GranteeType: "team", GranteeID: "team_1",
-	}, "admin-id")
-	// team_1 does not exist yet → expect the 团队不存在或已停用 rejection.
+		GranteeType: "team", TeamName: "平台组",
+	}, "admin-id", true, "admin-id")
 	if err == nil || !strings.Contains(err.Error(), "团队不存在或已停用") {
-		t.Fatalf("team grant without team must be rejected: %v", err)
+		t.Fatalf("team offer without team must be rejected: %v", err)
 	}
 
 	// Create the team (M03 surface).
@@ -342,6 +343,29 @@ func TestTeamLifecycleWithAuthorizationCascade(t *testing.T) {
 		`{"systemAccountIds":["x1"],"expectedUpdatedAt":"`+revision+`"}`)
 	if staleCode != http.StatusConflict {
 		t.Fatalf("stale member add: %d %v", staleCode, stalePayload)
+	}
+
+	// 直发：admin 把组资源直发给团队 → pending grant + 每成员一条 pending
+	// source（团队发放不直接生效，也不落组绑定行）。
+	offer, err := env.authz.CreateOffer(context.Background(), authz.OfferInput{
+		ResourceType: "group", ResourceID: "grp_1",
+		GranteeType: "team", TeamID: teamID,
+	}, "admin-id", true, "admin-id")
+	if err != nil || offer == nil || !offer.Created || offer.Status != "pending" || offer.GrantID == "" {
+		t.Fatalf("team offer must be pending: %+v, %v", offer, err)
+	}
+	sourceID := mustQueryString(t, env, `SELECT id FROM resource_authorization_sources
+		WHERE grant_id = ? AND source_type = 'team' AND status = 'pending'`, offer.GrantID)
+
+	// 接收方确认：成员领取 team source → runtime 行转 active，并落组可见性
+	// settings 领取行（send-and-claim 的 whole visibility contract）。
+	accepted, err := env.authz.AcceptSource(context.Background(), grantee, sourceID,
+		authz.AcceptInput{}, time.Now().UTC().Format(time.RFC3339Nano))
+	if err != nil || accepted == nil || accepted.Status != "active" {
+		t.Fatalf("grantee accept: %+v, %v", accepted, err)
+	}
+	if mustQueryInt(t, env, `SELECT count(*) FROM group_authorization_settings WHERE system_account_id = ?`, grantee) != 1 {
+		t.Fatal("claim must record the group authorization settings row")
 	}
 
 	// my-teams now shows the team for the grantee (membership scope).
@@ -381,13 +405,6 @@ func TestTeamLifecycleWithAuthorizationCascade(t *testing.T) {
 		t.Fatalf("patch changedFields = %v", patchData["changedFields"])
 	}
 
-	// History records the removed membership only after removal (C4:
-	// status='removed' filter). The member is still active → empty history.
-	code, history := env.do(t, http.MethodGet, "/__aisys__/api/system-teams/"+teamID+"/members/history", "")
-	if code != 200 || len(history["data"].(map[string]any)["items"].([]any)) != 0 {
-		t.Fatalf("history before removal must be empty: %d %v", code, history)
-	}
-
 	// Remove member → C3 payload {id, memberCount, updatedAt, removedMemberId}.
 	env.user = "admin"
 	members := env.memberIDs(t, teamID)
@@ -402,14 +419,19 @@ func TestTeamLifecycleWithAuthorizationCascade(t *testing.T) {
 		t.Fatalf("remove payload: %v", removeData)
 	}
 
-	// Now the history holds the removed row with status 'removed'.
-	code, history = env.do(t, http.MethodGet, "/__aisys__/api/system-teams/"+teamID+"/members/history", "")
-	if code != 200 || len(history["data"].(map[string]any)["items"].([]any)) != 1 {
-		t.Fatalf("history after removal: %d %v", code, history)
+	// 移除即硬删除（2026-11-22 用户裁决：团队不记录历史成员）：成员行直接消失，
+	// 且同名账户可重新加入（不再有 removed 行挡唯一索引）。
+	accountID := mustQueryString(t, env, `SELECT system_account_id FROM system_team_members WHERE id = ?`, members[0])
+	if got := mustQueryInt(t, env, `SELECT COUNT(*) FROM system_team_members WHERE id = ?`, members[0]); got != 0 {
+		t.Fatalf("removed member row must be hard deleted")
 	}
-	first := history["data"].(map[string]any)["items"].([]any)[0].(map[string]any)
-	if first["status"] != "removed" || first["removedAt"] == nil {
-		t.Fatalf("history item: %v", first)
+	// 同账户可立即重新加入（无 removed 行挡唯一索引）。
+	env.as("admin")
+	readdCode, _ := env.do(t, http.MethodPost,
+		"/__aisys__/api/system-teams/"+teamID+"/members",
+		`{"systemAccountIds":["`+accountID+`"],"expectedUpdatedAt":"`+env.teamRevision(t, teamID)+`"}`)
+	if readdCode != 200 {
+		t.Fatalf("re-add removed member must succeed: %d", readdCode)
 	}
 }
 

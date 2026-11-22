@@ -35,7 +35,6 @@ func TestComposeEntryAuthorizedFullChain(t *testing.T) {
 	row.authorizationID = sql.NullString{String: "auth-1", Valid: true}
 	row.authorizationStatus = sql.NullString{String: "active", Valid: true}
 	row.authorizationExpiresAt = sql.NullString{String: effFuture, Valid: true}
-	row.authorizationLimitsJSON = sql.NullString{String: "", Valid: false}
 	row.authorizationEffectiveSourceTeamID = sql.NullString{String: "team-1", Valid: true}
 	row.authorizationInstanceSourceID = sql.NullString{String: "src-1", Valid: true}
 	row.sourceStatus = sql.NullString{String: "active", Valid: true}
@@ -55,8 +54,6 @@ func TestComposeEntryAuthorizedFullChain(t *testing.T) {
 		payload:       buildBasePayload(row, nil, nil),
 		now:           now,
 		timezone:      time.UTC,
-		quotaExceeded: false,
-		quotaResetAt:  "",
 		todayUsage:    usageValue{RequestCount: 3, TotalTokens: 30, TotalCost: 0.3},
 		authTotal:     usageValue{RequestCount: 300, LastUsedAt: "2026-09-01T00:00:00.000Z"},
 		concurrency:   2,
@@ -77,16 +74,10 @@ func TestComposeEntryAuthorizedFullChain(t *testing.T) {
 	if entry.sortLastUsedAt == nil || *entry.sortLastUsedAt != "2026-08-01T00:00:00.000Z" {
 		t.Fatalf("排序键应取 accounts.last_used_at: %v", entry.sortLastUsedAt)
 	}
-	// 授权相关 payload 键。
+	// 授权相关 payload 键。（authorizationQuotaExceeded / authorizationLimits
+	// 键随授权额度域退役：payload 只保留 7 值状态机投影。）
 	if entry.payload["authorizationStatus"] != "active" || entry.payload["authorizationExpiresAt"] != effFuture {
 		t.Fatalf("授权键不符: %v %v", entry.payload["authorizationStatus"], entry.payload["authorizationExpiresAt"])
-	}
-	if entry.payload["authorizationQuotaExceeded"] != false {
-		t.Fatalf("authorized 行恒写 quota 键（false 也保留）: %v", entry.payload["authorizationQuotaExceeded"])
-	}
-	limits, ok := entry.payload["authorizationLimits"].(map[string]any)
-	if !ok || len(limits) != 0 {
-		t.Fatalf("空 limits JSON 应为空对象: %v", entry.payload["authorizationLimits"])
 	}
 	// 授权实例投影列取来源值与 group local 排序值。
 	if entry.accountType != "api_key" {
@@ -122,23 +113,6 @@ func TestComposeEntryAuthorizedFullChain(t *testing.T) {
 	}
 	if entry.authorizationExpiresAt == nil {
 		t.Fatalf("授权到期候选应保留: %v", entry.authorizationExpiresAt)
-	}
-	// 授权额度超限 → rate_limited 分类 + quota reset 边界。
-	entry, err = loader.composeEntry(composeInput{
-		row: row, payload: buildBasePayload(row, nil, nil), now: now,
-		quotaExceeded: true, quotaResetAt: "2030-06-01T00:00:00.000Z",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if entry.effectiveStatus != "rate_limited" || entry.effectiveAvailable {
-		t.Fatalf("授权额度超限应 rate_limited: %s %v", entry.effectiveStatus, entry.effectiveAvailable)
-	}
-	if entry.statusBoundaryAt == nil || *entry.statusBoundaryAt != "2030-06-01T00:00:00.000Z" {
-		t.Fatalf("超限边界应取 quotaResetAt: %v", entry.statusBoundaryAt)
-	}
-	if entry.quotaResetAt == nil || *entry.quotaResetAt != "2030-06-01T00:00:00.000Z" {
-		t.Fatalf("quotaResetAt 候选应保留: %v", entry.quotaResetAt)
 	}
 }
 
@@ -218,10 +192,6 @@ func TestComposeEntryRuntimeAndBalance(t *testing.T) {
 	}
 	if _, exists := entry.payload["balanceSnapshot"]; exists {
 		t.Fatalf("配置不匹配不得发布余额快照: %v", entry.payload["balanceSnapshot"])
-	}
-	// owner 行 authorized=false 时 quota 键不出现。
-	if _, exists := entry.payload["authorizationQuotaExceeded"]; exists {
-		t.Fatalf("owner 行不得写 quota 键: %v", entry.payload)
 	}
 }
 

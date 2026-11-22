@@ -95,10 +95,10 @@ func TestW1TAccountsSelectorLoaderArms(t *testing.T) {
 		}
 		mustExec(`CREATE TABLE resource_authorizations (id TEXT PRIMARY KEY, resource_type TEXT, resource_id TEXT,
 			resource_owner_system_account_id TEXT, grantee_system_account_id TEXT, status TEXT, expires_at TEXT,
-			effective_source_type TEXT, effective_source_team_id TEXT, limits_json TEXT)`)
+			effective_source_type TEXT, effective_source_team_id TEXT)`)
 		mustExec(`INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id,
-			grantee_system_account_id, status, expires_at, effective_source_type, effective_source_team_id, limits_json)
-			VALUES ('auth-w1t-p9', 'ai_account', NULL, 'sys-owner', 'sys-w1t-g', 'active', NULL, NULL, NULL, NULL)`)
+			grantee_system_account_id, status, expires_at, effective_source_type, effective_source_team_id)
+			VALUES ('auth-w1t-p9', 'ai_account', NULL, 'sys-owner', 'sys-w1t-g', 'active', NULL, NULL, NULL)`)
 		if _, err := selector.activeResourceAuthorizationsByIDs(ctx, []string{"auth-w1t-p9"}, "sys-w1t-g"); err == nil {
 			t.Fatal("NULL resource_id 必须扫描失败")
 		}

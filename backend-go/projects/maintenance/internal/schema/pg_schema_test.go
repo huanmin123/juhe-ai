@@ -195,8 +195,14 @@ import (
 // runtime/grants 两处 limits_json 建表内联基列与配额脏标记函数 CASE 收敛为
 // 原位改写不另计语句，两个授权 scope binding seed CTE 为种子常量不计本
 // golden；存量 dev 库两列由 revision 31 步骤 DROP、授权绑定行由步骤 DELETE）。
+// 667→671：2026-11-22 演练场图像工作台批——juhe_business +4
+// 671→670：2026-11-22 授权团队历史成员退役批（revision 32）——成员表 DDL
+// -2（status/removed_at 列删）、索引族 -1（team(team_id,status) 删，唯一
+// partial 索引并入全列唯一）
+//（playground_artifacts.job_id 幂等 ALTER、playground_image_jobs 建表 +
+// account_created / expiry 部分索引 2 条；演练场设计 §5.1）。
 // Regenerate them when either source changes.
-const goldenPostgresSchemaStatementCount = 667
+const goldenPostgresSchemaStatementCount = 670
 
 // goldenPostgresSchemaStatementCountsPerSchema pins the per-schema statement
 // counts of collectPostgresSchemaStatements().
@@ -265,11 +271,14 @@ var goldenPostgresSchemaStatementCountsPerSchema = map[string]int{
 	// DO 块；3 个 status CHECK DO 块与 4 条 open 唯一索引原位改写 7 值词表
 	// 不另计语句；撤销前后 revision 28/29/30 均未发布，直接删除不留退役
 	// 语句，存量 dev 库由 revision 31 步骤 DROP 收敛）。
-	// 382→380：2026-11-22 revision 31 补删批 -2（runtime/grants 两条
-	// limits_json quota_snapshot 部分索引；两处 limits_json 建表内联基列与
-	// 配额脏标记函数 CASE 收敛为原位改写不另计语句，两个授权 scope binding
-	// seed CTE 为种子常量不计本 golden）。
-	"juhe_business": 380,
+// 382→380：2026-11-22 revision 31 补删批 -2（runtime/grants 两条
+// limits_json quota_snapshot 部分索引；两处 limits_json 建表内联基列与
+// 配额脏标记函数 CASE 收敛为原位改写不另计语句，两个授权 scope binding
+// seed CTE 为种子常量不计本 golden）。
+// 380→384：2026-11-22 演练场图像工作台批 +4（playground_artifacts.job_id
+// 幂等 ALTER、playground_image_jobs 建表 + account_created 索引 +
+// expiry 部分索引；演练场设计 §5.1）。
+"juhe_business": 384,
 	// 52→0：my-chat 会话面退役批（演练场设计 §8）——juhe_chat 组 52 条整组
 	// 移除，schema 不再保留。
 	"juhe_dataset": 7,
@@ -433,8 +442,10 @@ func TestPostgresSchemaStatementsAreIdempotencyGuarded(t *testing.T) {
 	// settings.enabled 为建表原生列、随建表 DDL 删除，不占本计数）。
 	// revision 31 补删批（limits_json 全链退役）的 runtime/grants 两处
 	// limits_json 亦为建表内联基列原位删除，不占本计数。
-	if alterColumns != 121 {
-		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 121", alterColumns)
+	// 121→122：2026-11-22 演练场图像工作台批 +1（playground_artifacts.job_id
+	// 幂等 ALTER，演练场设计 §5.1）。
+	if alterColumns != 122 {
+		t.Fatalf("ALTER TABLE ADD COLUMN count = %d, want 122", alterColumns)
 	}
 	// B08（2026-10-30）撤除 12 条幂等收列语句后为 0；保留计数断言以防新增
 	// DROP COLUMN 绕过 golden 评审。

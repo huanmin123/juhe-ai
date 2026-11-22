@@ -134,13 +134,7 @@ func (d *FinalizationDispatch) WithLogger(logger Logger) *FinalizationDispatch {
 // DispatchUsageRecord mirrors dispatchUsageRecord: admit
 // enqueueUsageRecord(input) with the byte budget.
 //
-// 使用日志抑制（AI 问答免 Key 直调内部通道 §3.1）：抑制记录在这里丢弃，而不是
-// 只交给 recorder 的 EnqueueUsageRecord——recorder 入口另有第二道闸，但本入口
-// 是全部 usage 写入面（含绕过 finalization 的直投路径）的唯一持久化闸口。
 func (d *FinalizationDispatch) DispatchUsageRecord(ctx Ctx, input UsageRecordInput, bytes int) error {
-	if input.SuppressUsage {
-		return nil
-	}
 	task := func(ctx Ctx) error {
 		return d.recorder.EnqueueUsageRecord(ctx, input)
 	}

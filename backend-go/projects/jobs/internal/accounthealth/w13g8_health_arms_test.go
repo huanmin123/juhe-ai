@@ -19,7 +19,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"github.com/huanminabc/juhe-ai/backend-go-platform/accounttest/exactkeyprobe"
 	"strings"
 	"testing"
 	"time"
@@ -110,54 +109,6 @@ func TestW13G8DirectScheduleSettingArms(t *testing.T) {
 		t.Fatalf("非法时区必须报错: %v", err)
 	}
 	_ = tx.Rollback()
-}
-
-// TestW13G8DirectQuotaCostsArms 驱动 loadDirectQuotaCosts 的 ErrNoRows 零值
-// 路径与小时窗查询臂（fresh 库无 w13g8- 行 → 全部 ErrNoRows）。
-func TestW13G8DirectQuotaCostsArms(t *testing.T) {
-	db, _ := w9hOpenKitDB(t)
-	ctx := context.Background()
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	location := time.UTC
-	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
-	limits, err := ParseDirectQuotaLimits(`{"monthly":{"enabled":true,"limit":10},"hourly":{"enabled":true,"limit":5,"hours":1}}`)
-	if err != nil {
-		t.Fatalf("limits 解析必须成功: %v", err)
-	}
-	costs, err := loadDirectQuotaCosts(ctx, tx, "w13g8-sys", "account_authorization", "w13g8-auth", limits, now, location)
-	if err != nil {
-		t.Fatalf("ErrNoRows 路径必须返回零值成本: %v", err)
-	}
-	if costs.Total != 0 || costs.Daily != 0 || costs.Weekly != 0 || costs.Monthly != 0 || costs.Hourly != 0 {
-		t.Fatalf("无行时成本必须为零: %+v", costs)
-	}
-}
-
-// TestW13G8AuthorizationQuotaEligibleArms 驱动 authorizationQuotaEligible 的
-// nil 授权短路与 limits 解析失败臂。
-func TestW13G8AuthorizationQuotaEligibleArms(t *testing.T) {
-	db, _ := w9hOpenKitDB(t)
-	ctx := context.Background()
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = tx.Rollback() }()
-	now := time.Date(2026, 9, 18, 12, 0, 0, 0, time.UTC)
-	// nil 授权 → 直接 true。
-	eligible, err := authorizationQuotaEligible(ctx, tx, directCandidate{}, now, time.UTC)
-	if err != nil || !eligible {
-		t.Fatalf("nil 授权必须 true,nil: %v %v", eligible, err)
-	}
-	// 非法 limits json → ParseDirectQuotaLimits 失败臂。
-	candidate := directCandidate{authorization: &exactkeyprobe.DirectAuthorization{ID: "w13g8-auth"}, authorizationLimits: "w13g8-not-json"}
-	if _, err := authorizationQuotaEligible(ctx, tx, candidate, now, time.UTC); err == nil {
-		t.Fatal("非法 limits json 必须报错")
-	}
 }
 
 type w13g8StubOutboxStore struct {

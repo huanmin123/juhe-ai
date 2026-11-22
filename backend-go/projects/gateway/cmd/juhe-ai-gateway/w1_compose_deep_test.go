@@ -38,17 +38,13 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 
-	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
-
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accountkeystates"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authz"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayaccounteffects"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaydispatch"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayproxyhealth"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayquota"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/inval"
 )
 
@@ -220,7 +216,6 @@ func w1qNewResetFixture(t *testing.T) *w1qResetFixture {
 	t.Helper()
 	db := newChainFixturePGDatabase(t)
 	w1sEnsureBusinessSchema(t, db)
-	w1sEnsureStatsSchema(t, db)
 	// w1s 共享 DDL 的 accounts 表缺 revalidate 读取列；按 accountkeystates
 	// loadRevalidateAccountRow 的列清单补齐（PG ADD COLUMN；供应商解耦后
 	// 连接身份列是 vendor_code，设计 §2.1）。
@@ -235,37 +230,28 @@ func w1qNewResetFixture(t *testing.T) *w1qResetFixture {
 		}
 	}
 	now := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
-	stats, err := gatewayquota.NewStatsStore(db)
-	if err != nil {
-		t.Fatalf("构造 quota stats store: %v", err)
-	}
+	// （quota stats store 与 settings 读取器参数随授权额度域退役摘除：桥不再
+	// 持有额度门。）
 	guard := gatewayaccounteffects.NewAccountAPIKeyFailureGuard(
 		gatewayaccounteffects.SideEffectsConfig{RuntimeStateDriver: "memory"},
 		nil, nil, nil)
 	bus := inval.New(time.Now)
 	composed := &composition{db: db, Bus: bus}
 	bridge, err := newAccountsRuntimeResetBridge(composed,
-		func(key string) (string, error) {
-			if key == "usageStatsTimezone" {
-				return "UTC", nil
-			}
-			return "", nil
-		},
-		&chainRuntimeServices{QuotaStats: stats, AccountAPIKeyGuard: guard},
+		&chainRuntimeServices{AccountAPIKeyGuard: guard},
 		"w1q-reset-secret",
 		nil)
 	if err != nil {
 		t.Fatalf("构造 reset bridge: %v", err)
 	}
 	// newAccountsRuntimeResetBridge 直接返回具体桥类型（同时满足
-	// RuntimeResetEffects 与 BackgroundProbeRuntimeCleanup 两个端口）。
-	concrete := bridge
-	concrete.now = func() time.Time { return now }
-	return &w1qResetFixture{db: db, bus: bus, bridge: concrete, now: now}
+	// RuntimeResetEffects 与 BackgroundProbeRuntimeCleanup 两个端口；桥已无
+	// now 字段——额度门时钟读点随授权额度域退役删除）。
+	return &w1qResetFixture{db: db, bus: bus, bridge: bridge, now: now}
 }
 
 func TestW1QResetBridgeConstructionErrorArm(t *testing.T) {
-	if _, err := newAccountsRuntimeResetBridge(&composition{}, nil, &chainRuntimeServices{}, "w1q-secret", nil); err == nil {
+	if _, err := newAccountsRuntimeResetBridge(&composition{}, &chainRuntimeServices{}, "w1q-secret", nil); err == nil {
 		t.Fatal("缺业务库句柄时 bridge 构造必须报错")
 	} else if !strings.Contains(err.Error(), "accountkeystates") {
 		t.Fatalf("错误 = %v，want 指名 accountkeystates", err)
@@ -371,14 +357,13 @@ func (s *w1qFakeTransientStore) LoadMany(context.Context, string, []string) ([]g
 }
 
 // w1qRedisBridge 复用 fixture 的库与总线，但换成调用方指定的 guard。
+// （settings/now 字段已随授权额度域退役从桥结构删除。）
 func w1qRedisBridge(t *testing.T, fixture *w1qResetFixture, guard *gatewayaccounteffects.AccountAPIKeyFailureGuard) *accountsRuntimeResetBridge {
 	t.Helper()
 	return &accountsRuntimeResetBridge{
-		bus:      fixture.bus,
-		db:       fixture.db,
-		settings: func(string) (string, error) { return "UTC", nil },
-		guard:    guard,
-		now:      func() time.Time { return fixture.now },
+		bus:   fixture.bus,
+		db:    fixture.db,
+		guard: guard,
 	}
 }
 
@@ -440,110 +425,6 @@ func TestW1QResetBridgeTransientStatesArms(t *testing.T) {
 		}
 		if cleared, err := fixture.bridge.ClearAPIKeyTransientFailure(ctx, "acc-w1q", "fp-missing", &one); cleared || err != nil {
 			t.Fatalf("未记忆 generation = (%v, %v)，want (false, nil)", cleared, err)
-		}
-	})
-}
-
-// ---------------------------------------------------------------------------
-// compose_accounts_reset.go：quota 各错误臂
-// ---------------------------------------------------------------------------
-
-func TestW1QResetBridgeQuotaErrorArms(t *testing.T) {
-	ctx := context.Background()
-
-	t.Run("时区读取失败臂", func(t *testing.T) {
-		fixture := w1qNewResetFixture(t)
-		fixture.bridge.settings = func(string) (string, error) { return "Invalid/Zone", nil }
-		exceeded, err := fixture.bridge.AuthorizationQuotaExceeded(ctx, accounts.AuthorizationQuotaCheckInput{
-			AuthorizationID: "ra-w1q", GranteeSystemAccountID: "g1"})
-		if err == nil || exceeded {
-			t.Fatalf("非法时区 = (%v, %v)，want (false, err)", exceeded, err)
-		}
-	})
-
-	t.Run("直接授权limits查询失败臂", func(t *testing.T) {
-		fixture := w1qNewResetFixture(t)
-		if _, err := fixture.db.Exec("DROP TABLE resource_authorizations"); err != nil {
-			t.Fatalf("drop resource_authorizations: %v", err)
-		}
-		if _, err := fixture.bridge.authorizationLimitsJSON(ctx, "ra-w1q"); err == nil {
-			t.Fatal("缺表时直接 limits 查询必须报错")
-		}
-		if _, err := fixture.bridge.AuthorizationQuotaExceeded(ctx, accounts.AuthorizationQuotaCheckInput{
-			AuthorizationID: "ra-w1q", GranteeSystemAccountID: "g1"}); err == nil {
-			t.Fatal("缺表时 quota 判定必须报错")
-		}
-	})
-
-	t.Run("团队grant查询失败臂", func(t *testing.T) {
-		fixture := w1qNewResetFixture(t)
-		if _, err := fixture.db.Exec("DROP TABLE resource_authorization_grants"); err != nil {
-			t.Fatalf("drop grants: %v", err)
-		}
-		if _, err := fixture.bridge.teamGrantLimitsJSON(ctx, "ra-w1q", fixture.now); err == nil {
-			t.Fatal("缺 grants 表时团队查询必须报错")
-		}
-		if _, err := fixture.bridge.AuthorizationQuotaExceeded(ctx, accounts.AuthorizationQuotaCheckInput{
-			AuthorizationID: "ra-w1q", GranteeSystemAccountID: "g1", EffectiveSourceTeamID: "tm-w1q"}); err == nil {
-			t.Fatal("缺 grants 表时团队 quota 判定必须报错")
-		}
-	})
-
-	t.Run("实例账户查询失败臂", func(t *testing.T) {
-		fixture := w1qNewResetFixture(t)
-		futureISO := fixture.now.Add(48*time.Hour).UTC().Format("2006-01-02T15:04:05.000") + "Z"
-		if _, err := fixture.db.Exec(
-			`INSERT INTO resource_authorizations (id, resource_type, resource_id, effective_source_team_id, status, expires_at)
-			VALUES ('ra-w1q-team', 'model', 'm1', 'tm-w1q', 'active', ?)`, futureISO); err != nil {
-			t.Fatalf("seed auth: %v", err)
-		}
-		if _, err := fixture.db.Exec(
-			`INSERT INTO resource_authorization_grants (resource_type, resource_id, grantee_type, grantee_team_id, limits_json, status, expires_at)
-			VALUES ('model', 'm1', 'team', 'tm-w1q', '{"total":{"enabled":true,"limit":3}}', 'active', ?)`, futureISO); err != nil {
-			t.Fatalf("seed grant: %v", err)
-		}
-		if _, err := fixture.db.Exec("DROP TABLE accounts"); err != nil {
-			t.Fatalf("drop accounts: %v", err)
-		}
-		if _, err := fixture.bridge.authorizationInstanceIDs(ctx, "ra-w1q-team"); err == nil {
-			t.Fatal("缺 accounts 表时实例查询必须报错")
-		}
-		if _, err := fixture.bridge.AuthorizationQuotaExceeded(ctx, accounts.AuthorizationQuotaCheckInput{
-			AuthorizationID: "ra-w1q-team", GranteeSystemAccountID: "g1", EffectiveSourceTeamID: "tm-w1q"}); err == nil {
-			t.Fatal("缺 accounts 表时团队 quota 判定必须报错")
-		}
-	})
-
-	t.Run("用量成本批量读取失败臂", func(t *testing.T) {
-		fixture := w1qNewResetFixture(t)
-		if _, err := fixture.db.Exec(
-			`INSERT INTO resource_authorizations (id, resource_type, resource_id, status, limits_json)
-			VALUES ('ra-w1q-cost', 'model', 'm1', 'active', '{"daily":{"enabled":true,"limit":10}}')`); err != nil {
-			t.Fatalf("seed auth: %v", err)
-		}
-		for _, table := range []string{
-			"usage_stats_totals", "usage_stats_daily", "usage_stats_weekly",
-			"usage_stats_monthly", "usage_quota_hourly_windows",
-		} {
-			if _, err := fixture.db.Exec("DROP TABLE " + table); err != nil {
-				t.Fatalf("drop %s: %v", table, err)
-			}
-		}
-		if _, err := fixture.bridge.AuthorizationQuotaExceeded(ctx, accounts.AuthorizationQuotaCheckInput{
-			AuthorizationID: "ra-w1q-cost", GranteeSystemAccountID: "g1"}); err == nil {
-			t.Fatal("用量表缺失时成本读取必须报错")
-		}
-
-		// 小时窗口限额走 appendCheck 的 Hourly 分支后同样在成本读取处报错。
-		if _, err := fixture.db.Exec(
-			`INSERT INTO resource_authorizations (id, resource_type, resource_id, status, limits_json)
-			VALUES ('ra-w1q-hourly', 'model', 'm1', 'active',
-				'{"hourly":{"enabled":true,"hours":2,"limit":10}}')`); err != nil {
-			t.Fatalf("seed hourly auth: %v", err)
-		}
-		if _, err := fixture.bridge.AuthorizationQuotaExceeded(ctx, accounts.AuthorizationQuotaCheckInput{
-			AuthorizationID: "ra-w1q-hourly", GranteeSystemAccountID: "g1"}); err == nil {
-			t.Fatal("小时窗口限额必须在成本读取处报错")
 		}
 	})
 }
@@ -693,68 +574,9 @@ func TestW1QChainFailureDispatcherPolicyArms(t *testing.T) {
 	})
 }
 
-// ---------------------------------------------------------------------------
-// compose_authz_grant_returner.go：Return 桥错误臂与状态投影臂
-// ---------------------------------------------------------------------------
-
-func TestW1QAuthzGrantReturnerArms(t *testing.T) {
-	now := func() time.Time { return time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC) }
-
-	t.Run("授权grant表缺失错误臂", func(t *testing.T) {
-		db := pgtestkit.New(t)
-		store, err := authz.NewStore(db, now)
-		if err != nil {
-			t.Fatalf("构造 authz store: %v", err)
-		}
-		returner := authzGrantReturner{store: store}
-		if _, err := returner.Return(context.Background(), "grant-w1q", "", "user-w1q"); err == nil {
-			t.Fatal("缺授权表时 Return 必须报错")
-		}
-	})
-
-	t.Run("grant缺失not_found状态投影臂", func(t *testing.T) {
-		db := pgtestkit.New(t, func(ctx context.Context, db *sql.DB) error {
-			// 生产形状 grants 夹具（列集摘自 internal/authz pgkit 夹具，
-			// juhe_business 限定，与 store 的 PG 方言一致）。
-			_, err := db.Exec(`CREATE SCHEMA IF NOT EXISTS juhe_business;
-			CREATE TABLE juhe_business.resource_authorization_grants (
-				id text PRIMARY KEY,
-				resource_type text NOT NULL,
-				resource_id text NOT NULL,
-				resource_owner_system_account_id text NOT NULL,
-				grantee_type text NOT NULL,
-				grantee_system_account_id text,
-				grantee_team_id text,
-				scope text NOT NULL DEFAULT 'use',
-				status text NOT NULL DEFAULT 'active',
-				remark text,
-				expires_at text,
-				limits_json text,
-				created_by text NOT NULL,
-				created_at text NOT NULL,
-				revoked_by text,
-				revoked_at text,
-				updated_at text NOT NULL,
-				CHECK (
-					(grantee_type = 'system_account' AND grantee_system_account_id IS NOT NULL AND grantee_team_id IS NULL)
-					OR
-					(grantee_type = 'team' AND grantee_team_id IS NOT NULL AND grantee_system_account_id IS NULL)
-				))`)
-			return err
-		})
-		store, err := authz.NewStore(db, now)
-		if err != nil {
-			t.Fatalf("构造 authz store: %v", err)
-		}
-		status, err := (authzGrantReturner{store: store}).Return(context.Background(), "grant-w1q", "", "user-w1q")
-		if err != nil {
-			t.Fatalf("缺失 grant 不得报错: %v", err)
-		}
-		if status != "not_found" {
-			t.Fatalf("状态 = %q，want not_found", status)
-		}
-	})
-}
+// （TestW1QAuthzGrantReturnerArms 随授权大简化退役：compose_authz_grant_returner.go
+// 桥与 authzGrantReturner 类型已删除，Return 契约由 authz 域
+// my-authorization-sources/{sourceId}/return 路由承载。）
 
 // ---------------------------------------------------------------------------
 // runtime.go：loadRuntimeConfig 深臂表驱动

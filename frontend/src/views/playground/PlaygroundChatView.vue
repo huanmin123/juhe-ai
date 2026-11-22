@@ -3,28 +3,29 @@
     <div class="playground-chat-layout">
       <aside class="playground-side">
         <a-form layout="vertical">
-          <a-form-item label="账户" required>
+          <a-form-item label="API Key" required>
             <a-select
-              v-model:value="accountId"
-              :options="accountOptions"
-              :loading="accountsLoading"
+              v-model:value="apiKeyId"
+              :options="keyOptions"
+              :loading="keysLoading"
               allow-clear
               show-search
               option-filter-prop="label"
-              placeholder="选择要试玩的账户"
-              @change="handleAccountChange"
+              placeholder="选择要试玩的 API Key"
+              @change="handleApiKeyChange"
             />
           </a-form-item>
           <a-form-item label="模型" required>
             <a-select
               v-model:value="modelId"
               :options="modelOptions"
-              :disabled="!accountId || !modelOptions.length"
+              :loading="modelsLoading"
+              :disabled="!apiKeyId || modelsLoading || !modelOptions.length"
               show-search
               option-filter-prop="label"
-              :placeholder="accountId ? '选择 chat 模型' : '先选择账户'"
+              :placeholder="apiKeyId ? '选择 chat 模型' : '先选择 API Key'"
             />
-            <div v-if="currentModel?.functionCalling" class="playground-model-hint">该模型声明 function_calling，后端默认注入 fetch_url 工具</div>
+            <div v-if="keysLoadError || modelsLoadError" class="playground-form-error">{{ keysLoadError || modelsLoadError }}</div>
           </a-form-item>
           <a-form-item label="System 提示词（可选）">
             <a-textarea
@@ -73,28 +74,13 @@
           <a-empty
             v-if="!messages.length"
             class="playground-empty"
-            description="选择账户与模型,发送第一条消息开始试玩"
+            description="选择 API Key 与模型，发送第一条消息开始试玩"
           />
           <template v-for="(item, index) in messages" :key="index">
             <div v-if="item.role === 'user'" class="playground-message-user">
               <div class="playground-bubble playground-bubble-user">{{ item.content }}</div>
             </div>
             <div v-else class="playground-message-assistant">
-              <div v-if="item.tools.length" class="playground-tool-timeline">
-                <div v-for="tool in item.tools" :key="tool.callId" class="playground-tool-step">
-                  <span class="playground-tool-dot" :class="`is-${tool.status}`" />
-                  <div class="playground-tool-body">
-                    <div class="playground-tool-title">
-                      fetch_url（{{ tool.name }}）
-                      <span v-if="tool.status === 'running'" class="playground-tool-state">执行中…</span>
-                      <span v-else-if="tool.status === 'ok'" class="playground-tool-state is-ok">完成</span>
-                      <span v-else class="playground-tool-state is-failed">失败</span>
-                    </div>
-                    <div v-if="tool.argsText" class="playground-tool-args">{{ tool.argsText }}</div>
-                    <div v-if="tool.summary" class="playground-tool-summary">{{ tool.summary }}</div>
-                  </div>
-                </div>
-              </div>
               <div v-if="item.content" class="playground-bubble playground-bubble-assistant">
                 <PlaygroundMarkdown :content="item.content" />
               </div>
@@ -171,21 +157,12 @@ import { usePlaygroundCatalog } from './usePlaygroundCatalog'
 
 // 对话试玩（演练场设计 §4.1）：一次性对话——消息只存在于本页内存（无本地持久化、
 // 无会话落库、无断线续传），刷新即空；SSE delta 实时透出即打字机效果。
-
-interface PlaygroundToolStep {
-  callId: string
-  name: string
-  argsText?: string
-  status: 'running' | 'ok' | 'failed'
-  summary?: string
-}
+// 2026-11-22 Key 化：先选 API Key 后选模型，归一 SSE 事件只剩 delta/usage/error。
 
 interface PlaygroundChatItem {
   role: 'user' | 'assistant'
   content: string
-  tools: PlaygroundToolStep[]
   usage?: { promptTokens: number; completionTokens: number; totalTokens: number }
-  rounds?: number
   streaming?: boolean
 }
 
@@ -195,13 +172,15 @@ interface PlaygroundStreamError {
 }
 
 const {
-  accountsLoading,
-  accountId,
+  keysLoading,
+  keysLoadError,
+  modelsLoading,
+  modelsLoadError,
+  apiKeyId,
   modelId,
-  currentModel,
-  accountOptions,
+  keyOptions,
   modelOptions,
-  handleAccountChange,
+  handleApiKeyChange,
   loadCatalog
 } = usePlaygroundCatalog('chat')
 
@@ -219,7 +198,7 @@ const streamError = ref<PlaygroundStreamError>()
 const sending = ref(false)
 const messageListEl = ref<HTMLElement>()
 
-const canSend = computed(() => Boolean(draft.value.trim() && accountId.value && modelId.value && !sending.value))
+const canSend = computed(() => Boolean(draft.value.trim() && apiKeyId.value && modelId.value && !sending.value))
 
 onMounted(() => {
   void loadCatalog()
@@ -240,8 +219,8 @@ async function send(): Promise<void> {
     message.warning('请输入要发送的内容')
     return
   }
-  if (!accountId.value || !modelId.value) {
-    message.warning('请先选择账户与模型')
+  if (!apiKeyId.value || !modelId.value) {
+    message.warning('请先选择 API Key 与模型')
     return
   }
   // 全量上下文由客户端携带（服务端零状态）：只回放可见的 user/assistant 正文。
@@ -252,16 +231,16 @@ async function send(): Promise<void> {
   }
   history.push({ role: 'user', content })
 
-  messages.value.push({ role: 'user', content, tools: [] })
+  messages.value.push({ role: 'user', content })
   draft.value = ''
-  const assistant: PlaygroundChatItem = { role: 'assistant', content: '', tools: [], streaming: true }
+  const assistant: PlaygroundChatItem = { role: 'assistant', content: '', streaming: true }
   messages.value.push(assistant)
   streamError.value = undefined
   sending.value = true
   scrollToBottom()
   try {
     await api.playground.chatStream({
-      accountId: accountId.value,
+      apiKeyId: apiKeyId.value,
       modelId: modelId.value,
       messages: history,
       system: system.value.trim() || undefined,
@@ -287,51 +266,16 @@ async function send(): Promise<void> {
 
 function applyStreamEvent(item: PlaygroundChatItem, event: PlaygroundStreamEvent): void {
   switch (event.type) {
-    case 'round':
-      item.rounds = event.round
-      break
     case 'delta':
       item.content += event.text
       scrollToBottom()
       break
-    case 'tool_start': {
-      // 后端 wire 的 args 是模型产出的 arguments JSON 字符串（sse.go Args 原文）：
-      // 解析成功按对象字段规整展示，解析失败原样展示字符串（不静默丢弃原文）。
-      let argsText: string | undefined
-      if (event.args) {
-        try {
-          argsText = JSON.stringify(JSON.parse(event.args))
-        } catch {
-          argsText = event.args
-        }
-      }
-      item.tools.push({
-        callId: event.callId,
-        name: event.name,
-        argsText,
-        status: 'running'
-      })
-      scrollToBottom()
-      break
-    }
-    case 'tool_end': {
-      const step = [...item.tools].reverse().find((tool) => tool.callId === event.callId)
-      if (step) {
-        step.status = event.ok ? 'ok' : 'failed'
-        step.summary = event.summary
-      }
-      scrollToBottom()
-      break
-    }
     case 'usage':
       item.usage = {
         promptTokens: event.promptTokens,
         completionTokens: event.completionTokens,
         totalTokens: event.totalTokens
       }
-      break
-    case 'done':
-      item.rounds = event.rounds
       break
     case 'error':
       streamError.value = { code: event.code, message: event.message }
@@ -383,11 +327,10 @@ function scrollToBottom(): void {
   border-color: var(--juhe-border-strong);
 }
 
-.playground-model-hint {
+.playground-form-error {
   margin-top: 6px;
-  color: var(--juhe-muted);
+  color: var(--juhe-danger);
   font-size: 12px;
-  line-height: 1.5;
 }
 
 .playground-toggle-label {
@@ -464,79 +407,6 @@ function scrollToBottom(): void {
   margin-top: 6px;
   color: var(--juhe-faint);
   font-size: 12px;
-}
-
-/* 工具时间线：浅色小卡片，弱于正文气泡存在感 */
-.playground-tool-timeline {
-  max-width: 76%;
-  margin-bottom: 8px;
-  padding: 8px 10px;
-  border: 1px solid var(--juhe-border);
-  border-radius: 8px;
-  background: var(--juhe-surface-soft);
-}
-
-.playground-tool-step {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
-}
-
-.playground-tool-dot {
-  flex: none;
-  width: 8px;
-  height: 8px;
-  margin-top: 6px;
-  border-radius: 50%;
-  background: var(--juhe-faint);
-}
-
-.playground-tool-dot.is-running {
-  background: var(--juhe-warn);
-}
-
-.playground-tool-dot.is-ok {
-  background: var(--juhe-ok);
-}
-
-.playground-tool-dot.is-failed {
-  background: var(--juhe-danger);
-}
-
-.playground-tool-body {
-  min-width: 0;
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.playground-tool-title {
-  color: var(--juhe-fg-soft);
-  font-weight: 600;
-}
-
-.playground-tool-state {
-  margin-left: 6px;
-  color: var(--juhe-faint);
-  font-weight: 400;
-}
-
-.playground-tool-state.is-ok {
-  color: var(--juhe-ok);
-}
-
-.playground-tool-state.is-failed {
-  color: var(--juhe-danger);
-}
-
-.playground-tool-args {
-  margin-top: 2px;
-  color: var(--juhe-muted);
-  word-break: break-all;
-}
-
-.playground-tool-summary {
-  margin-top: 2px;
-  color: var(--juhe-muted);
 }
 
 .playground-error-bar {
@@ -649,8 +519,7 @@ function scrollToBottom(): void {
     height: 380px;
   }
 
-  .playground-bubble,
-  .playground-tool-timeline {
+  .playground-bubble {
     max-width: 100%;
   }
 }

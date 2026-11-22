@@ -60,9 +60,6 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	k.Register("GET "+prefix+"/my-teams/{id}/members", d.RequireSelf(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.members(w, r, true)
 	})))
-	k.Register("GET "+prefix+"/my-teams/{id}/members/history", d.RequireSelf(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		d.history(w, r, true)
-	})))
 
 	k.Register("GET "+prefix+"/system-teams", d.RequireAdminAuthz(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.list(w, r, false)
@@ -72,9 +69,6 @@ func (d *Deps) Mount(k *kernel.Kernel) {
 	})))
 	k.Register("GET "+prefix+"/system-teams/{id}/members", d.RequireAdminAuthz(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		d.members(w, r, false)
-	})))
-	k.Register("GET "+prefix+"/system-teams/{id}/members/history", d.RequireAdminAuthz(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		d.history(w, r, false)
 	})))
 	k.Register("POST "+prefix+"/system-teams", d.RequireAdmin(
 		kernel.MutationGuardMiddleware(kernel.MutationGuardOptions{
@@ -214,26 +208,6 @@ func (d *Deps) members(w http.ResponseWriter, r *http.Request, selfOnly bool) {
 	page := parseIntOr(r.URL.Query().Get("page"), 1)
 	pageSize := parseIntOr(r.URL.Query().Get("pageSize"), 20)
 	result, err := d.Store.ListMembers(r.Context(), r.PathValue("id"), scopeFor(r, auth, selfOnly), page, pageSize)
-	if err != nil {
-		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
-		return
-	}
-	if result == nil {
-		kernel.WriteError(w, http.StatusNotFound, "团队不存在")
-		return
-	}
-	kernel.WriteOK(w, result, "")
-}
-
-func (d *Deps) history(w http.ResponseWriter, r *http.Request, selfOnly bool) {
-	auth := authsys.AuthContextFrom(r)
-	if auth == nil {
-		kernel.WriteError(w, http.StatusUnauthorized, "请先登录")
-		return
-	}
-	page := parseIntOr(r.URL.Query().Get("page"), 1)
-	pageSize := parseIntOr(r.URL.Query().Get("pageSize"), 20)
-	result, err := d.Store.ListHistory(r.Context(), r.PathValue("id"), scopeFor(r, auth, selfOnly), page, pageSize)
 	if err != nil {
 		kernel.WriteErrorCause(r, w, http.StatusInternalServerError, "服务器内部错误", err)
 		return

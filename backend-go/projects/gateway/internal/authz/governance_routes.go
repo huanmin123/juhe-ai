@@ -50,7 +50,6 @@ func (d *Deps) mountGovernanceRoutes(k *kernel.Kernel, prefix string) {
 
 	k.Register("GET "+prefix+"/my-authorizations/inbox-summary", self(d.inboxSummary))
 
-	k.Register("GET "+prefix+"/my-authorization-sources/{sourceId}", self(d.sourceDetail))
 	k.Register("POST "+prefix+"/my-authorization-sources/{sourceId}/accept", self(d.acceptSource))
 	k.Register("POST "+prefix+"/my-authorization-sources/{sourceId}/decline", self(d.declineSource))
 	k.Register("POST "+prefix+"/my-authorization-sources/{sourceId}/return", self(d.returnSource))
@@ -76,26 +75,12 @@ func (d *Deps) inboxSummary(w http.ResponseWriter, r *http.Request) {
 	d.writeData(w, summary)
 }
 
-func (d *Deps) sourceDetail(w http.ResponseWriter, r *http.Request) {
-	auth := authsys.AuthContextFrom(r)
-	detail, err := d.Store.GetSourceDetail(r.Context(), auth.SystemAccountID, r.PathValue("sourceId"))
-	if err != nil {
-		writeGovernanceError(r, w, err)
-		return
-	}
-	if detail == nil {
-		kernel.WriteError(w, http.StatusNotFound, "授权来源不存在")
-		return
-	}
-	d.writeData(w, detail)
-}
-
 func (d *Deps) acceptSource(w http.ResponseWriter, r *http.Request) {
 	auth := authsys.AuthContextFrom(r)
 	var body struct {
 		TargetGroupID *string `json:"targetGroupId"`
 	}
-	if !decodeStrictJSON(w, r, &body, map[string]bool{"targetGroupId": false}) {
+	if !decodeStrictJSON(w, r, &body, map[string]bool{"targetGroupId": true}) {
 		return
 	}
 	input := AcceptInput{}

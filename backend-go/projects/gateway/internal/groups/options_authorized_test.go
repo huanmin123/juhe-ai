@@ -41,17 +41,17 @@ func TestGroupAuthorizedOptionsAndEditBasicLocksIn(t *testing.T) {
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
 		VALUES ('grp-exp', ?, 'Expired 授权组', 1, 0, 'personal', ?, ?)`, ownerID, now, now)
 
-	env.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, scope, status, effective_source_type, effective_source_team_id, expires_at, limits_json, created_by, created_at, updated_at)
-		VALUES ('authz-1', 'group', 'grp-auth', ?, ?, 'use', 'active', 'team', 'team-1', ?, '{"daily":{"enabled":true,"limit":100}}', ?, ?, ?)`,
+	env.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, scope, status, effective_source_type, effective_source_team_id, expires_at, created_by, created_at, updated_at)
+		VALUES ('authz-1', 'group', 'grp-auth', ?, ?, 'use', 'active', 'team', 'team-1', ?, ?, ?, ?)`,
 		ownerID, granteeID, far, ownerID, now, now)
-	env.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, scope, status, effective_source_type, expires_at, limits_json, created_by, created_at, updated_at)
-		VALUES ('authz-2', 'group', 'grp-auth', ?, ?, 'use', 'revoked', 'manual', ?, NULL, ?, ?, ?)`,
+	env.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, scope, status, effective_source_type, expires_at, created_by, created_at, updated_at)
+		VALUES ('authz-2', 'group', 'grp-auth', ?, ?, 'use', 'revoked', 'manual', ?, ?, ?, ?)`,
 		ownerID, otherID, far, ownerID, now, now)
-	env.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, scope, status, effective_source_type, expires_at, limits_json, created_by, created_at, updated_at)
-		VALUES ('authz-3', 'group', 'grp-exp', ?, ?, 'use', 'active', 'manual', ?, NULL, ?, ?, ?)`,
+	env.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, scope, status, effective_source_type, expires_at, created_by, created_at, updated_at)
+		VALUES ('authz-3', 'group', 'grp-exp', ?, ?, 'use', 'active', 'manual', ?, ?, ?, ?)`,
 		ownerID, granteeID, old, ownerID, now, now)
-	env.exec(t, `INSERT INTO group_authorization_settings (authorization_id, system_account_id, group_id, enabled, snapshot_revision, group_type, scheduling_policy_json, created_at, updated_at)
-		VALUES ('authz-1', ?, 'grp-auth', 0, 'snap-auth', 'personal', NULL, ?, ?)`, granteeID, now, now)
+	env.exec(t, `INSERT INTO group_authorization_settings (authorization_id, system_account_id, group_id, group_type, scheduling_policy_json, created_at, updated_at)
+		VALUES ('authz-1', ?, 'grp-auth', 'personal', NULL, ?, ?)`, granteeID, now, now)
 
 	// purpose=account renders the full union: own rows plus the authorized
 	// projection; the revoked grant (authz-2) stays invisible to its grantee.

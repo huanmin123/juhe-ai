@@ -253,27 +253,8 @@ func TestW1AuthzAdapters(t *testing.T) {
 	if len(stats) != 2 || stats["k-1"].AuthorizationCount != 0 || stats["k-2"].AuthorizationTeamCount != 0 {
 		t.Fatalf("未知资源期望零值统计 = %v", stats)
 	}
-	// 授权归还：最小 grants 行 + expectedUpdatedAt 不匹配 → conflict。
-	_, err = fixture.db.Exec(`CREATE TABLE resource_authorization_grants (id TEXT PRIMARY KEY,resource_type TEXT,resource_id TEXT,resource_owner_system_account_id TEXT,grantee_type TEXT,grantee_system_account_id TEXT,grantee_team_id TEXT,status TEXT,remark TEXT,expires_at TEXT,limits_json TEXT,created_by TEXT,revoked_by TEXT,revoked_at TEXT,created_at TEXT,updated_at TEXT)`)
-	if err != nil {
-		t.Fatalf("create grants table = %v", err)
-	}
-	_, err = fixture.db.Exec(`INSERT INTO resource_authorization_grants (id,resource_type,resource_id,resource_owner_system_account_id,grantee_type,grantee_system_account_id,status,created_at,updated_at) VALUES ('g-1','api_key','k-1','sys_owner','system_account','user-1','active','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')`)
-	if err != nil {
-		t.Fatalf("insert grant = %v", err)
-	}
-	returner := authzGrantReturner{store: store}
-	status, err := returner.Return(ctx, "g-1", "9999-01-01T00:00:00Z", "user-1")
-	if err != nil {
-		t.Fatalf("Return = %v", err)
-	}
-	if status != "conflict" {
-		t.Fatalf("expectedUpdatedAt 不匹配期望 conflict = %q", status)
-	}
-	missing, err := returner.Return(ctx, "g-missing", "2026-01-01T00:00:00Z", "user-1")
-	if err != nil || missing != "not_found" {
-		t.Fatalf("缺失授权期望 not_found = %q %v", missing, err)
-	}
+	// （授权归还桥臂随授权大简化退役：authzGrantReturner 与 grants 整单归还
+	// 读取面已删除，Return 契约由 authz 域 source-return 路由承载。）
 }
 
 // w1AvoidanceStoreStub 可回放的 PolicyAvoidanceStateStore 桩。
@@ -558,63 +539,6 @@ func TestW1ChainAccountLocksReadStateOnce(t *testing.T) {
 	// 缺失行是 (nil, nil) 契约（sql.ErrNoRows 被吸收为未锁定）。
 	if missing, err := locks.readStateOnce(ctx, "acc_missing"); err != nil || missing != nil {
 		t.Fatalf("缺失行必须回落 nil,nil = %v %v", missing, err)
-	}
-}
-
-func TestW1AuthorizationQuotaExceededArms(t *testing.T) {
-	fixture := newChainFixture(t)
-	statsStore, err := gatewayquota.NewStatsStore(fixture.statsDB)
-	if err != nil {
-		t.Fatalf("stats store = %v", err)
-	}
-	bridge := &accountsRuntimeResetBridge{
-		db:       fixture.db,
-		settings: func(string) (string, error) { return "UTC", nil },
-		stats:    statsStore,
-		now:      func() time.Time { return time.UnixMilli(1728000000000) },
-	}
-	ctx := context.Background()
-	// 空 id 短路。
-	ok, err := bridge.AuthorizationQuotaExceeded(ctx, accounts.AuthorizationQuotaCheckInput{})
-	if err != nil || ok {
-		t.Fatalf("空 id 短路 = %v %v", ok, err)
-	}
-	// 授权行 + 小时额度 limits_json。
-	if _, err := fixture.db.Exec(`INSERT INTO resource_authorizations (id, resource_type, resource_id, grantee_system_account_id, status, limits_json) VALUES ('auth-1', 'group', 'group_main', 'user-1', 'active', '{"hourly":{"enabled":true,"hours":24,"limit":1}}')`); err != nil {
-		t.Fatalf("insert authorization = %v", err)
-	}
-	// juhe_stats 成本投影表（quota 读点 statsTable 按 juhe_stats 限定名读取，
-	// 夹具 DDL/种子同构限定）。usage_stats 四表带
-	// success_cost_usd（quota 读点已切成功口径列）；小时窗口表的
-	// total_cost_usd 本身承载成功口径成本。
-	for _, ddl := range []string{
-		`CREATE TABLE juhe_stats.usage_stats_totals (system_account_id TEXT, scope_type TEXT, scope_id TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
-		`CREATE TABLE juhe_stats.usage_stats_daily (system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_date TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
-		`CREATE TABLE juhe_stats.usage_stats_weekly (system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_week TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
-		`CREATE TABLE juhe_stats.usage_stats_monthly (system_account_id TEXT, scope_type TEXT, scope_id TEXT, stat_month TEXT, total_cost_usd REAL, success_cost_usd REAL)`,
-		`CREATE TABLE juhe_stats.usage_quota_hourly_windows (system_account_id TEXT, scope_type TEXT, scope_id TEXT, window_hours INTEGER, total_cost_usd REAL)`,
-	} {
-		if _, err := fixture.statsDB.Exec(ddl); err != nil {
-			t.Fatalf("create stats table = %v", err)
-		}
-	}
-	// 无成本：未超限。
-	ok, err = bridge.AuthorizationQuotaExceeded(ctx, accounts.AuthorizationQuotaCheckInput{AuthorizationID: "auth-1", GranteeSystemAccountID: "user-1"})
-	if err != nil || ok {
-		t.Fatalf("无成本必须未超限 = %v %v", ok, err)
-	}
-	// 小时窗口成本 5 >= 限额 1 → 超限。
-	if _, err := fixture.statsDB.Exec(`INSERT INTO juhe_stats.usage_quota_hourly_windows (system_account_id, scope_type, scope_id, window_hours, total_cost_usd) VALUES ('user-1', 'account_authorization', 'auth-1', 24, 5)`); err != nil {
-		t.Fatalf("insert hourly cost = %v", err)
-	}
-	ok, err = bridge.AuthorizationQuotaExceeded(ctx, accounts.AuthorizationQuotaCheckInput{AuthorizationID: "auth-1", GranteeSystemAccountID: "user-1"})
-	if err != nil || !ok {
-		t.Fatalf("小时成本超限必须为真 = %v %v", ok, err)
-	}
-	// 未知授权：limits 为空、无 checks → false。
-	ok, err = bridge.AuthorizationQuotaExceeded(ctx, accounts.AuthorizationQuotaCheckInput{AuthorizationID: "auth-missing", GranteeSystemAccountID: "user-1"})
-	if err != nil || ok {
-		t.Fatalf("未知授权 = %v %v", ok, err)
 	}
 }
 

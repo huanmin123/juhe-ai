@@ -59,11 +59,11 @@ func w16fSeedAuthorizationChain(t *testing.T, db *sql.DB) {
 		w16fCredentials(t, `{"api_key":"sk-w16f-src"}`))
 	w9hMustExec(t, db, `INSERT INTO juhe_business.resource_authorizations (
 		id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, scope, status,
-		effective_source_type, effective_source_team_id, activated_at, limits_json, created_by, created_at, updated_at
+		effective_source_type, effective_source_team_id, activated_at, created_by, created_at, updated_at
 	) VALUES ('w16f-auth', 'account', 'w16f-cool-src', 'sys_admin', 'sys_admin', 'health_check', 'active',
-		'direct', 'w16f-team', $1, NULL, 'w16f', $1, $1)
+		'direct', 'w16f-team', $1, 'w16f', $1, $1)
 	ON CONFLICT (id) DO UPDATE SET resource_id = EXCLUDED.resource_id, status = EXCLUDED.status,
-		effective_source_team_id = EXCLUDED.effective_source_team_id, limits_json = EXCLUDED.limits_json, updated_at = EXCLUDED.updated_at`, w16fFixtureNow)
+		effective_source_team_id = EXCLUDED.effective_source_team_id, updated_at = EXCLUDED.updated_at`, w16fFixtureNow)
 	w9hSeedBusinessAccount(t, db, "w16f-cool-inst", "deepseek", "profile_deepseek_openai_v1", "api_key", "active", "chat_json",
 		sql.NullString{String: "w16f-cool-src", Valid: true}, sql.NullString{String: "w16f-auth", Valid: true})
 	w9hMustExec(t, db, `UPDATE juhe_business.group_accounts SET account_authorization_id = 'w16f-auth' WHERE account_id = 'w16f-cool-inst'`)
@@ -163,47 +163,8 @@ func TestW16fReaderPGScanQuotaArms(t *testing.T) {
 		t.Fatalf("授权实例候选缺失: inputs=%+v failures=%+v", result.Inputs, result.Failures)
 	}
 
-	// (c) 授权 limits 非法 → 整读失败（authorizationQuotaEligible 错误传播）。
-	w9hMustExec(t, db, `UPDATE juhe_business.resource_authorizations SET limits_json = 'w16f-not-json' WHERE id = 'w16f-auth'`)
-	if _, err := reader.LoadDueWithFailures(context.Background(), 10); err == nil {
-		t.Fatal("非法 limits 必须导致整读失败")
-	}
-
-	// (d) 授权总配额耗尽 → 候选静默省略（无 input 无 failure）。
-	w9hMustExec(t, db, `UPDATE juhe_business.resource_authorizations SET limits_json = $1 WHERE id = 'w16f-auth'`, `{"total":{"enabled":true,"limit":10}}`)
-	w9hMustExec(t, db, `INSERT INTO juhe_stats.usage_stats_totals (system_account_id, scope_type, scope_id, total_cost_usd, updated_at)
-		VALUES ('sys_admin', 'account_authorization', 'w16f-auth', 100, $1)
-		ON CONFLICT (system_account_id, scope_type, scope_id) DO UPDATE SET total_cost_usd = 100`, w16fFixtureNow)
-	result, err = reader.LoadDueWithFailures(context.Background(), 10)
-	if err != nil {
-		t.Fatalf("配额耗尽读必须成功收敛: %v", err)
-	}
-	for _, input := range result.Inputs {
-		if input.AccountID == "w16f-cool-inst" {
-			t.Fatal("配额耗尽的候选必须被省略")
-		}
-	}
-	for _, failure := range result.Failures {
-		if failure.AccountID == "w16f-cool-inst" {
-			t.Fatal("配额耗尽不是候选构造失败")
-		}
-	}
-	w9hMustExec(t, db, `DELETE FROM juhe_stats.usage_stats_totals WHERE scope_id = 'w16f-auth'`)
-
-	// (e) team grant limits 非法 → 解析失败传播。
-	w9hMustExec(t, db, `UPDATE juhe_business.accounts SET status = 'active',
-		cooldown_retest_observation_started_at = NULL, cooldown_retest_generation = NULL
-		WHERE id = 'w16f-cool-inst'`)
-	w9hMustExec(t, db, `UPDATE juhe_business.resource_authorizations SET limits_json = NULL WHERE id = 'w16f-auth'`)
-	w9hMustExec(t, db, `INSERT INTO juhe_business.resource_authorization_grants (
-		id, resource_type, resource_id, resource_owner_system_account_id, grantee_type, grantee_team_id,
-		scope, status, limits_json, created_by, created_at, updated_at
-	) VALUES ('w16f-grant', 'account', 'w16f-cool-src', 'sys_admin', 'team', 'w16f-team',
-		'health_check', 'active', 'w16f-grant-not-json', 'w16f', $1, $1)
-		ON CONFLICT (id) DO NOTHING`, w16fFixtureNow)
-	if _, err := reader.LoadDueWithFailures(context.Background(), 10); err == nil {
-		t.Fatal("team grant limits 非法必须导致整读失败")
-	}
+	//（(c)(d)(e) 授权额度臂随 limits_json 域退役删除：生产读链不再消费
+	// limits_json/配额花费，非法值与耗尽语义不复存在。）
 
 	// (f) LoadAccount 遇坏候选 → 隔离结果转错误。
 	w9hSeedBusinessAccount(t, db, "w16f-bad", "deepseek", "profile_deepseek_openai_v1", "api_key", "active", "chat_json", sql.NullString{}, sql.NullString{})

@@ -1,4 +1,4 @@
-import type { AccountStatus, AccountType, AuthorizationResourceType, AuthorizationSourceStatus, AuthorizationSourceType, ProviderCode, ResourceAccessType, TeamMemberStatus, TeamStatus } from './base'
+import type { AccountStatus, AccountType, AuthorizationResourceType, AuthorizationSourceStatus, AuthorizationSourceType, ProviderCode, ResourceAccessType, TeamStatus } from './base'
 import type { AccountUsageDailyPoint, AccountUsageStatsRange, AccountUsageSummary } from './usage-stats'
 
 export interface SystemTeamMemberSummary {
@@ -9,9 +9,7 @@ export interface SystemTeamMemberSummary {
   systemAccountUsername?: string
   username?: string
   memberRole: 'member'
-  status: TeamMemberStatus
   joinedAt: string
-  removedAt?: string
   createdAt: string
   updatedAt: string
 }
@@ -65,11 +63,6 @@ export interface SystemTeamMemberDetail {
   joinedAt: string
 }
 
-export interface SystemTeamMemberHistoryItem extends SystemTeamMemberDetail {
-  status: Extract<TeamMemberStatus, 'removed'>
-  removedAt?: string
-}
-
 export interface SystemTeamDetail {
   id: string
   name: string
@@ -85,15 +78,6 @@ export interface SystemTeamMemberListResult {
   memberCount: number
   updatedAt: string
   items: SystemTeamMemberDetail[]
-}
-
-export interface SystemTeamMemberHistoryResult {
-  id: string
-  items: SystemTeamMemberHistoryItem[]
-  total: number
-  hasMore: boolean
-  page: number
-  pageSize: number
 }
 
 export interface SystemTeamMembersAddedResult {
@@ -141,8 +125,14 @@ export interface AuthorizationUsageRowSummary {
 }
 
 export interface AuthorizationUsageAggregateSummary extends AuthorizationUsageRowSummary {
+  successCount: number
+  errorCount: number
   inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
   cacheWriteTokens: number
+  averageFirstTokenMs: number
+  averageDurationMs: number
   lastUsedAt?: string
 }
 

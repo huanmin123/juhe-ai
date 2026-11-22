@@ -523,7 +523,7 @@ const ownerAccessColumns = `'owner' AS access_type, NULL AS authorization_id, NU
 // fifth) so the UNION ALL aligns positionally.
 func (s *Store) authorizedListArm() string {
 	return `SELECT g.id, g.system_account_id, g.name, g.description,
-			CASE WHEN g.enabled = 1 AND COALESCE(s.enabled, 0) = 1 AND COALESCE(s.snapshot_revision, '') <> '' THEN 1 ELSE 0 END AS enabled,
+			g.enabled AS enabled,
 			g.is_default,
 			g.group_type,
 			g.group_kind,
@@ -1208,7 +1208,7 @@ func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (
 				WHERE g.id = ? AND g.system_account_id = ?
 				UNION ALL
 				SELECT g.id, g.system_account_id, g.name, g.description,
-					CASE WHEN g.enabled = 1 AND COALESCE(s.enabled, 0) = 1 AND COALESCE(s.snapshot_revision, '') <> '' THEN 1 ELSE 0 END AS enabled,
+					g.enabled AS enabled,
 					g.is_default,
 					g.group_type,
 					g.group_kind,

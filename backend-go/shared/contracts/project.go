@@ -123,7 +123,7 @@ const ArchitectureVersion = "go-projects-v1"
 // needs_review → pending，superseded → returned）、DELETE 授权来源 quota
 // scope binding 行后重建收敛 CHECK。
 // 当前值 31。
-const SchemaRevision int64 = 31
+const SchemaRevision int64 = 32
 
 // MinRequiredRevision 是本二进制正常运行所需的最低库结构版本（多节点发布
 // 设计 §5.1）：有结构变更的发布批次等于本批 SchemaRevision；库低于该值时

@@ -494,9 +494,9 @@ func TestW9HPgDirectInputReaderChain(t *testing.T) {
 		w9hOAuthEnvelope(`{"access_token":"at-w9h","expires_at":"2027-01-01T00:00:00.000Z","base_url":"https://chatgpt.com/backend-api/codex"}`))
 	w9hMustExec(t, db, `INSERT INTO juhe_business.resource_authorizations (
 		id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, scope, status,
-		effective_source_type, activated_at, limits_json, created_by, created_at, updated_at
+		effective_source_type, activated_at, created_by, created_at, updated_at
 	) VALUES ('w9h-auth-1', 'account', 'w9h-din-src', 'sys_admin', 'sys_admin', 'health_check', 'active',
-		'direct', $1, '{"daily":{"enabled":true,"limit":100}}', 'w9h', $2, $3)`, w9hFixtureNow, w9hFixtureNow, w9hFixtureNow)
+		'direct', $1, 'w9h', $2, $3)`, w9hFixtureNow, w9hFixtureNow, w9hFixtureNow)
 	w9hSeedBusinessAccount(t, db, "w9h-din-2", "gpt", "profile_gpt_openai_v1", "oauth", "active", "responses_json", sql.NullString{String: "w9h-din-src", Valid: true}, sql.NullString{String: "w9h-auth-1", Valid: true})
 
 	w9hMustExec(t, db, `UPDATE juhe_business.group_accounts SET account_authorization_id = 'w9h-auth-1' WHERE account_id = 'w9h-din-2'`)

@@ -741,7 +741,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   // 演练场（docs/functions/演练场设计.md §2）：模型能力试玩台一级菜单，
-  // 四页均为一次性试玩——消息与产物只存页面内存，keepAlive 保证导航间保留页内状态。
+  // 六页均为一次性试玩——消息与产物只存页面内存，keepAlive 保证导航间保留页内状态。
   {
     path: '/playground/chat',
     component: () => import('@/views/playground/PlaygroundChatView.vue'),
@@ -760,7 +760,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/playground/PlaygroundImageView.vue'),
     meta: {
       title: '图片生成',
-      description: '选择账户与生图模型，按提示词同步生成图片并直接下载。',
+      description: '创建异步图像生成任务，历史卡片支持筛选、预览下载与配置回填。',
       viewScope: 'self',
       menuGroup: 'playground',
       menuGroupTitle: '演练场',
@@ -787,6 +787,32 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '语音合成',
       description: '选择账户与语音模型，把文本合成为语音并播放下载。',
+      viewScope: 'self',
+      menuGroup: 'playground',
+      menuGroupTitle: '演练场',
+      keepAlive: true,
+      heavy: false
+    }
+  },
+  {
+    path: '/playground/embeddings',
+    component: () => import('@/views/playground/PlaygroundEmbeddingsView.vue'),
+    meta: {
+      title: '向量生成',
+      description: '选择账户与向量模型，把多行文本向量化并查看本地计算的相似度矩阵。',
+      viewScope: 'self',
+      menuGroup: 'playground',
+      menuGroupTitle: '演练场',
+      keepAlive: true,
+      heavy: false
+    }
+  },
+  {
+    path: '/playground/rerank',
+    component: () => import('@/views/playground/PlaygroundRerankView.vue'),
+    meta: {
+      title: '重排测试',
+      description: '选择账户与重排模型，按查询语句对文档重排并查看分数条形图。',
       viewScope: 'self',
       menuGroup: 'playground',
       menuGroupTitle: '演练场',

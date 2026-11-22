@@ -10,7 +10,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -50,40 +49,36 @@ func removeKindFiles(dir string, extSet map[string]string) {
 	}
 }
 
-func rollbackWritten(dir string, written []string) {
-	for _, name := range written {
-		_ = os.Remove(filepath.Join(dir, name))
-	}
+// saveImageReference / saveImageResult 是图像产物的文件替身写入（§3.4 v1.2：
+// 每张独立 id，无覆盖语义；job_id 绑定是 PG 列语义，文件替身不承载——孤儿清
+// 理的 kind 区分由 PG 测试覆盖）。
+func (s *fsArtifactStore) saveImageReference(viewerID string, image decodedImage) (string, error) {
+	return s.saveImageFile(viewerID, image)
 }
 
-func (s *fsArtifactStore) replaceImages(viewerID string, images []decodedImage) ([]imageResultEntry, error) {
+func (s *fsArtifactStore) saveImageResult(viewerID string, _ string, image decodedImage) (string, error) {
+	return s.saveImageFile(viewerID, image)
+}
+
+func (s *fsArtifactStore) saveImageFile(viewerID string, image decodedImage) (string, error) {
 	dir, err := s.userDir(viewerID)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := os.MkdirAll(dir, artifactsDirPerm); err != nil {
-		return nil, err
+		return "", err
 	}
-	removeKindFiles(dir, artifactImageMIME)
-	entries := make([]imageResultEntry, 0, len(images))
-	written := make([]string, 0, len(images))
-	for _, image := range images {
-		id, idErr := newArtifactID()
-		if idErr != nil {
-			rollbackWritten(dir, written)
-			return nil, idErr
-		}
-		name := id + "." + mimeExtension(image.MIME)
-		if err := os.WriteFile(filepath.Join(dir, name), image.Data, artifactsFilePerm); err != nil {
-			rollbackWritten(dir, written)
-			return nil, err
-		}
-		written = append(written, name)
-		entries = append(entries, imageResultEntry{ID: id, URL: artifactContentURL(id)})
+	id, idErr := newArtifactID()
+	if idErr != nil {
+		return "", idErr
 	}
-	return entries, nil
+	name := id + "." + mimeExtension(image.MIME)
+	if err := os.WriteFile(filepath.Join(dir, name), image.Data, artifactsFilePerm); err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
 func (s *fsArtifactStore) replaceSpeech(viewerID string, data []byte, ext string) (string, error) {
@@ -134,7 +129,7 @@ func (s *fsArtifactStore) list(viewerID string) (*artifactsResponse, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := &artifactsResponse{Images: []artifactsImageEntry{}}
+	out := &artifactsResponse{}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -148,7 +143,6 @@ func (s *fsArtifactStore) list(viewerID string) (*artifactsResponse, error) {
 		name  string
 		scope time.Time
 	}
-	var images []datedFile
 	var speech, video *datedFile
 	for _, entry := range entries {
 		if entry.IsDir() {
@@ -161,10 +155,8 @@ func (s *fsArtifactStore) list(viewerID string) (*artifactsResponse, error) {
 			continue
 		}
 		item := datedFile{id: id, ext: ext, name: entry.Name(), scope: info.ModTime()}
-		if _, isImage := artifactImageMIME[ext]; isImage {
-			images = append(images, item)
-			continue
-		}
+		// v1.2 起 GET /artifacts 无 images 字段（图片历史走 GET /images/jobs，
+		// §3.8）；图像文件只服务 content 取流（image_result/image_reference）。
 		if _, isAudio := artifactAudioMIME[ext]; isAudio {
 			if speech == nil || item.scope.After(speech.scope) {
 				speech = &item
@@ -176,17 +168,6 @@ func (s *fsArtifactStore) list(viewerID string) (*artifactsResponse, error) {
 				video = &item
 			}
 		}
-	}
-	sort.Slice(images, func(i, j int) bool {
-		if !images[i].scope.Equal(images[j].scope) {
-			return images[i].scope.Before(images[j].scope)
-		}
-		return images[i].name < images[j].name
-	})
-	for _, image := range images {
-		out.Images = append(out.Images, artifactsImageEntry{
-			ID: image.id, URL: artifactContentURL(image.id), CreatedAt: image.scope.Unix(),
-		})
 	}
 	if speech != nil {
 		out.Speech = &artifactsSpeechEntry{
@@ -257,6 +238,10 @@ func (s *fsArtifactStore) openArtifact(viewerID, id string) (*artifactContent, e
 	return nil, errArtifactNotFound
 }
 
+// cleanupExpired 是文件替身的 24h 懒清理近似：删过期 audio/json + 过期图像
+// 文件。PG 侧图像文件按 kind 区分孤儿参考图（job_id=”）与绑定产物（jobs 清
+// 理任务职责），文件替身无该列，统一按孤儿口径近似（绑定产物语义由 PG 测试
+// 覆盖，见 imagejob_store_pg_test.go）。
 func (s *fsArtifactStore) cleanupExpired() {
 	if !s.available() {
 		return

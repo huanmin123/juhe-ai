@@ -1,13 +1,14 @@
 package accounts
 
 // w10a runtime-reset 攻坚：授权路径的 unchanged 重置结果、失败列清理布尔、
-// 授权不可用消息矩阵、effective availability 全分支、授权额度门（含端口
-// 失败臂）与 explicit_policy_cooldown 跳过链。纯函数直测 + HTTP 流程各一条。
+// 授权不可用消息矩阵、effective availability 全分支与
+// explicit_policy_cooldown 跳过链。纯函数直测 + HTTP 流程各一条。
+//（授权额度门专测随授权额度域退役删除：RuntimeResetEffects 端口不再有
+// AuthorizationQuotaExceeded，skip 不再产出 authorization_quota 标记。）
 
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"net/http"
 	"testing"
 	"time"
@@ -202,9 +203,8 @@ func TestW10AResetEffectiveAvailability(t *testing.T) {
 		{"authorized 授权到期时间已过", func() *resetSummary {
 			return w10aSummary(authzBase, func(s *resetSummary) { s.AuthorizationExpiresAt = sqlNullStr("2020-01-01T00:00:00Z") })
 		}, false},
-		{"authorized 额度用完", func() *resetSummary {
-			return w10aSummary(authzBase, func(s *resetSummary) { s.AuthorizationQuotaExceeded = true })
-		}, false},
+		// （"authorized 额度用完" 臂随授权额度域退役：resetSummary 不再有
+		// AuthorizationQuotaExceeded 位。）
 		{"authorized 来源缺失", func() *resetSummary {
 			return w10aSummary(authzBase, func(s *resetSummary) { s.SourceAccountID = sql.NullString{} })
 		}, false},
@@ -391,53 +391,9 @@ func TestW10AAuthorizedResetUnavailableMessage(t *testing.T) {
 		}
 	}
 
-	// 额度门：fake 端口超额 → 额度消息。
-	fake.quotaExceeded = true
-	got, err := env.store.authorizedResetUnavailableMessage(context.Background(), healthy, binding, access)
-	if err != nil || got != "授权额度已用完，当前账户不能调用" {
-		t.Fatalf("额度门：got %q err %v", got, err)
-	}
-	fake.quotaExceeded = false
-
-	// 额度读取失败的 error 臂（端口错误按未超额处理）。
-	errEffects := &w10aQuotaErrEffects{fakeRuntimeEffects: fake}
-	env.store.SetRuntimeResetEffects(errEffects)
-	if got, err := env.store.authorizedResetUnavailableMessage(context.Background(), healthy, binding, access); err != nil || got != "" {
-		t.Fatalf("额度读取失败应按未超额处理：got %q err %v", got, err)
-	}
+	// （额度门与端口失败臂随授权额度域退役：RuntimeResetEffects 不再声明
+	// AuthorizationQuotaExceeded，不可用消息只覆盖授权状态与来源账户健康。）
 	env.store.SetRuntimeResetEffects(nil)
-}
-
-// w10aQuotaErrEffects 覆盖授权额度读取，使其返回错误（端口失败臂）。
-type w10aQuotaErrEffects struct {
-	*fakeRuntimeEffects
-}
-
-func (w *w10aQuotaErrEffects) AuthorizationQuotaExceeded(context.Context, AuthorizationQuotaCheckInput) (bool, error) {
-	return false, errors.New("quota read failed")
-}
-
-func TestW10AResetAuthorizationQuotaExceeded(t *testing.T) {
-	env := newTestEnv(t)
-	row := authorizedDispatchResetRow{ID: "acc-1", SystemAccountID: "owner-1"}
-	fake := &fakeRuntimeEffects{quotaExceeded: true}
-	env.store.SetRuntimeResetEffects(fake)
-	if !env.store.resetAuthorizationQuotaExceeded(context.Background(), row, AccessScope{IsAdmin: true}) {
-		t.Fatal("端口超额应返回 true")
-	}
-	fake.quotaExceeded = false
-	if env.store.resetAuthorizationQuotaExceeded(context.Background(), row, AccessScope{IsAdmin: true}) {
-		t.Fatal("端口未超额应返回 false")
-	}
-	errEffects := &w10aQuotaErrEffects{fakeRuntimeEffects: fake}
-	env.store.SetRuntimeResetEffects(errEffects)
-	if env.store.resetAuthorizationQuotaExceeded(context.Background(), row, AccessScope{IsAdmin: true}) {
-		t.Fatal("端口错误应按未超额处理")
-	}
-	env.store.SetRuntimeResetEffects(nil)
-	if env.store.resetAuthorizationQuotaExceeded(context.Background(), row, AccessScope{IsAdmin: true}) {
-		t.Fatal("无端口应返回 false")
-	}
 }
 
 // ---- HTTP 流程 ----
@@ -539,34 +495,8 @@ func TestW10AOwnerResetPolicyCooldownSkip(t *testing.T) {
 	}
 }
 
-func TestW10AAuthorizedResetQuotaSkipped(t *testing.T) {
-	env, store := newM11TestEnv(t)
-	fake := &fakeRuntimeEffects{quotaExceeded: true}
-	store.SetRuntimeResetEffects(fake)
-	granteeID := env.login(t, "grantee-w10aq", "grantee-pass", "user")
-	ownerID := env.login(t, "owner-w10aq", "owner-pass", "user")
-	env.login(t, "grantee-w10aq", "grantee-pass", "user")
-	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, group_type, created_at, updated_at)
-		VALUES ('grp-w10aq', ?, 'w10a额度分组', 1, 'personal', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, ownerID)
-	w10aSeedAuthorizedInstance(t, env, granteeID, ownerID, "grp-w10aq", "acc-w10aq-inst")
-
-	// 端口超额：授权实例进入 authorization_quota 跳过，不做失败态清理。
-	env.exec(t, `UPDATE accounts SET status = 'temporary_unavailable', schedulable = 0,
-		cooldown_until = '2030-01-01T00:00:00Z', last_error_code = 'rate_limited' WHERE id = 'acc-w10aq-inst'`)
-	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/my-accounts/acc-w10aq-inst/runtime-reset",
-		`{"expectedConfigRevision":1}`)
-	if code != http.StatusOK {
-		t.Fatalf("额度跳过重置状态码：%d %v", code, payload)
-	}
-	data := dataMap(t, payload)
-	skipped, ok := data["skipped"].([]any)
-	if !ok || !containsAnyW10(skipped, "authorization_quota") {
-		t.Fatalf("skipped 应含 authorization_quota：%v", data["skipped"])
-	}
-	if got := env.queryCell(t, `SELECT COALESCE(cooldown_until,'') FROM accounts WHERE id = 'acc-w10aq-inst'`); got == "" {
-		t.Fatal("额度跳过时不应清理冷却时间")
-	}
-}
+// （TestW10AAuthorizedResetQuotaSkipped 随授权额度域退役：runtime-reset 不再
+// 产出 authorization_quota 跳过标记，额度门用例失去契约对应物。）
 
 func containsAnyW10(values []any, want string) bool {
 	for _, value := range values {

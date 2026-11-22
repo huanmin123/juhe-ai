@@ -85,21 +85,18 @@ const w13gStrictOutboxDDL = `CREATE TABLE IF NOT EXISTS account_circuit_outbox (
 )`
 
 // w13gEffects 在 fakeRuntimeEffects 之上加故障开关与回调钩子，用于在主流程
-// 特定步骤之间注入 DROP TABLE / 翻转结果。
+// 特定步骤之间注入 DROP TABLE / 翻转结果。（授权额度门的 failQuota/
+// quotaFlipSecond 等开关随授权额度域退役删除。）
 type w13gEffects struct {
 	*fakeRuntimeEffects
-	mu              sync.Mutex
-	failLatency     bool
-	failRevalidate  bool
-	failLoadTrans   bool
-	failClearTrans  bool
-	failQuota       bool
-	quotaFlipSecond bool
-	quotaFlipped    bool
-	quotaCalls      int
-	onClear         func(e *w13gEffects)
-	onLatency       func(e *w13gEffects)
-	onRevalidate    func(e *w13gEffects)
+	mu             sync.Mutex
+	failLatency    bool
+	failRevalidate bool
+	failLoadTrans  bool
+	failClearTrans bool
+	onClear        func(e *w13gEffects)
+	onLatency      func(e *w13gEffects)
+	onRevalidate   func(e *w13gEffects)
 }
 
 func (w *w13gEffects) ClearAccountRuntimeAvailability(ctx context.Context, in RuntimeAvailabilityClearInput) (RuntimeAvailabilityClearResult, error) {
@@ -141,25 +138,6 @@ func (w *w13gEffects) ClearAPIKeyTransientFailure(ctx context.Context, id, fp st
 		return false, context.DeadlineExceeded
 	}
 	return w.fakeRuntimeEffects.ClearAPIKeyTransientFailure(ctx, id, fp, gen)
-}
-
-func (w *w13gEffects) AuthorizationQuotaExceeded(ctx context.Context, in AuthorizationQuotaCheckInput) (bool, error) {
-	w.mu.Lock()
-	calls := w.quotaCalls
-	w.quotaCalls++
-	flipped := w.quotaFlipped
-	if w.quotaFlipSecond {
-		w.quotaFlipped = true
-	}
-	w.mu.Unlock()
-	if w.failQuota {
-		return false, context.DeadlineExceeded
-	}
-	if w.quotaFlipSecond && flipped {
-		return true, nil
-	}
-	_ = calls
-	return w.fakeRuntimeEffects.AuthorizationQuotaExceeded(ctx, in)
 }
 
 // w13gSeedAuthInstance 建立授权实例最小 fixture：owner 源账户 + active 授权 +
@@ -306,39 +284,9 @@ func TestW13GRuntimeResetAuthorizedSkipMatrix(t *testing.T) {
 		t.Fatal("qual 重置必须结束质量处罚行")
 	}
 
-	// 授权额度超额 → skipped 含 authorization_quota。
-	id, _, _, _ := w13gSeedAuthInstance(t, env, root, alice, "quota", "active", "rate_limited", true)
-	effects.fakeRuntimeEffects.quotaExceeded = true
-	outcome, err := env.store.ResetAccountRuntimeState(context.Background(), id, 1,
-		AccessScope{ViewerID: alice})
-	if err != nil || outcome == nil {
-		t.Fatalf("quota 重置失败：%v", err)
-	}
-	if !strings.Contains(strings.Join(outcome.Result.Skipped, "|"), "authorization_quota") {
-		t.Fatalf("quota 应跳过：%v", outcome.Result.Skipped)
-	}
-	effects.fakeRuntimeEffects.quotaExceeded = false
-
-	// quota 读失败 → 按未超额处理仍走 sourceBlocked 之外的常规清理。
-	effects.failQuota = true
-	outcome, err = env.store.ResetAccountRuntimeState(context.Background(), id, 1,
-		AccessScope{ViewerID: alice})
-	if err != nil || outcome == nil {
-		t.Fatalf("quota 读失败重置异常：%v", err)
-	}
-	if strings.Contains(strings.Join(outcome.Result.Skipped, "|"), "authorization_quota") {
-		t.Fatalf("quota 读失败不应标记超额：%v", outcome.Result.Skipped)
-	}
-	effects.failQuota = false
-
-	// quota 翻转：summary 阶段未超额、dispatch 阶段超额 → dispatch 报错向上传播。
-	id2, _, _, _ := w13gSeedAuthInstance(t, env, root, alice, "flip", "active", "rate_limited", true)
-	effects.quotaFlipSecond = true
-	if _, err := env.store.ResetAccountRuntimeState(context.Background(), id2, 1,
-		AccessScope{ViewerID: alice}); err == nil || err.Error() != "授权额度已用完，当前账户不能调用" {
-		t.Fatalf("quota 翻转应报错：%v", err)
-	}
-	effects.quotaFlipSecond = false
+	// （授权额度超额 skip / 读失败按未超额处理 / 翻转报错三段随授权额度域
+	// 退役删除：reset 链不再有 AuthorizationQuotaExceeded 端口与
+	// authorization_quota 跳过标记。）
 }
 
 func TestW13GRuntimeResetAuthorizedUnchangedAndNoBinding(t *testing.T) {

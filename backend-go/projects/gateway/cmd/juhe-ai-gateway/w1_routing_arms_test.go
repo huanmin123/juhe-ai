@@ -42,7 +42,6 @@ func TestW1RProjectGroupAccessForRouting(t *testing.T) {
 		SchedulingPolicy:               &policy,
 		GroupAuthorizationID:           strPtrOf("authz_1"),
 		GroupAuthorizationExpiresAt:    strPtrOf("2999-01-01T00:00:00.000Z"),
-		GroupAuthorizationQuotaLimited: w1rBoolPtr(true),
 		GroupAuthorizationSourceType:   strPtrOf("team"),
 		GroupAuthorizationSourceTeamID: strPtrOf("team_1"),
 	}
@@ -63,20 +62,15 @@ func TestW1RProjectGroupAccessForRouting(t *testing.T) {
 		t.Errorf("授权字段 = %q/%q, want authz_1/2999-01-01T00:00:00.000Z",
 			projected.GroupAuthorizationID, projected.GroupAuthorizationExpiresAt)
 	}
-	if projected.GroupAuthorizationQuotaLimited == nil || !*projected.GroupAuthorizationQuotaLimited {
-		t.Errorf("GroupAuthorizationQuotaLimited = %v, want 保留 true 指针", projected.GroupAuthorizationQuotaLimited)
-	}
+	// （GroupAuthorizationQuotaLimited 断言随授权额度域退役删除。）
 	if projected.GroupAuthorizationSourceType != "team" || projected.GroupAuthorizationSourceTeamID != "team_1" {
 		t.Errorf("来源字段 = %q/%q, want team/team_1",
 			projected.GroupAuthorizationSourceType, projected.GroupAuthorizationSourceTeamID)
 	}
-	// 空元数据：nil 指针全部坍缩为零值字符串，布尔指针保留 nil。
+	// 空元数据：nil 指针全部坍缩为零值字符串。
 	empty := projectGroupAccessForRouting(gatewayruntimecache.GroupUsageAccessMetadata{})
 	if empty.GroupType != "" || empty.SchedulingPolicy != "" || empty.GroupAuthorizationID != "" {
 		t.Errorf("空元数据投影 = %+v, want 全零值字符串", empty)
-	}
-	if empty.GroupAuthorizationQuotaLimited != nil {
-		t.Errorf("空元数据 GroupAuthorizationQuotaLimited = %v, want nil", empty.GroupAuthorizationQuotaLimited)
 	}
 }
 

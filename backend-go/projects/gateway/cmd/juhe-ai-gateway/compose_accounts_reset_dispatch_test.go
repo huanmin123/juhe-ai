@@ -47,7 +47,7 @@ func newResetDispatchBridge(t *testing.T, composed *composition) (accounts.Runti
 	if err := writer.ensureSchema(context.Background()); err != nil {
 		t.Fatalf("ensure outbox schema: %v", err)
 	}
-	resetEffects, err := newAccountsRuntimeResetBridge(composed, nil, &chainRuntimeServices{}, resetDispatchTestSecret, writer)
+	resetEffects, err := newAccountsRuntimeResetBridge(composed, &chainRuntimeServices{}, resetDispatchTestSecret, writer)
 	if err != nil {
 		t.Fatalf("assemble runtime reset bridge: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestAccountsRuntimeResetBridgeDispatchRejectedKeepsReset(t *testing.T) {
 	// inert writer（chain 关闭/缺业务库句柄的装配形态）：派发按
 	// input_unavailable 拒绝——fire-and-forget，端口不 panic、不向调用方传
 	// 错、不写行，reset 继续。
-	inert, err := newAccountsRuntimeResetBridge(composed, nil, &chainRuntimeServices{}, resetDispatchTestSecret,
+	inert, err := newAccountsRuntimeResetBridge(composed, &chainRuntimeServices{}, resetDispatchTestSecret,
 		newChainProbeRequestOutboxWriter(nil, 65_000))
 	if err != nil {
 		t.Fatalf("assemble inert reset bridge: %v", err)

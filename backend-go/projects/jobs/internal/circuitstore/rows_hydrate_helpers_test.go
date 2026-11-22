@@ -353,24 +353,23 @@ func TestStatusBoundaryAtOfBranches(t *testing.T) {
 		sourceCooldownUntil:    sql.NullString{String: "2033-01-01T00:00:00.000Z", Valid: true},
 		cooldownUntil:          sql.NullString{String: "2034-01-01T00:00:00.000Z", Valid: true},
 	}
+	//（authorization_quota_exceeded 边界臂随授权额度域退役：
+	// statusBoundaryAtOf 收窄为 (availability, row, recoveryAt) 三参。）
 	cases := []struct {
-		status       string
-		quotaResetAt string
-		recoveryAt   *string
-		want         string
+		status     string
+		recoveryAt *string
+		want       string
 	}{
-		{"authorization_expired", "", nil, "2030-01-01T00:00:00.000Z"},
-		{"source_expired", "", nil, "2031-01-01T00:00:00.000Z"},
-		{"instance_expired", "", nil, "2032-01-01T00:00:00.000Z"},
-		{"authorization_quota_exceeded", "2035-01-01T00:00:00.000Z", nil, "2035-01-01T00:00:00.000Z"},
-		{"authorization_quota_exceeded", "", nil, ""},
-		{"source_cooldown", "", nil, "2033-01-01T00:00:00.000Z"},
-		{"instance_cooldown", "", nil, "2034-01-01T00:00:00.000Z"},
-		{"instance_error", "", nil, ""},
+		{"authorization_expired", nil, "2030-01-01T00:00:00.000Z"},
+		{"source_expired", nil, "2031-01-01T00:00:00.000Z"},
+		{"instance_expired", nil, "2032-01-01T00:00:00.000Z"},
+		{"source_cooldown", nil, "2033-01-01T00:00:00.000Z"},
+		{"instance_cooldown", nil, "2034-01-01T00:00:00.000Z"},
+		{"instance_error", nil, ""},
 	}
 	for _, tc := range cases {
 		availability := blockedAvailability(tc.status, "", "", "", "", "")
-		got := statusBoundaryAtOf(&availability, row, tc.quotaResetAt, tc.recoveryAt)
+		got := statusBoundaryAtOf(&availability, row, tc.recoveryAt)
 		if tc.want == "" {
 			if got != nil {
 				t.Fatalf("%s 不应有边界: %v", tc.status, *got)
@@ -384,11 +383,11 @@ func TestStatusBoundaryAtOfBranches(t *testing.T) {
 	// runtime_local_suppressed 走 recoveryAt。
 	recovery := "2036-01-01T00:00:00.000Z"
 	suppressed := blockedAvailability("runtime_local_suppressed", "", "", "", "", "")
-	got := statusBoundaryAtOf(&suppressed, row, "", &recovery)
+	got := statusBoundaryAtOf(&suppressed, row, &recovery)
 	if got == nil || *got != recovery {
 		t.Fatalf("runtime suppression 边界取 recoveryAt: %v", got)
 	}
-	if statusBoundaryAtOf(nil, row, "", nil) != nil {
+	if statusBoundaryAtOf(nil, row, nil) != nil {
 		t.Fatal("nil 可用性无边界")
 	}
 }

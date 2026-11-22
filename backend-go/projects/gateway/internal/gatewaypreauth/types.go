@@ -159,12 +159,7 @@ type GatewayFailureUsageContext struct {
 	// 识别）：单点判定 gatewaycodex.CodexCompactionExpectedForRequest 在
 	// preflight 冻结的请求级值，经 usageContextOf 投影进入完成/失败用量记录。
 	// models / media / realtime 流量不经过该判定，天然 false。
-	CompactionExpected bool
-	// SuppressUsage 是内部通道请求（AI 问答免 Key 直调）的使用日志丢弃标记：
-	// 构造点取自请求字段 req.SuppressUsage，经 usageContextOf 投影到 usage 侧，
-	// 最终在持久化唯一闸口（gatewayusage.FinalizationDispatch.DispatchUsageRecord
-	// 入口，覆盖正常入队与溢出 spool 两臂）丢弃。
-	SuppressUsage                  bool
+	CompactionExpected             bool
 	Endpoint                       string
 	RequestSnapshot                UsageRequestSnapshot
 	RequestedServiceTier           string

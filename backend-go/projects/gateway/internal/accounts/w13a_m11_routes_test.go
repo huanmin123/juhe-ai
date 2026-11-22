@@ -2,16 +2,15 @@ package accounts
 
 // w13a m11_routes.go 未覆盖臂补齐：M11 路由族错误与校验分支（授权实例 403、
 // 余额明细禁止、test-draft 参数校验与失败快照、force-activate/traffic/
-// return/authorized-dispatch/group 的空白作用域、坏 JSON、非法参数）。
+// return/authorized-dispatch/group 的错误臂、坏 JSON、非法参数）。
 // 成功主路径由 w2/w10a 既有测试覆盖，这里专攻错误臂。
+//（return-authorization 原错误臂随整单归还路由卸载改为 404 退役钉值。）
 
 import (
 	"context"
 	"errors"
 	"net/http"
 	"testing"
-
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authz"
 )
 
 // w13aFakeBalanceRefresher 可编程的余额刷新端口。
@@ -81,20 +80,14 @@ func TestW13AM11ReadRoutesForbiddenArms(t *testing.T) {
 }
 
 func TestW13AForceActivateAuthorizedInstanceForbidden(t *testing.T) {
-	env, authzStore := newAuthorizedTestEnv(t)
+	env, _ := newAuthorizedTestEnv(t)
 	ownerID := env.login(t, "w13a-owner", "owner-pass", "user")
 	memberID := env.login(t, "w13a-member", "member-pass", "user")
 	env.seedAccount(t, "acc-w13a-fsrc", ownerID, "w13a-fsrc", "active")
 	env.seedProviderAndDefaultGroup(t, memberID)
 	env.seedTeamMember(t, "team-w13a-force", ownerID, memberID)
-	if _, err := authzStore.Create(context.Background(), authz.CreateInput{
-		ResourceType: "account", ResourceID: "acc-w13a-fsrc",
-		GranteeType: "team", GranteeID: "team-w13a-force",
-	}, ownerID); err != nil {
-		t.Fatal(err)
-	}
-	runtimeID := env.queryCell(t, `SELECT id FROM resource_authorizations
-		WHERE grantee_system_account_id = ? AND resource_id = 'acc-w13a-fsrc'`, memberID)
+	// 授权大简化后团队发放不直接落 runtime 行；直接种已领取形态行。
+	runtimeID := env.seedAcceptedRuntimeAuthorization(t, "ra-w13a-force", "acc-w13a-fsrc", ownerID, memberID, "team", "team-w13a-force")
 	env.seedAuthorizationInstance(t, "acc-w13a-finst", memberID, runtimeID, "acc-w13a-fsrc")
 
 	// 成员（grantee）对授权实例人工恢复 → 400 授权账户不能人工恢复（445-448）。
@@ -179,14 +172,14 @@ func TestW13AM11WriteRoutesValidationArms(t *testing.T) {
 	if code, _ := env.doRaw(t, http.MethodPost, base+"/traffic-migration", "{not-json"); code != http.StatusBadRequest {
 		t.Fatalf("坏 JSON traffic 应 400：%d", code)
 	}
-	// return-authorization：非授权实例 → 404 缺失（errReturnAuthorizationMissing 臂
-	// 629-631）；守护去重按 actor+指纹缓存失败结果，故与空白作用域用例分离账户。
+	// return-authorization：整单归还路由随授权大简化卸载 → 内核 404（管理面
+	// 404 断言保留；原"非授权实例 404 / 空白作用域 400"两臂合并为路由退役钉值，
+	// 新契约归还走 authz 域 my-authorization-sources/{sourceId}/return）。
 	if code, payload := env.do(t, http.MethodPost, base+"/return-authorization", ""); code != http.StatusNotFound {
-		t.Fatalf("非实例归还应 404：%d %v", code, payload)
+		t.Fatalf("退役归还应 404：%d %v", code, payload)
 	}
-	// 归还：另一账户走空白作用域（617-620）。
-	if code, payload := env.do(t, http.MethodPost, "/__aisys__/api/accounts/acc-w13a-m11c/return-authorization?systemAccountId=", ""); code != http.StatusBadRequest {
-		t.Fatalf("空白作用域 return 应 400：%d %v", code, payload)
+	if code, _ := env.do(t, http.MethodPost, "/__aisys__/api/accounts/acc-w13a-m11c/return-authorization?systemAccountId=", ""); code != http.StatusNotFound {
+		t.Fatalf("空白作用域 return 亦应 404（路由已卸载）：%d", code)
 	}
 	// authorized-dispatch：空白作用域（673-676）、坏 JSON（683-685）。
 	if code, payload := env.do(t, http.MethodPatch, base+"/authorized-dispatch?systemAccountId=", `{}`); code != http.StatusBadRequest {

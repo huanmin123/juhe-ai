@@ -168,3 +168,57 @@ func TestSweepActorFallsBackToCreator(t *testing.T) {
 		t.Fatalf("actor=%q", seen)
 	}
 }
+
+// TestSweepMarksEndedReasonAuthorizationExpired 钉 sweep 的 ended_reason
+// 契约：grants 翻 expired（ended_reason=authorization_expired），同一事务把
+// 该 grant 的非终态 sources 也翻 expired 且 ended_reason 同值——extend 的
+// 「当前 expired 周期」判定依赖该字面量。
+func TestSweepMarksEndedReasonAuthorizationExpired(t *testing.T) {
+	store, db, clock := newSweepStore(t)
+	seedGrantRow(t, db, "g-reason", "active", isoMillis(clock.time().Add(-timeHour)), "", "")
+	_, err := db.Exec(`INSERT INTO juhe_business.resource_authorization_sources (id, grant_id, authorization_id, status, updated_at)
+		VALUES ('src-reason-pending', 'g-reason', 'rauth-reason', 'pending', $1)`, isoMillis(defaultNow()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO juhe_business.resource_authorization_sources (id, grant_id, authorization_id, status, updated_at)
+		VALUES ('src-reason-active', 'g-reason', 'rauth-reason2', 'active', $1)`, isoMillis(defaultNow()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.RunAuthorizationExpirySweep(context.Background(), nil, 0)
+	if err != nil || result.Expired != 1 {
+		t.Fatalf("sweep = %+v, %v", result, err)
+	}
+	assertGrantStatus(t, db, "g-reason", "expired")
+	var reason string
+	if err := db.QueryRow(`SELECT ended_reason FROM juhe_business.resource_authorization_grants WHERE id = 'g-reason'`).Scan(&reason); err != nil {
+		t.Fatal(err)
+	}
+	if reason != "authorization_expired" {
+		t.Fatalf("grant ended_reason=%q want authorization_expired", reason)
+	}
+	rows, err := db.Query(`SELECT id, status, ended_reason FROM juhe_business.resource_authorization_sources
+		WHERE grant_id = 'g-reason' ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	seen := 0
+	for rows.Next() {
+		var id, status, endedReason string
+		if err := rows.Scan(&id, &status, &endedReason); err != nil {
+			t.Fatal(err)
+		}
+		seen++
+		if status != "expired" || endedReason != "authorization_expired" {
+			t.Fatalf("source %s = %s/%s, want expired/authorization_expired", id, status, endedReason)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if seen != 2 {
+		t.Fatalf("sources swept = %d, want 2", seen)
+	}
+}

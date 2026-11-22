@@ -359,7 +359,14 @@ func Rebuild(ctx context.Context, options Options) (Result, error) {
 		Now:        options.Now,
 	}
 	for batch := 1; batch <= result.MaxBatches; batch++ {
-		processed, err := aggregator.AggregateUsageStatsBatch(ctx, statsagg.AggregateOptions{BatchSize: result.BatchSize})
+		// 离线重建批预算放宽（15 分钟）：单批展开的表族 UPSERT 语句量随
+		// batch-size 线性放大，跨网段 RTT 下默认 60s 预算会在几百行批上截断，
+		// 事务回滚导致游标不推进、重建永远无法推进。在线聚合不传 TimeBudget
+		// 仍走 60s 默认，不受影响。
+		processed, err := aggregator.AggregateUsageStatsBatch(ctx, statsagg.AggregateOptions{
+			BatchSize:  result.BatchSize,
+			TimeBudget: 15 * time.Minute,
+		})
 		if err != nil {
 			return Result{}, fmt.Errorf("统计聚合第 %d 批失败: %w", batch, err)
 		}

@@ -115,12 +115,6 @@ func newSpooledUsageRecorder(config usageBridgeConfig, deliverer usageRecordDeli
 // 语义）：补齐稳定 id 与 RFC3339 createdAt；直投 PG 的稳定 id 是
 // usage_records 幂等键（ON CONFLICT(created_at, id) DO NOTHING）。
 func (r *spooledUsageRecorder) EnqueueUsageRecord(ctx gatewayusage.Ctx, input gatewayusage.UsageRecordInput) error {
-	// 使用日志结构性抑制（AI 问答内部通道）：抑制标记在记录上随请求传播。
-	// 主闸口在 FinalizationDispatch.DispatchUsageRecord 入口；这里再守一道，
-	// 兜住绕过 finalization 直投 recorder 的路径，保证投递面不会看到抑制记录。
-	if input.SuppressUsage {
-		return nil
-	}
 	normalized, err := gatewayusage.NormalizeUsageRecordInput(input, r.clock, r.idFactory)
 	if err != nil {
 		r.mu.Lock()
@@ -528,8 +522,6 @@ func (u *chainFinalizationUsage) RecordCompletedUpstreamAttempt(input gatewayres
 		// 安全策略事实随请求级状态直传（构造点注入，安全策略设计 §8）。
 		SecurityPolicyApplied: u.securityPolicyApplied,
 		PIIHits:               u.piiHits,
-		// 内部通道抑制标记随 usage 上下文直传（持久化唯一闸口据此丢弃）。
-		SuppressUsage: input.UsageContext.SuppressUsage,
 		Endpoint:      input.UsageContext.Endpoint,
 		ProviderCode:  providerCode,
 		// 账号视图 provider 身份优先，空回落 usage context；协议档案 id 随账号
@@ -869,8 +861,6 @@ func (u *chainFinalizationUsage) RecordFailedUpstreamAttempt(input gatewayrespon
 		// 安全策略事实随请求级状态直传（与完成路径同源，安全策略设计 §8）。
 		SecurityPolicyApplied: u.securityPolicyApplied,
 		PIIHits:               u.piiHits,
-		// 内部通道抑制标记随 usage 上下文直传（持久化唯一闸口据此丢弃）。
-		SuppressUsage: input.UsageContext.SuppressUsage,
 		Endpoint:      input.UsageContext.Endpoint,
 		ProviderCode:  providerCode,
 		// 账号视图协议档案 id（Node input.account.providerProtocolProfileId）。

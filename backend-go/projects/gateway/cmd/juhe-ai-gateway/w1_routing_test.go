@@ -19,12 +19,11 @@ func TestW1ProjectGroupAccessForRoutingAndRuntime(t *testing.T) {
 	groupType := "personal"
 	authzID := "authz_1"
 	meta := gatewayruntimecache.GroupUsageAccessMetadata{
-		GroupOwnerSystemAccountID:      "sys_owner",
-		GroupAccessType:                "shared",
-		GroupType:                      &groupType,
-		SchedulingPolicy:               &gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5},
-		GroupAuthorizationID:           &authzID,
-		GroupAuthorizationQuotaLimited: boolPtr(true),
+		GroupOwnerSystemAccountID: "sys_owner",
+		GroupAccessType:           "shared",
+		GroupType:                 &groupType,
+		SchedulingPolicy:          &gatewayruntimecache.GroupSchedulingPolicy{DefaultSoftConcurrency: 5},
+		GroupAuthorizationID:      &authzID,
 	}
 	projected := projectGroupAccessForRouting(meta)
 	if projected.GroupOwnerSystemAccountID != "sys_owner" || projected.GroupType != "personal" {

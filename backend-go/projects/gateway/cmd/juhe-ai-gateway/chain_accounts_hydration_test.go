@@ -300,11 +300,12 @@ func TestChainAccountsSelectorGroupAuthorization(t *testing.T) {
 	}
 	grantee := "sys_grantee"
 	seed(`INSERT INTO system_accounts (id, status, image_generation_enabled) VALUES (?, 'active', 1)`, grantee)
-	seed(`INSERT INTO resource_authorizations (
-			id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id,
-			scope, status, effective_source_type, effective_source_team_id, expires_at, limits_json
-		) VALUES ('authz_group', 'group', ?, ?, ?, 'use', 'active', 'team', 'team_1', '2999-01-01T00:00:00.000Z',
-			'{"daily":{"enabled":true,"limit":100}}')`, fixture.groupID, fixture.systemAccount, grantee)
+	//（授权额度域已随 revision 31 退役；组级授权行走 send-and-claim 完整
+	// 链：runtime 行 + grant + grant 背书 source + settings 领取行。）
+	chainSeedAuthorizationClaimChain(t, db, "authz_group", "group", fixture.groupID,
+		fixture.systemAccount, grantee, "team", "team_1", "2999-01-01T00:00:00.000Z")
+	seed(`INSERT INTO group_authorization_settings (authorization_id, system_account_id, group_id, group_type)
+		VALUES ('authz_group', ?, ?, 'personal')`, grantee, fixture.groupID)
 
 	groupAccess, err := fixture.selector.resolveGroupAccess(context.Background(), fixture.groupID, grantee)
 	if err != nil {
@@ -316,9 +317,8 @@ func TestChainAccountsSelectorGroupAuthorization(t *testing.T) {
 	if groupAccess.GroupAccessType != "authorized" || groupAccess.GroupAuthorizationID == nil || *groupAccess.GroupAuthorizationID != "authz_group" {
 		t.Fatalf("group access = %+v", groupAccess)
 	}
-	if groupAccess.GroupAuthorizationQuotaLimited == nil || !*groupAccess.GroupAuthorizationQuotaLimited {
-		t.Fatalf("quota limited = %v", groupAccess.GroupAuthorizationQuotaLimited)
-	}
+	// （GroupAuthorizationQuotaLimited 断言随授权额度域退役删除：runtime
+	// 元数据不再携带额度受限位。）
 	if groupAccess.GroupAuthorizationSourceType == nil || *groupAccess.GroupAuthorizationSourceType != "team" {
 		t.Fatalf("source type = %v", groupAccess.GroupAuthorizationSourceType)
 	}

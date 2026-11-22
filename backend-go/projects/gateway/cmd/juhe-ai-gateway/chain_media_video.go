@@ -1577,7 +1577,7 @@ func (c *gatewayChain) handleMediaJobCreateUpstreamResponse(
 		return gatewayresponse.UpstreamResponseHandlingResult{AlreadyFinalized: true, GatewayLocalFailure: true}
 	}
 	if ir.Status == gatewaymedia.JobStatusCompleted {
-		c.enqueueMediaJobTerminalUsage(ctx, context.UsageContext.TraceID, apiKeyOwnerSystemAccountIDOf(req), req.SuppressUsage, &record, accountView, ir, settlement)
+		c.enqueueMediaJobTerminalUsage(ctx, context.UsageContext.TraceID, apiKeyOwnerSystemAccountIDOf(req), &record, accountView, ir, settlement)
 		if record.Kind == gatewaymedia.JobKindVideo && c.mediaJobs != nil {
 			c.mediaJobs.markMediaAccountActiveAfterJobSuccess(ctx, record.AccountID)
 		}
@@ -1726,25 +1726,17 @@ func newChainMediaJobID(kind gatewaymedia.MediaJobKind) string {
 // 任务面处理（账户亲和直连）
 // ---------------------------------------------------------------------------
 
-// mediaJobOwnership 是媒体任务面的归属键（AI 问答免 Key 直调计划 §3.3）：
-// 外部 /v1 请求按 API Key 隔离（Key 级，现状语义不变）；内部身份通道请求按
-// 系统账户归属（会话 owner）。两者互斥，恰有一个非空。
+// mediaJobOwnership 是媒体任务面的归属键：按认证后的 API Key 隔离（Key 级）。
 type mediaJobOwnership struct {
-	apiKeyID             string
-	ownerSystemAccountID string
+	apiKeyID string
 }
 
-func (o mediaJobOwnership) empty() bool { return o.apiKeyID == "" && o.ownerSystemAccountID == "" }
+func (o mediaJobOwnership) empty() bool { return o.apiKeyID == "" }
 
-// mediaJobOwnershipOf 从网关请求解析任务面归属键：内部身份通道请求（preauth
-// 跳过 Key 鉴权，Runtime 为 nil）按注入的会话 owner；外部请求按认证后的
-// API Key。
+// mediaJobOwnershipOf 从网关请求解析任务面归属键：preauth 认证后的 API Key。
 func mediaJobOwnershipOf(req *gatewaypreauth.GatewayRequest) mediaJobOwnership {
 	if req == nil {
 		return mediaJobOwnership{}
-	}
-	if req.InternalOwnerSystemAccountID != "" {
-		return mediaJobOwnership{ownerSystemAccountID: req.InternalOwnerSystemAccountID}
 	}
 	if req.Runtime != nil && req.Runtime.APIKey != nil {
 		return mediaJobOwnership{apiKeyID: req.Runtime.APIKey.ID}
@@ -1792,18 +1784,9 @@ func apiKeyIDOfGatewayRequest(req *gatewaypreauth.GatewayRequest) string {
 
 // loadMediaVideoJob 取行并做归属校验：未命中（不存在或非本人任务）统一 404
 // （归属信息不泄露；按 kind 渲染族内错误码，M3f 起长音频行用 audio_job 域）。
-// 归属键按 ownership 分流：内部通道按系统账户（GetByIDAndOwner），外部请求
-// 按 API Key（GetByIDAndAPIKey，Key 级隔离不变）。
+// 归属键按认证 API Key（GetByIDAndAPIKey，Key 级隔离）。
 func (c *gatewayChain) loadMediaVideoJob(ctx context.Context, res *gatewaypreauth.TrackingWriter, req *gatewaypreauth.GatewayRequest, ownership mediaJobOwnership, jobID string) *gatewaymedia.MediaJobRecord {
-	var (
-		record *gatewaymedia.MediaJobRecord
-		err    error
-	)
-	if ownership.ownerSystemAccountID != "" {
-		record, err = c.mediaJobs.repo.GetByIDAndOwner(ctx, jobID, ownership.ownerSystemAccountID)
-	} else {
-		record, err = c.mediaJobs.repo.GetByIDAndAPIKey(ctx, jobID, ownership.apiKeyID)
-	}
+	record, err := c.mediaJobs.repo.GetByIDAndAPIKey(ctx, jobID, ownership.apiKeyID)
 	if err != nil {
 		if errors.Is(err, gatewaymedia.ErrMediaJobNotFound) {
 			if strings.HasPrefix(jobID, "audiojob_") {
@@ -1916,19 +1899,10 @@ func chainMediaJobAccountPollEligible(account *chainMediaJobAccount, record *gat
 
 // serveMediaJobList GET /v1/video/generations 与 GET /v1/audio/jobs：本地行列表（按归属
 // + kind 倒序过滤，两族互不混行），不经上游（媒体设计 §8.2：不为闲置任务
-// 消耗上游配额）。归属键按 ownership 分流：内部通道按系统账户（owner 列），
-// 外部请求按 API Key（Key 级隔离不变）。
+// 消耗上游配额）。归属键按认证 API Key（Key 级隔离）。
 func (c *gatewayChain) serveMediaJobList(ctx context.Context, res *gatewaypreauth.TrackingWriter, req *gatewaypreauth.GatewayRequest, ownership mediaJobOwnership, kind gatewaymedia.MediaJobKind) {
 	limit := chainMediaVideoListLimitOf(req.PathAndQuery())
-	var (
-		records []*gatewaymedia.MediaJobRecord
-		err     error
-	)
-	if ownership.ownerSystemAccountID != "" {
-		records, err = c.mediaJobs.repo.ListByOwnerAndKind(ctx, ownership.ownerSystemAccountID, kind, limit, 0)
-	} else {
-		records, err = c.mediaJobs.repo.ListByAPIKeyAndKind(ctx, ownership.apiKeyID, kind, limit, 0)
-	}
+	records, err := c.mediaJobs.repo.ListByAPIKeyAndKind(ctx, ownership.apiKeyID, kind, limit, 0)
 	if err != nil {
 		c.renderMediaVideoLocalError(res, req, http.StatusInternalServerError, "查询媒体任务列表失败", "internal_error")
 		return
@@ -2051,7 +2025,7 @@ func (c *gatewayChain) serveMediaJobPoll(ctx context.Context, res *gatewaypreaut
 			// duration 曾在首轮终态响应中使用旧内存值）。
 			record.Artifact = ir.Artifact
 			record.UpdatedAt = time.Now().UTC()
-			c.enqueueMediaJobTerminalUsage(ctx, traceID, apiKeyOwnerSystemAccountIDOf(req), req.SuppressUsage, record, account, ir, settlement)
+			c.enqueueMediaJobTerminalUsage(ctx, traceID, apiKeyOwnerSystemAccountIDOf(req), record, account, ir, settlement)
 			// 成功回写臂（媒体账户生命周期定案表）：视频任务 completed 是视频
 			// 域账户的真实上游成功观测，CAS 把滞留 pending_test/冷却态搬回
 			// active（失败静默容忍，方法内留日志）。挂在 updated==1 之后：
@@ -2578,11 +2552,8 @@ func accountProviderCodeForPricing(account *chainMediaJobAccount) string {
 // （usage 行只在终态轮询时入队一次）；0 成本（usage_missing/未命中）不设
 // CostUsd，与完成尝试记录"估算不出保持 NULL"的既有语义一致。记账 scope
 // 五元组从行内 request_snapshot 投影（创建时冻结，
-// chainMediaJobSnapshotScopeOf）。suppressUsage 是内部通道请求（AI 问答免
-// Key 直调）的抑制标记：置位时记录仍入队，由持久化唯一闸口
-// （gatewayusage.FinalizationDispatch.DispatchUsageRecord 入口，覆盖正常
-// 入队与溢出 spool 两臂）丢弃——不落 usage_records、不写 spool。
-func (c *gatewayChain) enqueueMediaJobTerminalUsage(ctx context.Context, traceID, apiKeyOwnerSystemAccountID string, suppressUsage bool, record *gatewaymedia.MediaJobRecord, account *chainMediaJobAccount, ir *gatewaymedia.MediaJobIR, settlement chainMediaJobSettlement) {
+// chainMediaJobSnapshotScopeOf）。
+func (c *gatewayChain) enqueueMediaJobTerminalUsage(ctx context.Context, traceID, apiKeyOwnerSystemAccountID string, record *gatewaymedia.MediaJobRecord, account *chainMediaJobAccount, ir *gatewaymedia.MediaJobIR, settlement chainMediaJobSettlement) {
 	if c.finalizationUsage == nil || (ir.Status != gatewaymedia.JobStatusCompleted && ir.Status != gatewaymedia.JobStatusFailed) {
 		return
 	}
@@ -2600,8 +2571,6 @@ func (c *gatewayChain) enqueueMediaJobTerminalUsage(ctx context.Context, traceID
 		SystemAccountID: apiKeyOwnerSystemAccountID,
 		APIKeyID:        record.APIKeyID,
 		AccountID:       record.AccountID,
-		// 内部通道抑制标记（AI 问答免 Key 直调）：持久化唯一闸口据此丢弃。
-		SuppressUsage:               suppressUsage,
 		AccountOwnerSystemAccountID: account.OwnerSystemAccountID,
 		Endpoint:                    endpoint,
 		// vendor 身份：账户行 vendor（B4① 拆除 media_jobs.provider_code 后
@@ -2684,17 +2653,9 @@ func (c *gatewayChain) enqueueMediaJobTerminalUsage(ctx context.Context, traceID
 }
 
 // apiKeyOwnerSystemAccountIDOf 取请求归属系统账户（media_jobs owner 列写入源
-// 与 usage 身份维度来源，AI 问答免 Key 直调计划 §3.3）：内部身份通道请求取
-// 注入的会话 owner（Runtime 为 nil），外部请求取认证 API Key 的属主系统账户
-// （usage 抑制后内部通道不再入队 usage，该回落路径主要服务外部请求）。
+// 与 usage 身份维度来源）：认证 API Key 的属主系统账户。
 func apiKeyOwnerSystemAccountIDOf(req *gatewaypreauth.GatewayRequest) string {
-	if req == nil {
-		return ""
-	}
-	if req.InternalOwnerSystemAccountID != "" {
-		return req.InternalOwnerSystemAccountID
-	}
-	if req.Runtime == nil || req.Runtime.APIKey == nil {
+	if req == nil || req.Runtime == nil || req.Runtime.APIKey == nil {
 		return ""
 	}
 	return req.Runtime.APIKey.SystemAccountID

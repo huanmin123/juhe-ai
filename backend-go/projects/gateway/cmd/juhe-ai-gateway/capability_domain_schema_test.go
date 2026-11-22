@@ -118,7 +118,7 @@ func TestCapabilityDomainStageRecordGateArms(t *testing.T) {
 		wantErrText string
 	}{
 		{"record-missing", "", "不存在"},
-		{"m1-complete", `{"stage":"m1_complete","ruleVersion":1,"updatedAt":"2026-10-12T08:00:00Z"}`, "m1_complete"},
+		{"m1-complete", `{"stage":"m1_complete","ruleVersion":2,"updatedAt":"2026-10-12T08:00:00Z"}`, "m1_complete"},
 		{"rule-version-mismatch", `{"stage":"m2_finalized","ruleVersion":3,"updatedAt":"2026-10-12T08:00:00Z"}`, "ruleVersion"},
 	}
 	for _, scenario := range scenarios {

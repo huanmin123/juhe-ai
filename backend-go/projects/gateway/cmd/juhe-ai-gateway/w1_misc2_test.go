@@ -24,14 +24,14 @@ func TestW1RoutingProjections(t *testing.T) {
 	policy := gatewayruntimecache.GroupSchedulingPolicy{}
 	sourceType := "authorization"
 	meta := gatewayruntimecache.GroupUsageAccessMetadata{
-		GroupOwnerSystemAccountID:      "sys_owner",
-		GroupAccessType:                "authorized",
-		SchedulingPolicy:               &policy,
-		GroupAuthorizationSourceType:   &sourceType,
-		GroupAuthorizationQuotaLimited: boolPtr(true),
+		GroupOwnerSystemAccountID:    "sys_owner",
+		GroupAccessType:              "authorized",
+		SchedulingPolicy:             &policy,
+		GroupAuthorizationSourceType: &sourceType,
 	}
 	projected := projectGroupAccessForRouting(meta)
-	if projected.GroupOwnerSystemAccountID != "sys_owner" || projected.GroupAuthorizationQuotaLimited == nil || !*projected.GroupAuthorizationQuotaLimited {
+	// （GroupAuthorizationQuotaLimited 断言随授权额度域退役删除。）
+	if projected.GroupOwnerSystemAccountID != "sys_owner" {
 		t.Fatalf("projected = %+v", projected)
 	}
 	if projected.GroupAuthorizationSourceType != "authorization" {

@@ -46,7 +46,7 @@ func seedExtraVolcengineSpeechAccount(t *testing.T, fixture *chainFixture, id, s
 			t.Fatalf("seed extra volcengine speech row %s: %v: %v", id, query, err)
 		}
 	}
-	seed(`INSERT INTO accounts (id, system_account_id, vendor_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at) VALUES (?, ?, 'volcengine', 'profile_volcengine_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, ?, ?, NULL)`,
+	seed(`INSERT INTO accounts (id, system_account_id, vendor_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, priority, capability_domain, credentials_encrypted, deleted_at) VALUES (?, ?, 'volcengine', 'profile_volcengine_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, ?, 'audio', ?, NULL)`,
 		id, fixture.systemAccount, id, priority, mustEncryptCredentials(t, credentials))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
 		VALUES ('group_volcengine_speech', ?, ?, 1, '2026-10-04T00:00:00.000Z')`, fixture.systemAccount, id)

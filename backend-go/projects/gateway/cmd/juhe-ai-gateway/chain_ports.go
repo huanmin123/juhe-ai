@@ -124,10 +124,6 @@ func usageContextOf(context gatewaypreauth.GatewayFailureUsageContext) gatewayus
 		// 压缩期望（用量记录压缩标记设计 §压缩请求识别）：preflight 冻结值
 		// 直传，失败记账两条入口据此落 CompactionExpected。
 		CompactionExpected: context.CompactionExpected,
-		// 内部通道抑制标记（AI 问答免 Key 直调）：preflight 冻结值直传，
-		// 记录在持久化唯一闸口（gatewayusage.FinalizationDispatch.DispatchUsageRecord
-		// 入口，覆盖正常入队与溢出 spool 两臂）丢弃。
-		SuppressUsage: context.SuppressUsage,
 	}
 }
 
@@ -164,8 +160,6 @@ func (a *usageDispatchAdapter) DispatchUsageRecord(input gatewayresponse.ModelsU
 		SystemAccountID: input.UsageContext.SystemAccountID,
 		APIKeyID:        input.UsageContext.APIKeyID,
 		GroupID:         input.UsageContext.GroupID,
-		// 内部通道抑制标记随 usage 上下文透传（持久化唯一闸口据此丢弃）。
-		SuppressUsage: input.UsageContext.SuppressUsage,
 		ProviderCode:  input.ProviderCode,
 		Endpoint:      input.UsageContext.Endpoint,
 		UsageSemantic: input.UsageSemantic,

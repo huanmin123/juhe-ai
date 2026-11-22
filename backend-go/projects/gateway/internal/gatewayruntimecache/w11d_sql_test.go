@@ -177,13 +177,7 @@ func TestW11DResolveGroupUsageAccessArms(t *testing.T) {
 		`INSERT INTO juhe_business.groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('g_high_badpolicy', 'sys_owner', 1, 'high_concurrency', 'not-json')`,
 		`INSERT INTO juhe_business.groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('g_high', 'sys_owner', 1, 'high_concurrency', '{"defaultSoftConcurrency":5,"clientIpConcurrencyLimit":2}')`,
 		`INSERT INTO juhe_business.groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('g_authorized', 'sys_owner', 1, 'high_concurrency', '{"maxConcurrency":5}')`,
-		`INSERT INTO juhe_business.groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('g_auth_disabled_local', 'sys_owner', 1, 'high_concurrency', '{"maxConcurrency":5}')`,
-		`INSERT INTO juhe_business.groups (id, system_account_id, enabled, group_type, scheduling_policy_json) VALUES ('g_auth_overridden', 'sys_owner', 1, 'personal', NULL)`,
-		`INSERT INTO juhe_business.resource_authorizations (id, resource_type, resource_id, grantee_system_account_id, status, limits_json) VALUES ('auth1', 'group', 'g_authorized', 'sys_other', 'active', NULL)`,
-		`INSERT INTO juhe_business.resource_authorizations (id, resource_type, resource_id, grantee_system_account_id, status, limits_json) VALUES ('auth2', 'group', 'g_auth_disabled_local', 'sys_other', 'active', NULL)`,
-		`INSERT INTO juhe_business.resource_authorizations (id, resource_type, resource_id, grantee_system_account_id, status, limits_json) VALUES ('auth3', 'group', 'g_auth_overridden', 'sys_other', 'active', '{"daily":{"enabled":true,"limit":10.5}}')`,
-		`INSERT INTO juhe_business.group_authorization_settings (authorization_id, system_account_id, group_id, enabled) VALUES ('auth2', 'sys_other', 'g_auth_disabled_local', 0)`,
-		`INSERT INTO juhe_business.group_authorization_settings (authorization_id, system_account_id, group_id, enabled, group_type, scheduling_policy_json) VALUES ('auth3', 'sys_other', 'g_auth_overridden', 1, 'high_concurrency', '{"maxConcurrency":9}')`,
+		`INSERT INTO juhe_business.resource_authorizations (id, resource_type, resource_id, grantee_system_account_id, status) VALUES ('auth1', 'group', 'g_authorized', 'sys_other', 'active')`,
 	}
 	for _, statement := range seed {
 		if _, err := db.Exec(statement); err != nil {

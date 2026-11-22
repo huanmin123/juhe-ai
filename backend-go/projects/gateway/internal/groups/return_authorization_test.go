@@ -34,18 +34,18 @@ func seedGroupAuthorization(t *testing.T, env *testEnv, groupID, ownerID, grante
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	env.exec(t, `INSERT INTO resource_authorizations
 		(id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id,
-		 status, effective_source_type, acceptance_mode, created_by, created_at, updated_at)
-		VALUES (?, 'group', ?, ?, ?, 'active', 'manual', 'recipient', ?, ?, ?)`,
+		 status, effective_source_type, created_by, created_at, updated_at)
+		VALUES (?, 'group', ?, ?, ?, 'active', 'manual', ?, ?, ?)`,
 		runtimeID, groupID, ownerID, granteeID, ownerID, now, now)
 	env.exec(t, `INSERT INTO resource_authorization_grants
 		(id, resource_type, resource_id, resource_owner_system_account_id, grantee_type,
-		 grantee_system_account_id, status, acceptance_mode, accepted_at, accepted_by, created_by, created_at, updated_at)
-		VALUES (?, 'group', ?, ?, 'system_account', ?, 'active', 'recipient', ?, ?, ?, ?, ?)`,
+		 grantee_system_account_id, status, accepted_at, accepted_by, created_by, created_at, updated_at)
+		VALUES (?, 'group', ?, ?, 'system_account', ?, 'active', ?, ?, ?, ?, ?)`,
 		grantID, groupID, ownerID, granteeID, now, granteeID, ownerID, now, now)
 	env.exec(t, `INSERT INTO resource_authorization_sources
-		(id, authorization_id, grant_id, source_type, status, acceptance_mode, accepted_at, accepted_by,
+		(id, authorization_id, grant_id, source_type, status, accepted_at, accepted_by,
 		 created_by, created_at, updated_at)
-		VALUES (?, ?, ?, 'manual', 'active', 'recipient', ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, 'manual', 'active', ?, ?, ?, ?, ?)`,
 		"src-return-"+groupID, runtimeID, grantID, now, granteeID, ownerID, now, now)
 	return grantID
 }

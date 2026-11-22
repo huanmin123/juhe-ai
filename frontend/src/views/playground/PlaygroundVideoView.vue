@@ -2,26 +2,27 @@
   <a-card class="page-card responsive-page-card">
     <div class="playground-media-layout">
       <a-form layout="vertical" class="playground-media-form">
-        <a-form-item label="账户" required>
+        <a-form-item label="API Key" required>
           <a-select
-            v-model:value="accountId"
-            :options="accountOptions"
-            :loading="accountsLoading"
+            v-model:value="apiKeyId"
+            :options="keyOptions"
+            :loading="keysLoading"
             allow-clear
             show-search
             option-filter-prop="label"
-            placeholder="选择要试玩的账户"
-            @change="handleAccountChange"
+            placeholder="选择要试玩的 API Key"
+            @change="handleApiKeyChange"
           />
         </a-form-item>
         <a-form-item label="模型" required>
           <a-select
             v-model:value="modelId"
             :options="modelOptions"
-            :disabled="!accountId || !modelOptions.length"
+            :loading="modelsLoading"
+            :disabled="!apiKeyId || modelsLoading || !modelOptions.length"
             show-search
             option-filter-prop="label"
-            :placeholder="accountId ? '选择视频模型' : '先选择账户'"
+            :placeholder="apiKeyId ? '选择视频模型' : '先选择 API Key'"
           />
         </a-form-item>
         <a-form-item label="提示词" required>
@@ -48,7 +49,7 @@
           创建生成任务
         </a-button>
         <div class="playground-field-hint">任务在 24 小时内可恢复,过期后需重新生成。</div>
-        <div v-if="accountsLoadError" class="playground-form-error">{{ accountsLoadError }}</div>
+        <div v-if="keysLoadError || modelsLoadError" class="playground-form-error">{{ keysLoadError || modelsLoadError }}</div>
       </a-form>
 
       <section class="playground-media-result">
@@ -101,14 +102,15 @@ import { message } from '@/lib/antd'
 import { api } from '@/api/client'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import type { PlaygroundArtifactVideo, PlaygroundVideoPollError, PlaygroundVideoStatus } from '@/types/domain/playground'
-import { usePlaygroundCatalog } from './usePlaygroundCatalog'
+import { firstModelIdOf, usePlaygroundCatalog } from './usePlaygroundCatalog'
 
 // 视频生成（演练场设计 §4.2）：创建异步任务后每 3 秒轮询，completed 后经
 // videosContent 取回视频字节（blob URL）内联播放；任务引用随服务端暂存区记录
 // （§3.5/§3.8），刷新后经 artifacts 恢复选择与轮询/内容。页面在 KeepAlive 下
 // 导航离开时停轮询（onDeactivated），返回时对未完成任务续轮。轮询连续失败达
 // 阈值（pollMaxFailures）后熔断：停止轮询并置终态错误提示，由用户手动刷新重试，
-// 避免失败周期无限打点。
+// 避免失败周期无限打点。2026-11-22 Key 化：任务条目在前端持有创建时的 apiKeyId，
+// 轮询/下载恒传该 Key，页面切 Key 不影响在途任务。
 
 const pollIntervalMs = 3000
 const pollMaxFailures = 5
@@ -116,20 +118,23 @@ const pollMaxFailures = 5
 const restoreMaxAgeMs = 60 * 60 * 1000
 
 const {
-  accounts,
-  accountsLoading,
-  accountsLoadError,
-  accountId,
+  keys,
+  keysLoading,
+  keysLoadError,
+  modelsLoading,
+  modelsLoadError,
+  apiKeyId,
   modelId,
-  accountOptions,
+  keyOptions,
   modelOptions,
-  handleAccountChange,
+  handleApiKeyChange,
+  loadModelsForKey,
   loadCatalog
 } = usePlaygroundCatalog('video')
 
 interface PlaygroundVideoJobState {
   jobId: string
-  accountId: string
+  apiKeyId: string
   status: PlaygroundVideoStatus
   progress?: number
   error?: PlaygroundVideoPollError
@@ -147,7 +152,7 @@ const pollBroken = ref(false)
 let pollTimer: ReturnType<typeof setTimeout> | null = null
 let pollFailureCount = 0
 
-const canCreate = computed(() => Boolean(prompt.value.trim() && accountId.value && modelId.value && !creating.value))
+const canCreate = computed(() => Boolean(prompt.value.trim() && apiKeyId.value && modelId.value && !creating.value))
 
 onMounted(() => {
   void restoreOnLoad()
@@ -178,26 +183,28 @@ async function restoreOnLoad(): Promise<void> {
 }
 
 /**
- * 恢复任务引用（设计 §3.8）：经目录匹配 accountId/modelId，匹配不到丢弃；
+ * 恢复任务引用（设计 §3.8）：经 Key 列表匹配 apiKeyId，匹配不到丢弃；
  * completed → 恢复选择并取内容播放；在途且距 createdAt ≤60 分钟 → 恢复选择并续轮；
  * 终态失败/取消或超龄在途引用不可恢复，保持空态（任务过期后需重新生成）。
+ * 轮询/下载恒传引用携带的创建时 Key，页面当前选中的 Key 不影响恢复。
  */
 function restoreVideoRef(videoRef: PlaygroundArtifactVideo | null): void {
   if (!videoRef) return
-  const account = accounts.value.find((candidate) =>
-    candidate.accountId === videoRef.accountId
-    && candidate.models.some((model) => model.kind === 'video'))
-  if (!account) return
-  if (!account.models.some((model) => model.kind === 'video' && model.modelId === videoRef.modelId)) return
-  accountId.value = videoRef.accountId
-  modelId.value = videoRef.modelId
+  if (!keys.value.some((key) => key.id === videoRef.apiKeyId)) return
+  apiKeyId.value = videoRef.apiKeyId
+  void loadModelsForKey(videoRef.apiKeyId).then((kindModels) => {
+    if (apiKeyId.value !== videoRef.apiKeyId) return
+    modelId.value = kindModels.some((model) => model.modelId === videoRef.modelId)
+      ? videoRef.modelId
+      : firstModelIdOf(kindModels)
+  })
   if (videoRef.status === 'completed') {
-    job.value = { jobId: videoRef.jobId, accountId: videoRef.accountId, status: 'completed' }
+    job.value = { jobId: videoRef.jobId, apiKeyId: videoRef.apiKeyId, status: 'completed' }
     void loadVideoContent(job.value)
     return
   }
   if (isPendingStatus(videoRef.status) && Date.now() - videoRef.createdAt * 1000 <= restoreMaxAgeMs) {
-    job.value = { jobId: videoRef.jobId, accountId: videoRef.accountId, status: videoRef.status }
+    job.value = { jobId: videoRef.jobId, apiKeyId: videoRef.apiKeyId, status: videoRef.status }
     pollBroken.value = false
     startPolling()
   }
@@ -235,7 +242,7 @@ async function pollOnce(): Promise<void> {
   const current = job.value
   if (!current || !isPendingStatus(current.status)) return
   try {
-    const result = await api.playground.videosPoll(current.jobId, current.accountId)
+    const result = await api.playground.videosPoll(current.jobId, current.apiKeyId)
     if (job.value !== current) return
     pollFailureCount = 0
     pollBroken.value = false
@@ -264,7 +271,7 @@ async function pollOnce(): Promise<void> {
 async function loadVideoContent(target: PlaygroundVideoJobState): Promise<void> {
   contentLoading.value = true
   try {
-    const url = await api.playground.videosContent(target.jobId, target.accountId)
+    const url = await api.playground.videosContent(target.jobId, target.apiKeyId)
     revokeVideoUrl()
     videoUrl.value = url
   } catch (error) {
@@ -281,21 +288,22 @@ async function createJob(): Promise<void> {
     message.warning('请输入提示词')
     return
   }
-  if (!accountId.value || !modelId.value) {
-    message.warning('请先选择账户与模型')
+  if (!apiKeyId.value || !modelId.value) {
+    message.warning('请先选择 API Key 与模型')
     return
   }
   creating.value = true
   try {
     const result = await api.playground.videosCreate({
-      accountId: accountId.value,
+      apiKeyId: apiKeyId.value,
       modelId: modelId.value,
       prompt: content,
       size: size.value.trim() || undefined,
       seconds: seconds.value ?? undefined
     })
     revokeVideoUrl()
-    job.value = { jobId: result.jobId, accountId: accountId.value, status: 'queued' }
+    // 任务条目记住创建时的 Key：轮询/下载恒传该 Key，页面切 Key 不影响在途任务。
+    job.value = { jobId: result.jobId, apiKeyId: apiKeyId.value, status: 'queued' }
     pollFailureCount = 0
     pollBroken.value = false
     startPolling()

@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS juhe_business.accounts (
   health_check_connection_id TEXT,
   health_check_model TEXT NOT NULL DEFAULT '',
   health_check_endpoint_mode TEXT NOT NULL DEFAULT '',
+  capability_domain TEXT NOT NULL DEFAULT 'chat',
   account_expires_at TEXT,
   cooldown_until TEXT,
   last_error_code TEXT,
@@ -129,7 +130,6 @@ CREATE TABLE IF NOT EXISTS juhe_business.resource_authorizations (
   resource_owner_system_account_id TEXT NOT NULL,
   status TEXT NOT NULL,
   expires_at TEXT,
-  limits_json TEXT,
   effective_source_type TEXT,
   effective_source_team_id TEXT
 );

@@ -23,7 +23,7 @@ const (
 
 // speechRequest 是 POST /speech 请求体（设计 §3.6）。
 type speechRequest struct {
-	AccountID string   `json:"accountId"`
+	APIKeyID  string   `json:"apiKeyId"`
 	ModelID   string   `json:"modelId"`
 	Input     string   `json:"input"`
 	Voice     string   `json:"voice"`
@@ -54,19 +54,13 @@ func (rt *playgroundRoutes) speechHandler(w http.ResponseWriter, r *http.Request
 		writeHTTPError(w, invalidRequest("请求体必须是合法 JSON"))
 		return
 	}
-	_, options, candidateErr := rt.resolveAccountModels(r.Context(), scope, strings.TrimSpace(req.AccountID))
+	options, candidateErr := rt.resolveKeyModels(r.Context(), scope.ViewerID, strings.TrimSpace(req.APIKeyID))
 	if candidateErr != nil {
 		writeHTTPError(w, candidateErr)
 		return
 	}
-	// options == nil = 账户不存在或不在当前用户可见范围：与 chatstream 同口径
-	// 404 playground_account_not_found（区别于模型越界的 400）。
-	if options == nil {
-		writeHTTPError(w, accountNotFound())
-		return
-	}
 	if modelOptionOf(options, strings.TrimSpace(req.ModelID), KindAudio) == nil {
-		writeHTTPError(w, modelNotAvailable("模型不在该账户的演练场语音候选内"))
+		writeHTTPError(w, modelNotAvailable("模型不在所选 Key 的演练场语音候选内"))
 		return
 	}
 	payload, httpErr := rt.runSpeech(r.Context(), scope, &req)
@@ -107,17 +101,16 @@ func (rt *playgroundRoutes) runSpeech(ctx context.Context, scope Scope, req *spe
 	}
 	payload, _ := json.Marshal(payloadValues)
 	response, err := rt.deps.Dispatch.Dispatch(ctx, DispatchRequest{
-		AccountID: strings.TrimSpace(req.AccountID), OwnerID: scope.ViewerID,
+		APIKeyID: strings.TrimSpace(req.APIKeyID), OwnerID: scope.ViewerID, RemoteAddr: scope.RemoteAddr,
 		Path: "/v1/audio/speech", Method: http.MethodPost,
 		Headers: map[string]string{
-			"accept":         "application/json",
-			"content-type":   "application/json",
-			purposeHeaderKey: playgroundPurposeSpeech,
+			"accept":       "application/json",
+			"content-type": "application/json",
 		},
 		Body: payload,
 	})
 	if err != nil {
-		return nil, dispatchFailed("语音合成派发失败: " + err.Error())
+		return nil, dispatchError("语音合成派发失败", err)
 	}
 	if response == nil {
 		return nil, dispatchFailed("语音合成派发失败")

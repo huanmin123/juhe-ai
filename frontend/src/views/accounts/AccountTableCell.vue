@@ -1,9 +1,9 @@
 <template>
   <div v-if="columnKey === 'name'" class="resource-name-cell">
-    <span class="resource-name-line">
-      <span class="resource-name-text">{{ accountDisplayName(account) }}</span>
-      <span v-if="isAuthorizedAccount(account)" class="authorized-account-badge">（{{ authorizedAccountOwnerBadgeText(account) }}）</span>
-      <a-tooltip v-if="isAuthorizedAccount(account)">
+    <span class="resource-name-text">{{ accountDisplayName(account) }}</span>
+    <span v-if="isAuthorizedAccount(account)" class="authorized-account-line">
+      <span class="authorized-account-badge">（{{ authorizedAccountOwnerBadgeText(account) }}）</span>
+      <a-tooltip>
         <template #title>
           <span class="authorized-account-tooltip-text">{{ authorizedAccountTooltip(account) }}</span>
         </template>
@@ -212,19 +212,20 @@ const proxyTooltip = computed(() => proxyView.value.tooltip)
 .resource-name-cell {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 2px;
 }
 
-.resource-name-line {
+/* 授权信息独立成第二行（授权方徽标 + 状态图标），不再挤压名称列宽度。 */
+.authorized-account-line {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
   max-width: 100%;
 }
 
 .resource-name-text {
-  flex: 1 1 auto;
+  display: block;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

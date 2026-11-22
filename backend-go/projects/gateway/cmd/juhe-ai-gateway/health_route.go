@@ -52,9 +52,9 @@ func (h *gatewayOwnerHealth) readiness() (int, map[string]any) {
 		status = http.StatusServiceUnavailable
 	}
 	return status, map[string]any{
-		"ready":                      ready,
-		"ownerReady":                 ready,
-		"ownerMode":                  h.ownerMode,
+		"ready":      ready,
+		"ownerReady": ready,
+		"ownerMode":  h.ownerMode,
 		// 构建身份（升级兼容与迁移账本设计 §6.3）：纯加法键，编排探测只读 ready。
 		"version":                    version.Version,
 		"commit":                     version.Commit,

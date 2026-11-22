@@ -35,11 +35,7 @@ type UsageRecordInput struct {
 	// 2026-11-09 T188 起是本类型的别名，两处字段与 tag 由编译期保证一致。
 	SecurityPolicyApplied bool           `json:"securityPolicyApplied"`
 	PIIHits               map[string]int `json:"piiHits,omitempty"`
-	// SuppressUsage 是 gateway 内部通道请求（AI 问答免 Key 直调）的使用日志
-	// 丢弃标记：只在 gateway 进程内传播到持久化唯一闸口，永不序列化；类型
-	// 别名后由本类型承载该字段。
-	SuppressUsage                    bool     `json:"-"`
-	AccountID                        string   `json:"accountId,omitempty"`
+	AccountID             string         `json:"accountId,omitempty"`
 	AccountOwnerSystemAccountID      string   `json:"accountOwnerSystemAccountId,omitempty"`
 	GroupOwnerSystemAccountID        string   `json:"groupOwnerSystemAccountId,omitempty"`
 	AccountAccessType                string   `json:"accountAccessType,omitempty"`

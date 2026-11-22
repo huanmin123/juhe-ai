@@ -74,27 +74,6 @@ func (f *fakeModelCatalogRefresher) RefreshDraftModelCatalog(_ context.Context, 
 	return f.result, f.err
 }
 
-// recordingReturner captures the authz Return handover.
-type recordingReturner struct {
-	mu       sync.Mutex
-	grants   []string
-	grantees []string
-	versions []string
-	status   string
-}
-
-func (r *recordingReturner) Return(_ context.Context, grantID, expectedUpdatedAt, granteeUserID string) (string, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.grants = append(r.grants, grantID)
-	r.versions = append(r.versions, expectedUpdatedAt)
-	r.grantees = append(r.grantees, granteeUserID)
-	if r.status == "" {
-		return "updated", nil
-	}
-	return r.status, nil
-}
-
 // newM11TestEnv mounts a fresh kernel over the base fixture with the M11
 // extra schema; the returned store exposes the narrow ports for fakes.
 func newM11TestEnv(t *testing.T) (*testEnv, *Store) {
@@ -797,78 +776,18 @@ func (f *fakeTrafficRuntimeMigrator) reset(count int) {
 	f.err = nil
 }
 
-func TestM11ReturnAuthorizationContract(t *testing.T) {
-	env, store := newM11TestEnv(t)
+// TestM11ReturnAuthorizationRouteRetired 钉值：整单归还入口随授权大简化
+// （revision 31）卸载——新契约的归还走 my-authorization-sources/{sourceId}/return
+// （authz 域，w13g2 路由测试覆盖），accounts 自面的
+// POST /my-accounts/{id}/return-authorization 命中内核 404。
+func TestM11ReturnAuthorizationRouteRetired(t *testing.T) {
+	env, _ := newM11TestEnv(t)
 	granteeID := env.login(t, "grantee1", "grantee-pass", "user")
-	ownerID := env.login(t, "owner9", "owner-pass", "user")
 	env.seedM11Account(t, "acc-ret", granteeID, "授权实例", "api_key", "active", Credentials{"api_key": "sk-ret"})
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	// The stamped instance + runtime authorization + direct grant.
-	env.exec(t, `UPDATE accounts SET authorization_instance_authorization_id = 'ra-ret',
-		authorization_instance_source_account_id = 'acc-ownsrc' WHERE id = 'acc-ret'`)
-	env.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id,
-		grantee_system_account_id, status, effective_source_type, created_by, created_at, updated_at)
-		VALUES ('ra-ret', 'account', 'acc-ownsrc', ?, ?, 'active', 'manual', ?, ?, ?)`, ownerID, granteeID, ownerID, now, now)
-	env.exec(t, `INSERT INTO resource_authorization_grants (id, resource_type, resource_id, resource_owner_system_account_id,
-		grantee_type, grantee_system_account_id, status, created_by, created_at, updated_at)
-		VALUES ('grant-ret', 'account', 'acc-ownsrc', ?, 'system_account', ?, 'active', ?, ?, ?)`,
-		ownerID, granteeID, ownerID, now, now)
-	returner := &recordingReturner{}
-	store.SetAuthorizationGrantReturner(returner)
 	env.login(t, "grantee1", "grantee-pass", "user")
-
-	// Happy path: 204 + the authz Return handover carries grant/version/grantee.
-	code, payload := env.do(t, http.MethodPost, "/__aisys__/api/my-accounts/acc-ret/return-authorization", "")
-	if code != http.StatusNoContent || payload != nil && len(payload) > 0 {
-		t.Fatalf("return: %d %v", code, payload)
-	}
-	if len(returner.grants) != 1 || returner.grants[0] != "grant-ret" ||
-		returner.versions[0] == "" || returner.grantees[0] != granteeID {
-		t.Fatalf("returner handover: %+v", returner)
-	}
-	seen := false
-	for _, entry := range env.sink.entries {
-		if entry.Action == "return" && entry.Module == "authorizations" {
-			seen = true
-		}
-	}
-	if !seen {
-		t.Fatal("return operation log missing")
-	}
-	// A not_found terminal status renders 404 with the Node copy (a fresh
-	// instance avoids the mutationGuard dedup on the first fingerprint).
-	env.exec(t, `INSERT INTO accounts (id, system_account_id, vendor_code, connection_driver_code,
-		protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_mask,
-		health_check_model, authorization_instance_authorization_id, created_at, updated_at)
-		VALUES ('acc-ret-b', ?, 'gpt', 'gpt', 'openai', 'v1', '授权实例B', 'api_key', 'active',
-		'sealed', '***', 'gpt-4o-mini', 'ra-ret-b', ?, ?)`, granteeID, now, now)
-	env.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id,
-		grantee_system_account_id, status, effective_source_type, created_by, created_at, updated_at)
-		VALUES ('ra-ret-b', 'account', 'acc-ownsrc-b', ?, ?, 'active', 'manual', ?, ?, ?)`, ownerID, granteeID, ownerID, now, now)
-	env.exec(t, `INSERT INTO resource_authorization_grants (id, resource_type, resource_id, resource_owner_system_account_id,
-		grantee_type, grantee_system_account_id, status, created_by, created_at, updated_at)
-		VALUES ('grant-ret-b', 'account', 'acc-ownsrc-b', ?, 'system_account', ?, 'active', ?, ?, ?)`,
-		ownerID, granteeID, ownerID, now, now)
-	returner.status = "not_found"
-	code, notFound := env.do(t, http.MethodPost, "/__aisys__/api/my-accounts/acc-ret-b/return-authorization", "")
-	if code != http.StatusNotFound || notFound["message"] != "授权账户不存在或不可归还" {
-		t.Fatalf("return not_found: %d %v", code, notFound)
-	}
-	// A plain account without the instance stamp → 404.
-	env.seedM11Account(t, "acc-plain", granteeID, "普通账户", "api_key", "active", Credentials{"api_key": "sk-plain"})
-	code, plain := env.do(t, http.MethodPost, "/__aisys__/api/my-accounts/acc-plain/return-authorization", "")
-	if code != http.StatusNotFound || plain["message"] != "授权账户不存在或不可归还" {
-		t.Fatalf("plain return: %d %v", code, plain)
-	}
-	// Unwired port degrades to the same 404 (the localization cannot complete).
-	env2, _ := newM11TestEnv(t)
-	env2.login(t, "grantee2", "grantee-pass", "user")
-	env2.seedM11Account(t, "acc-ret2", env2.queryCell(t, `SELECT id FROM system_accounts WHERE username = 'grantee2'`),
-		"实例2", "api_key", "active", Credentials{"api_key": "sk-ret2"})
-	env2.exec(t, `UPDATE accounts SET authorization_instance_authorization_id = 'ra-2' WHERE id = 'acc-ret2'`)
-	code, unwired := env2.do(t, http.MethodPost, "/__aisys__/api/my-accounts/acc-ret2/return-authorization", "")
-	if code != http.StatusNotFound || unwired["message"] != "授权账户不存在或不可归还" {
-		t.Fatalf("unwired return: %d %v", code, unwired)
+	code, _ := env.do(t, http.MethodPost, "/__aisys__/api/my-accounts/acc-ret/return-authorization", "")
+	if code != http.StatusNotFound {
+		t.Fatalf("retired return route: %d", code)
 	}
 }
 

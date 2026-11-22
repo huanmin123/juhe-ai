@@ -73,14 +73,20 @@ var invalidationCoverageTable = []coverageTableEntry{
 		},
 	},
 	{
-		file: "mutations.go",
-		why:  "授权创建/编辑/撤销/回收 + 到期翻转 sweep（resource_authorizations 状态写）",
+		file: "offers.go",
+		why:  "授权发起/编辑/撤销（直发模型：resource_authorizations 状态写）",
 		mustContain: []string{
-			`s.invalidateAfterBusinessWrite(ctx, invalidationReasonCreated)`,
-			`s.invalidateAfterBusinessWrite(ctx, invalidationReasonUpdated)`,
-			`s.invalidateAfterBusinessWrite(ctx, invalidationReasonRevoked)`,
-			`s.invalidateAfterBusinessWrite(ctx, invalidationReasonReturned)`,
-			`s.invalidateAfterBusinessWrite(ctx, invalidationReasonExpired)`,
+			`s.invalidateGovernance(ctx, invalidationReasonCreated)`,
+			`s.invalidateGovernance(ctx, invalidationReasonUpdated)`,
+			`s.invalidateGovernance(ctx, invalidationReasonRevoked)`,
+		},
+	},
+	{
+		file: "expiry_governance.go",
+		why:  "授权到期翻转 sweep 与有效期编辑（resource_authorizations 状态写）",
+		mustContain: []string{
+			`s.invalidateGovernance(ctx, invalidationReasonExpired)`,
+			`s.invalidateGovernance(ctx, invalidationReasonUpdated)`,
 		},
 	},
 	{

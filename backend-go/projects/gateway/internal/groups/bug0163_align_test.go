@@ -208,10 +208,10 @@ func TestGroupAvailabilityGuardCountsAuthorizedGroups(t *testing.T) {
 		VALUES ('authz-guard', 'group', 'grp-granted', ?, ?, 'use', 'active', ?, ?, ?, ?)`,
 		ownerID, userAID, far, ownerID, now, now)
 	// Recipient-consent visibility is fail-closed: the authorized group needs
-	// an enabled settings row with a snapshot revision to count as usable.
+	// a claim row (settings 行即领取行) to count as usable.
 	env.exec(t, `INSERT INTO group_authorization_settings
-		(authorization_id, system_account_id, group_id, enabled, snapshot_revision, created_at, updated_at)
-		VALUES ('authz-guard', ?, 'grp-granted', 1, 'snap-guard', ?, ?)`, userAID, now, now)
+		(authorization_id, system_account_id, group_id, created_at, updated_at)
+		VALUES ('authz-guard', ?, 'grp-granted', ?, ?)`, userAID, now, now)
 
 	// The authorized group is the strategy's remaining usable binding, so
 	// disabling alice's own group must succeed (the legacy owner-only count
@@ -298,8 +298,8 @@ func TestGroupAuthorizedListAndDetailAndOptionEndpoints(t *testing.T) {
 
 	env.exec(t, `INSERT INTO groups (id, system_account_id, name, enabled, is_default, group_type, created_at, updated_at)
 		VALUES ('grp-visible', ?, '授权可见组', 1, 1, 'personal', ?, ?)`, ownerID, now, now)
-	env.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, scope, status, expires_at, limits_json, created_by, created_at, updated_at)
-		VALUES ('authz-view', 'group', 'grp-visible', ?, ?, 'use', 'active', ?, '{"total":{"enabled":true,"limit":5}}', ?, ?, ?)`,
+	env.exec(t, `INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, scope, status, expires_at, created_by, created_at, updated_at)
+		VALUES ('authz-view', 'group', 'grp-visible', ?, ?, 'use', 'active', ?, ?, ?, ?)`,
 		ownerID, granteeID, far, ownerID, now, now)
 	env.exec(t, `INSERT INTO resource_authorization_sources (id, authorization_id, source_type, source_team_id, status, created_by, created_at, updated_at)
 		VALUES ('src-1', 'authz-view', 'manual', NULL, 'active', ?, ?, ?)`, ownerID, now, now)

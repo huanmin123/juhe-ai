@@ -604,10 +604,11 @@ func w1xSelectorAuthzFixture(t *testing.T) (*chainAccountsSelector, *sql.DB) {
 		`CREATE TABLE resource_authorizations (
 			id TEXT PRIMARY KEY, resource_type TEXT, resource_id TEXT,
 			resource_owner_system_account_id TEXT, grantee_system_account_id TEXT,
-			status TEXT, expires_at TEXT, effective_source_type TEXT, effective_source_team_id TEXT, limits_json TEXT)`,
+			status TEXT, expires_at TEXT, effective_source_type TEXT, effective_source_team_id TEXT)`,
+		//（limits_json / enabled 列随授权额度域退役摘除。）
 		`CREATE TABLE group_authorization_settings (
 			authorization_id TEXT, system_account_id TEXT, group_id TEXT,
-			enabled INTEGER, group_type TEXT, scheduling_policy_json TEXT)`,
+			group_type TEXT, scheduling_policy_json TEXT)`,
 		`INSERT INTO groups VALUES ('w1x-grp', 'sys_owner', 1, 'personal', NULL)`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
@@ -625,8 +626,8 @@ func w1xSeedAuthzRow(t *testing.T, db *sql.DB, resourceType, id, resourceID, gra
 	t.Helper()
 	_, err := db.Exec(fixtureBind(`INSERT INTO resource_authorizations (id, resource_type, resource_id,
 		resource_owner_system_account_id, grantee_system_account_id, status, expires_at,
-		effective_source_type, effective_source_team_id, limits_json)
-		VALUES (?, ?, ?, 'sys_owner', ?, 'active', NULL, 'direct', NULL, NULL)`), id, resourceType, resourceID, grantee)
+		effective_source_type, effective_source_team_id)
+		VALUES (?, ?, ?, 'sys_owner', ?, 'active', NULL, 'direct', NULL)`), id, resourceType, resourceID, grantee)
 	if err != nil {
 		t.Fatalf("seed authorization: %v", err)
 	}
@@ -662,7 +663,7 @@ func TestW1XResolveGroupAccessArms(t *testing.T) {
 	// 授权组：本地类型为 personal 且无本地策略 -> 回退分组策略（NULL）成功。
 	fixture, _ = w1xSelectorAuthzFixture(t)
 	w1xSeedAuthzRow(t, fixture.db, "group", "w1x-authz", "w1x-grp", "sys_other")
-	if _, err := fixture.db.Exec(`INSERT INTO group_authorization_settings VALUES ('w1x-authz', 'sys_other', 'w1x-grp', 1, 'personal', NULL)`); err != nil {
+	if _, err := fixture.db.Exec(`INSERT INTO group_authorization_settings (authorization_id, system_account_id, group_id, group_type, scheduling_policy_json) VALUES ('w1x-authz', 'sys_other', 'w1x-grp', 'personal', NULL)`); err != nil {
 		t.Fatalf("seed settings: %v", err)
 	}
 	meta, err := fixture.resolveGroupAccess(ctx, "w1x-grp", "sys_other")
@@ -681,21 +682,13 @@ func TestW1XResolveGroupAccessArms(t *testing.T) {
 		t.Fatalf("授权本地旧覆盖必须被忽略 = (%+v, %v)", meta, err)
 	}
 
-	// 授权组：本地旧策略列合法也不参与运行 -> 授权元数据仍带配额与来源，策略来自来源分组。
+	// 授权组：本地旧策略列合法也不参与运行 -> 授权元数据仍带来源，策略来自来源分组
+	//（额度受限位与 enabled settings 行已随授权额度域退役，7 列 settings 表不再参与）。
 	fixture, _ = w1xSelectorAuthzFixture(t)
 	w1xSeedAuthzRow(t, fixture.db, "group", "w1x-authz", "w1x-grp", "sys_other")
-	if _, err := fixture.db.Exec(`UPDATE resource_authorizations SET limits_json = '{"hourly":{"enabled":true}}' WHERE id = 'w1x-authz'`); err != nil {
-		t.Fatalf("seed limits: %v", err)
-	}
-	if _, err := fixture.db.Exec(`INSERT INTO group_authorization_settings VALUES ('w1x-authz', 'sys_other', 'w1x-grp', 1, 'high_concurrency', '{"clientIpConcurrencyLimit":2}')`); err != nil {
-		t.Fatalf("seed settings: %v", err)
-	}
 	meta, err = fixture.resolveGroupAccess(ctx, "w1x-grp", "sys_other")
 	if err != nil || meta == nil || meta.SchedulingPolicy != nil {
-		t.Fatalf("授权组 high_concurrency = (%+v, %v)", meta, err)
-	}
-	if meta.GroupAuthorizationQuotaLimited == nil || !*meta.GroupAuthorizationQuotaLimited {
-		t.Fatalf("配额限制投影错误: %+v", meta.GroupAuthorizationQuotaLimited)
+		t.Fatalf("授权组元数据 = (%+v, %v)", meta, err)
 	}
 	if meta.GroupAuthorizationID == nil || *meta.GroupAuthorizationID != "w1x-authz" {
 		t.Fatalf("授权 ID 投影错误: %+v", meta.GroupAuthorizationID)
@@ -972,11 +965,12 @@ func TestW1XListAccountsForGroupEligibilityArms(t *testing.T) {
 				t.Fatalf("encrypt credentials: %v", sealErr)
 			}
 			for _, statement := range []string{
+				//（limits_json 列随授权额度域退役摘除。）
 				`CREATE TABLE resource_authorizations (
 					id TEXT PRIMARY KEY, resource_type TEXT, resource_id TEXT,
 					resource_owner_system_account_id TEXT, grantee_system_account_id TEXT,
-					status TEXT, expires_at TEXT, effective_source_type TEXT, effective_source_team_id TEXT, limits_json TEXT)`,
-				`INSERT INTO resource_authorizations VALUES ('w1x-authz-1', 'account', 'w1x-src-1', 'sys_admin', 'sys_admin', 'active', NULL, NULL, NULL, NULL)`,
+					status TEXT, expires_at TEXT, effective_source_type TEXT, effective_source_team_id TEXT)`,
+				`INSERT INTO resource_authorizations VALUES ('w1x-authz-1', 'account', 'w1x-src-1', 'sys_admin', 'sys_admin', 'active', NULL, NULL, NULL)`,
 				`UPDATE accounts SET authorization_instance_authorization_id = 'w1x-authz-1',
 					authorization_instance_source_account_id = 'w1x-src-1' WHERE id = 'a-limit-acc'`,
 				`INSERT INTO accounts (id, system_account_id, name, type, status, schedulable, concurrency_limit, priority, super_priority_enabled, fallback_enabled, config_revision, dispatch_revision, credentials_encrypted, deleted_at) VALUES ('w1x-src-1', 'sys_admin', 'w1x-src-1', 'api_key', 'active', 1, 0, 0, 0, 0, 1, 1, '` + sealed + `', NULL)`,
@@ -1133,37 +1127,8 @@ func TestW1XClientSourceAvoidanceErrorArm(t *testing.T) {
 	}
 }
 
-func TestW1XDispatchQuotaCheckBatchErrorArm(t *testing.T) {
-	statsDB := w1xOpenBarePG(t)
-	statsStore, err := gatewayquota.NewStatsStore(statsDB)
-	if err != nil {
-		t.Fatalf("create stats store: %v", err)
-	}
-	snapshot, err := gatewayquota.NewSnapshotCache(gatewayquota.Modes{}, nil, time.Now, nil)
-	if err != nil {
-		t.Fatalf("create snapshot cache: %v", err)
-	}
-	timezone := settingsTimezoneProvider{read: func(string) (string, error) { return "UTC", nil }}
-	authzQuota, err := gatewayquota.NewAuthorizationQuotaService(gatewayquota.AuthorizationQuotaConfig{
-		Modes:    gatewayquota.Modes{},
-		Business: statsDB,
-		Stats:    statsStore,
-		Timezone: timezone,
-		Snapshot: snapshot,
-		Now:      time.Now,
-	})
-	if err != nil {
-		t.Fatalf("create authz quota service: %v", err)
-	}
-	quota := newChainDispatchQuota(authzQuota)
-	_, err = quota.CheckBatchAsync(context.Background(), gatewayruntimecache.GroupUsageAccessMetadata{
-		GroupAuthorizationID:           strPtr("w1x-group-authz"),
-		GroupAuthorizationQuotaLimited: boolPtr(false),
-	}, []gatewaydispatch.AccountCandidate{{ID: "w1x-acc"}})
-	if err == nil {
-		t.Fatal("stats 表缺失时批量配额读取必须报错")
-	}
-}
+// （TestW1XDispatchQuotaCheckBatchErrorArm 随授权额度域退役：chainDispatchQuota
+// 解析期成员批查与 AuthorizationQuotaService 已删除。）
 
 func TestW1XRuntimeCacheAndGuardArms(t *testing.T) {
 	ctx := context.Background()
@@ -1732,7 +1697,6 @@ func w1xFloat64Ptr(value float64) *float64 { return &value }
 func TestW1XQuotaDBServiceBridges(t *testing.T) {
 	ctx := context.Background()
 	statsDB := w1xOpenBarePG(t)
-	businessDB := w1xOpenBarePG(t)
 	statsStore, err := gatewayquota.NewStatsStore(statsDB)
 	if err != nil {
 		t.Fatalf("create stats store: %v", err)
@@ -1748,13 +1712,8 @@ func TestW1XQuotaDBServiceBridges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create api-key quota service: %v", err)
 	}
-	authzQuota, err := gatewayquota.NewAuthorizationQuotaService(gatewayquota.AuthorizationQuotaConfig{
-		Modes: gatewayquota.Modes{}, Business: businessDB, Stats: statsStore, Timezone: timezone, Snapshot: snapshot, Now: time.Now,
-	})
-	if err != nil {
-		t.Fatalf("create authz quota service: %v", err)
-	}
-	service := newChainQuotaDBService(apiKeyQuota, authzQuota)
+	// （authz quota 服务随授权额度域退役：DBService 桥只剩 API Key 两侧。）
+	service := newChainQuotaDBService(apiKeyQuota)
 
 	// 无限额配置的 API Key：短路上直接放行（桥接方法体已执行）。
 	apiKeyRow := gatewayquota.APIKeyRow{ID: "w1x-key", SystemAccountID: "sys_owner"}
@@ -1762,16 +1721,9 @@ func TestW1XQuotaDBServiceBridges(t *testing.T) {
 	if err != nil || !decision.Allowed {
 		t.Fatalf("无限额 CheckAPIKeyQuota = (%+v, %v), want 放行", decision, err)
 	}
-	// 空库（无任何表）上，其余三条桥接读取确定性地把 SQL 错误带出。
+	// 空库（无任何表）上，成本读取确定性地把 SQL 错误带出。
 	if _, err := service.ReadAPIKeyQuotaCosts(ctx, apiKeyRow); err == nil {
 		t.Fatal("ReadAPIKeyQuotaCosts 在空库上必须报错")
-	}
-	if _, err := service.CheckAuthorizationQuota(ctx, "w1x-group-authz", "w1x-account-authz"); err == nil {
-		t.Fatal("CheckAuthorizationQuota 在空库上必须报错")
-	}
-	if _, err := service.CheckAuthorizationQuotaBatch(ctx, "w1x-group-authz",
-		[]gatewayquota.AccountRef{{AccountID: "w1x-acc", AccountAuthorizationID: "w1x-account-authz"}}); err == nil {
-		t.Fatal("CheckAuthorizationQuotaBatch 在空库上必须报错")
 	}
 }
 
@@ -2003,7 +1955,7 @@ func TestW1XCanScheduleAndPhysicalFallbackArms(t *testing.T) {
 func TestW1XResolveGroupAccessLocalTypeErrorArm(t *testing.T) {
 	fixture, _ := w1xSelectorAuthzFixture(t)
 	w1xSeedAuthzRow(t, fixture.db, "group", "w1x-authz", "w1x-grp", "sys_other")
-	if _, err := fixture.db.Exec(`INSERT INTO group_authorization_settings VALUES ('w1x-authz', 'sys_other', 'w1x-grp', 1, 'bogus', NULL)`); err != nil {
+	if _, err := fixture.db.Exec(`INSERT INTO group_authorization_settings (authorization_id, system_account_id, group_id, group_type, scheduling_policy_json) VALUES ('w1x-authz', 'sys_other', 'w1x-grp', 'bogus', NULL)`); err != nil {
 		t.Fatalf("seed settings: %v", err)
 	}
 	// 授权本地 group_type/策略列已退役：非法旧值不再读取，运行面回退来源分组。

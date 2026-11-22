@@ -102,7 +102,7 @@ func TestDD2A1PinnedOAuthRecoveryReplayKeepsExemption(t *testing.T) {
 }
 
 // TestDD2A1NonCodexAccountAttemptGetsRegularBudget（验收 ②）：压缩语义请求
-//（识别谓词 + codexTurn 辅助条件命中，伪造头即可达成）落到非「真实 codex
+// （识别谓词 + codexTurn 辅助条件命中，伪造头即可达成）落到非「真实 codex
 // OAuth 档案」账户时，attempt 覆盖为常规预算——TimeoutsDisabled 复位、wall
 // budget 换常规实例（默认 270s，原请求起点起算），到点掐断恢复。
 func TestDD2A1NonCodexAccountAttemptGetsRegularBudget(t *testing.T) {
@@ -238,7 +238,7 @@ func TestDD2A1PlainBoundedRequestIsNoop(t *testing.T) {
 // 桥接流（T58 流式提交边界受限重放排除面）不因账户锚闸改变——①媒体 lane 的
 // 有界预算请求闸零操作；②受限重放窗口排除判定（媒体域 / 桥接流方向）与预算
 // 无关原样生效。桥 compact 合成摘要派发路径
-//（chain_codex_compact_dispatch.go）不受本次改动触及，其投影回归由既有
+// （chain_codex_compact_dispatch.go）不受本次改动触及，其投影回归由既有
 // chain_codex_compact_dispatch_test.go 兜底。
 func TestDD2A1MediaAndBridgeExclusionSurfacesUnchanged(t *testing.T) {
 	t.Run("media_lane_bounded_budget_gate_noop", func(t *testing.T) {

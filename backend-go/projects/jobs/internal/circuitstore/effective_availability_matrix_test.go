@@ -120,7 +120,6 @@ func TestAccountEffectiveAvailabilityAuthorizedBranches(t *testing.T) {
 		{name: "授权暂停", mutate: func(i *availabilityInput) { i.authorizationStatus = "paused" }, wantStatus: "authorization_paused", wantScope: "authorization"},
 		{name: "授权已撤销", mutate: func(i *availabilityInput) { i.authorizationStatus = "revoked" }, wantStatus: "authorization_unavailable", wantScope: "authorization"},
 		{name: "授权已归还", mutate: func(i *availabilityInput) { i.authorizationStatus = "returned" }, wantStatus: "authorization_unavailable", wantScope: "authorization"},
-		{name: "授权额度超限", mutate: func(i *availabilityInput) { i.authorizationQuotaExceeded = true }, wantStatus: "authorization_quota_exceeded", wantScope: "authorization"},
 		{name: "来源缺失", mutate: func(i *availabilityInput) { i.sourceAccountID = "" }, wantStatus: "source_deleted", wantScope: "source_account"},
 		{name: "来源到期错误码", mutate: func(i *availabilityInput) { i.sourceLastErrorCode = "account_expired" }, wantStatus: "source_expired", wantScope: "source_account"},
 		{name: "来源到期时间戳", mutate: func(i *availabilityInput) { i.sourceExpiresAt = effPast }, wantStatus: "source_expired", wantScope: "source_account"},
@@ -184,7 +183,6 @@ func TestFilterStatusForEffectiveAvailabilityStatus(t *testing.T) {
 		{"source_error", "error"},
 		{"instance_quality_isolated", "quality_isolated"},
 		{"source_quality_isolated", "quality_isolated"},
-		{"authorization_quota_exceeded", "rate_limited"},
 		{"source_rate_limited", "rate_limited"},
 		{"instance_rate_limited", "rate_limited"},
 		{"source_cooldown", "temporary_unavailable"},
@@ -220,15 +218,15 @@ func TestFilterStatusForEffectiveAvailabilityStatus(t *testing.T) {
 // TestAccountFilterStatusesFallbacks 覆盖派生状态缺失时的回退序。
 func TestAccountFilterStatusesFallbacks(t *testing.T) {
 	blocked := blockedAvailability("instance_disabled", "", "", "", "", "")
-	if got := accountFilterStatuses("active", &blocked, false); len(got) != 1 || got[0] != "disabled" {
+	if got := accountFilterStatuses("active", &blocked); len(got) != 1 || got[0] != "disabled" {
 		t.Fatalf("派生状态优先: %v", got)
 	}
 	// itemStatus 非 active 且无派生状态 → 原样返回 itemStatus。
 	unknown := effectiveAvailability{available: false, status: "mystery"}
-	if got := accountFilterStatuses("paused", &unknown, false); len(got) != 1 || got[0] != "paused" {
+	if got := accountFilterStatuses("paused", &unknown); len(got) != 1 || got[0] != "paused" {
 		t.Fatalf("非 active 无派生应回退 itemStatus: %v", got)
 	}
-	if got := accountFilterStatuses("disabled", nil, false); len(got) != 1 || got[0] != "disabled" {
+	if got := accountFilterStatuses("disabled", nil); len(got) != 1 || got[0] != "disabled" {
 		t.Fatalf("无可用性对象应回退 itemStatus: %v", got)
 	}
 }
@@ -245,7 +243,6 @@ func TestPresentationMappingTable(t *testing.T) {
 		{"authorization_expired", "expired", "renew_authorization"},
 		{"authorization_paused", "authorization_blocked", "contact_authorizer"},
 		{"authorization_unavailable", "authorization_blocked", "contact_authorizer"},
-		{"authorization_quota_exceeded", "authorization_blocked", "contact_authorizer"},
 		{"source_deleted", "source_blocked", "contact_authorizer"},
 		{"source_disabled", "source_blocked", "contact_authorizer"},
 		{"source_unschedulable", "source_blocked", "contact_authorizer"},
@@ -285,14 +282,13 @@ func TestPresentationMappingTable(t *testing.T) {
 // TestBoundaryKindOf 锁定 statusBoundary kind 映射。
 func TestBoundaryKindOf(t *testing.T) {
 	cases := map[string]string{
-		"authorization_expired":        "authorization_expired",
-		"source_expired":               "source_expired",
-		"instance_expired":             "account_expired",
-		"authorization_quota_exceeded": "quota_reset",
-		"source_cooldown":              "cooldown_expiry",
-		"instance_cooldown":            "cooldown_expiry",
-		"runtime_local_suppressed":     "policy_ttl_expiry",
-		"instance_error":               "",
+		"authorization_expired":    "authorization_expired",
+		"source_expired":           "source_expired",
+		"instance_expired":         "account_expired",
+		"source_cooldown":          "cooldown_expiry",
+		"instance_cooldown":        "cooldown_expiry",
+		"runtime_local_suppressed": "policy_ttl_expiry",
+		"instance_error":           "",
 	}
 	for status, want := range cases {
 		if got := boundaryKindOf(status); got != want {

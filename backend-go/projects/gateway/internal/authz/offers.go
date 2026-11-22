@@ -325,7 +325,7 @@ func (s *Store) teamActiveMembers(ctx context.Context, tx *sql.Tx, teamID, owner
 	rows, err := tx.QueryContext(ctx, s.bind(`SELECT m.system_account_id
 		FROM `+s.table("system_team_members")+` m
 		JOIN `+s.table("system_accounts")+` a ON a.id = m.system_account_id
-		WHERE m.team_id = ? AND m.status = 'active' AND a.status = 'active' AND a.deleted_at IS NULL
+		WHERE m.team_id = ? AND a.status = 'active' AND a.deleted_at IS NULL
 		  AND m.system_account_id <> ?
 		ORDER BY m.system_account_id`), teamID, ownerID)
 	if err != nil {

@@ -140,7 +140,6 @@ func (s *Store) teamScopeClause() string {
 		FROM ` + s.table("system_team_members") + ` scoped_members
 		WHERE scoped_members.team_id = ` + s.table("system_teams") + `.id
 			AND scoped_members.system_account_id = ?
-			AND scoped_members.status = 'active'
 	)`
 }
 
@@ -397,7 +396,7 @@ func (s *Store) AddMembers(ctx context.Context, teamID string, systemAccountIDs 
 
 	// Existing active members, ceiling members+1 (:620-629).
 	rows, err := tx.QueryContext(ctx, s.bind(`SELECT system_account_id FROM `+s.table("system_team_members")+`
-		WHERE team_id = ? AND status = 'active'
+		WHERE team_id = ?
 		ORDER BY system_account_id ASC LIMIT ?`), teamID, MaxMembersPerTeam+1)
 	if err != nil {
 		return nil, err
@@ -476,32 +475,14 @@ func (s *Store) AddMembers(ctx context.Context, teamID string, systemAccountIDs 
 
 	added := []MemberDetail{}
 	for _, accountID := range next {
-		// Latest member row per account (:651-661, :672-688).
-		var existingID, existingStatus string
-		err := tx.QueryRowContext(ctx, s.bind(`SELECT id, status FROM `+s.table("system_team_members")+`
-			WHERE team_id = ? AND system_account_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`), teamID, accountID).
-			Scan(&existingID, &existingStatus)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return nil, err
-		}
+		// 移除即硬删除（2026-11-22 用户裁决：团队不记录历史成员），无旧行可
+		// 复活，直接插入新成员行。
 		memberID := "teammem_" + randomHex()
-		if err == nil && existingID != "" {
-			memberID = existingID
-			if existingStatus == "active" {
-				continue // unreachable via `next`, kept as a guard
-			}
-			if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("system_team_members")+`
-				SET status = 'active', joined_at = ?, removed_at = NULL, updated_at = ? WHERE id = ?`),
-				newUpdatedAt, newUpdatedAt, memberID); err != nil {
-				return nil, err
-			}
-		} else {
-			if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("system_team_members")+`
-				(id, team_id, system_account_id, member_role, status, joined_at, removed_at, created_by, created_at, updated_at)
-				VALUES (?, ?, ?, 'member', 'active', ?, NULL, ?, ?, ?)`),
-				memberID, teamID, accountID, newUpdatedAt, actor, newUpdatedAt, newUpdatedAt); err != nil {
-				return nil, err
-			}
+		if _, err := tx.ExecContext(ctx, s.bind(`INSERT INTO `+s.table("system_team_members")+`
+			(id, team_id, system_account_id, member_role, joined_at, created_by, created_at, updated_at)
+			VALUES (?, ?, ?, 'member', ?, ?, ?, ?)`),
+			memberID, teamID, accountID, newUpdatedAt, actor, newUpdatedAt, newUpdatedAt); err != nil {
+			return nil, err
 		}
 		name := displayNames[accountID]
 		detail := MemberDetail{ID: memberID, SystemAccountID: accountID, JoinedAt: newUpdatedAt}
@@ -576,7 +557,7 @@ func (s *Store) RemoveMember(ctx context.Context, teamID, memberID, expectedUpda
 	err = tx.QueryRowContext(ctx, s.bind(`SELECT m.system_account_id, a.display_name
 		FROM `+s.table("system_team_members")+` m
 		INNER JOIN `+s.table("system_accounts")+` a ON a.id = m.system_account_id
-		WHERE m.id = ? AND m.team_id = ? AND m.status = 'active' LIMIT 1`), memberID, teamID).Scan(&accountID, &displayName)
+		WHERE m.id = ? AND m.team_id = ? LIMIT 1`), memberID, teamID).Scan(&accountID, &displayName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return &RemoveMemberOutcome{Status: "not_found"}, nil, nil
 	}
@@ -586,7 +567,7 @@ func (s *Store) RemoveMember(ctx context.Context, teamID, memberID, expectedUpda
 	// Active member rows bound the reported memberCount (:755-761).
 	activeMemberRows := 0
 	countRows, err := tx.QueryContext(ctx, s.bind(`SELECT system_account_id FROM `+s.table("system_team_members")+`
-		WHERE team_id = ? AND status = 'active' ORDER BY system_account_id ASC LIMIT ?`), teamID, MaxMembersPerTeam+1)
+		WHERE team_id = ? ORDER BY system_account_id ASC LIMIT ?`), teamID, MaxMembersPerTeam+1)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -622,9 +603,8 @@ func (s *Store) RemoveMember(ctx context.Context, teamID, memberID, expectedUpda
 	if affected, _ := result.RowsAffected(); affected != 1 {
 		return &RemoveMemberOutcome{Status: "conflict"}, nil, nil
 	}
-	if _, err := tx.ExecContext(ctx, s.bind(`UPDATE `+s.table("system_team_members")+`
-		SET status = 'removed', removed_at = ?, updated_at = ? WHERE id = ? AND team_id = ? AND status = 'active'`),
-		newUpdatedAt, newUpdatedAt, memberID, teamID); err != nil {
+	if _, err := tx.ExecContext(ctx, s.bind(`DELETE FROM `+s.table("system_team_members")+`
+		WHERE id = ? AND team_id = ?`), memberID, teamID); err != nil {
 		return nil, nil, err
 	}
 	// Same-transaction revocation (:777; C11): a failure here rolls the

@@ -78,9 +78,7 @@
 
     <a-modal v-model:open="memberModalOpen" :title="selectedTeam ? `授权团队成员：${selectedTeam.name}` : '授权团队成员'" width="720px" :footer="null">
       <div class="team-members-modal">
-        <a-tabs v-model:active-key="memberView" @change="handleMemberTabChange">
-          <a-tab-pane key="active" tab="当前成员">
-            <div v-if="isManagementView" class="team-members-create-row">
+          <div v-if="isManagementView" class="team-members-create-row">
               <SystemPrincipalSelect
                 v-model:value="memberForm.systemAccountIds"
                 v-model:selected-principals="memberForm.systemAccounts"
@@ -126,40 +124,7 @@
                   <RowActions v-if="isManagementView" :actions="memberActions" variant="button" @action-click="handleMemberAction($event, record)" />
                 </article>
               </template>
-            </ResponsiveDataList>
-          </a-tab-pane>
-          <a-tab-pane key="history" tab="历史成员">
-            <ResponsiveDataList
-              size="small"
-              table-class="team-members-table"
-              :columns="memberHistoryColumns"
-              :data-source="memberHistoryItems"
-              row-key="id"
-              :loading="memberHistoryLoading"
-              :loading-more="memberHistoryLoadingMore"
-              :mobile-has-more="memberHistoryHasMore"
-              :pagination="memberHistoryTablePagination"
-              mobile-pagination
-              :table-scroll-enabled="false"
-              :lock-body-scroll="false"
-              @change="handleMemberHistoryTableChange"
-              @mobile-load-more="loadMoreMemberHistory"
-            >
-              <template #emptyText><a-empty description="还没有历史成员" /></template>
-              <template #bodyCell="{ column, record }">
-                <template v-if="column.key === 'memberName'">{{ memberDisplayName(record) }}</template>
-                <template v-else-if="column.key === 'status'"><a-tag>已移除</a-tag></template>
-                <template v-else-if="column.key === 'joinedAt'">{{ formatDateTime(record.joinedAt) }}</template>
-                <template v-else-if="column.key === 'removedAt'">{{ formatDateTime(record.removedAt) }}</template>
-              </template>
-              <template #card="{ record }">
-                <article class="team-member-card">
-                  <div><strong>{{ memberDisplayName(record) }}</strong><span>已移除 · {{ formatDateTime(record.removedAt) }}</span></div>
-                </article>
-              </template>
-            </ResponsiveDataList>
-          </a-tab-pane>
-        </a-tabs>
+          </ResponsiveDataList>
       </div>
     </a-modal>
   </a-card>
@@ -186,7 +151,7 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import { compareServerDateTime, formatDateTime, formatNumber } from '@/shared/formatters'
 import { sanitizePaginationState, stringOrFallback, type PagePaginationState } from '@/shared/pageStateSanitizers'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
-import type { SystemTeamListItem, SystemTeamMemberDetail, SystemTeamMemberHistoryItem, SystemTeamMemberListResult, SystemTeamMutationResult } from '@/types/domain'
+import type { SystemTeamListItem, SystemTeamMemberDetail, SystemTeamMemberListResult, SystemTeamMutationResult } from '@/types/domain'
 import { buildSystemTeamEditPatch, type SystemTeamEditableSnapshot } from './systemTeamEditPatch'
 import {
   isOlderRevision,
@@ -239,15 +204,7 @@ const editingTeamBaseline = ref<(SystemTeamEditableSnapshot & { id: string; upda
 const selectedTeamId = ref<string>()
 const selectedTeamSnapshot = ref<SystemTeamListItem>()
 const selectedTeamMembers = ref<SystemTeamMemberListResult>()
-const memberView = ref<'active' | 'history'>('active')
-const memberHistoryItems = ref<SystemTeamMemberHistoryItem[]>([])
-const memberHistoryLoading = ref(false)
-const memberHistoryLoadingMore = ref(false)
-const memberHistoryHasMore = ref(false)
-const memberHistoryLoaded = ref(false)
-const memberHistoryPagination = reactive({ current: 1, pageSize: 20, total: 0 })
 let memberDetailGeneration = 0
-let memberHistoryRequestGeneration = 0
 let listMutationRevision = 0
 
 const teamForm = reactive({
@@ -321,20 +278,6 @@ const memberColumns = computed(() => {
   }
   return baseColumns
 })
-const memberHistoryColumns = [
-  { title: '成员', key: 'memberName', width: 220 },
-  { title: '状态', key: 'status', width: 100 },
-  { title: '加入时间', key: 'joinedAt', width: 180 },
-  { title: '移除时间', key: 'removedAt', width: 180 }
-]
-const memberHistoryTablePagination = computed(() => ({
-  current: memberHistoryPagination.current,
-  pageSize: memberHistoryPagination.pageSize,
-  total: memberHistoryPagination.total,
-  hideOnSinglePage: true,
-  showSizeChanger: false
-}))
-
 const selectedTeam = computed(() => teams.value.find((team) => team.id === selectedTeamId.value) ?? selectedTeamSnapshot.value)
 const activeTeamMembers = computed(() => selectedTeamMembers.value?.items ?? [])
 const usedMemberIds = computed(() => activeTeamMembers.value.map((item) => item.systemAccountId))
@@ -463,36 +406,11 @@ function openMemberModal(team: SystemTeamListItem) {
   selectedTeamId.value = team.id
   selectedTeamSnapshot.value = team
   selectedTeamMembers.value = undefined
-  resetMemberHistoryState()
-  memberView.value = 'active'
   memberForm.systemAccountIds = []
   memberForm.systemAccounts = []
   resetMemberOptionSearch()
   memberModalOpen.value = true
   void loadSelectedTeamMembers(team.id, generation)
-}
-
-function handleMemberTabChange(key: string | number): void {
-  if (key !== 'history' || memberHistoryLoaded.value || memberHistoryLoading.value) return
-  const teamId = selectedTeamId.value
-  if (!teamId) return
-  void loadMemberHistory(teamId, 1)
-}
-
-function handleMemberHistoryTableChange(paginationInfo: unknown): void {
-  if (!paginationInfo || typeof paginationInfo !== 'object') return
-  const page = Number((paginationInfo as { current?: unknown }).current)
-  if (!Number.isInteger(page) || page < 1 || page === memberHistoryPagination.current) return
-  const teamId = selectedTeamId.value
-  if (!teamId) return
-  void loadMemberHistory(teamId, page)
-}
-
-function loadMoreMemberHistory(): void {
-  if (!memberHistoryHasMore.value || memberHistoryLoadingMore.value) return
-  const teamId = selectedTeamId.value
-  if (!teamId) return
-  void loadMemberHistory(teamId, memberHistoryPagination.current + 1, true)
 }
 
 function handleTeamAction(key: string, team: SystemTeamListItem) {
@@ -533,7 +451,6 @@ const addMembers = submitAction('system_teams.add_members', async () => {
       expectedUpdatedAt
     }, teamScopeParams.value)
     await commitMemberCountMutation(result)
-    resetMemberHistoryState()
     if (isCurrentMemberContext(teamId, generation) && !isOlderRevision(result.updatedAt, selectedTeamMembers.value?.updatedAt ?? '')) {
       const currentMembers = selectedTeamMembers.value?.items ?? []
       const membersById = new Map(currentMembers.map((member) => [member.id, member]))
@@ -570,7 +487,6 @@ const removeMember = submitAction('system_teams.remove_member', async (memberId:
   try {
     const result = await api.systemTeams.removeMember(teamId, memberId, { expectedUpdatedAt }, teamScopeParams.value)
     await commitMemberCountMutation(result)
-    resetMemberHistoryState()
     if (isCurrentMemberContext(teamId, generation) && !isOlderRevision(result.updatedAt, selectedTeamMembers.value?.updatedAt ?? '')) {
       selectedTeamMembers.value = {
         id: result.id,
@@ -618,69 +534,6 @@ async function loadSelectedTeamMembers(teamId: string, requestedGeneration = ++m
       memberDetailLoading.value = false
     }
   }
-}
-
-async function loadMemberHistory(teamId: string, page: number, append = false): Promise<void> {
-  const contextGeneration = memberDetailGeneration
-  const requestGeneration = ++memberHistoryRequestGeneration
-  const scopeKey = currentMemberScopeKey()
-  if (append) memberHistoryLoadingMore.value = true
-  else memberHistoryLoading.value = true
-  try {
-    const result = await systemTeamsApi.memberHistory(teamId, {
-      ...teamScopeParams.value,
-      page,
-      pageSize: memberHistoryPagination.pageSize
-    })
-    if (!isCurrentMemberHistoryContext(teamId, contextGeneration, requestGeneration, scopeKey)) return
-    const nextItems = append
-      ? mergeMemberHistoryItems(memberHistoryItems.value, result.items)
-      : result.items
-    memberHistoryItems.value = nextItems
-    memberHistoryPagination.current = result.page
-    memberHistoryPagination.pageSize = result.pageSize
-    memberHistoryPagination.total = result.total
-    memberHistoryHasMore.value = result.hasMore
-    memberHistoryLoaded.value = true
-  } catch (error) {
-    if (!isCurrentMemberHistoryContext(teamId, contextGeneration, requestGeneration, scopeKey)) return
-    console.error(error)
-    message.error(extractApiErrorMessage(error, '加载历史成员失败'))
-  } finally {
-    if (requestGeneration === memberHistoryRequestGeneration) {
-      memberHistoryLoading.value = false
-      memberHistoryLoadingMore.value = false
-    }
-  }
-}
-
-function isCurrentMemberHistoryContext(teamId: string, contextGeneration: number, requestGeneration: number, scopeKey: string): boolean {
-  return memberView.value === 'history'
-    && isCurrentMemberContext(teamId, contextGeneration)
-    && memberHistoryRequestGeneration === requestGeneration
-    && currentMemberScopeKey() === scopeKey
-}
-
-function currentMemberScopeKey(): string {
-  return `${isManagementView.value ? 'management' : 'self'}:${teamScopeParams.value?.systemAccountId ?? ''}`
-}
-
-function mergeMemberHistoryItems(current: SystemTeamMemberHistoryItem[], incoming: SystemTeamMemberHistoryItem[]): SystemTeamMemberHistoryItem[] {
-  const items = new Map(current.map((item) => [item.id, item]))
-  for (const item of incoming) items.set(item.id, item)
-  return [...items.values()]
-}
-
-function resetMemberHistoryState(): void {
-  memberHistoryRequestGeneration += 1
-  memberHistoryItems.value = []
-  memberHistoryLoading.value = false
-  memberHistoryLoadingMore.value = false
-  memberHistoryHasMore.value = false
-  memberHistoryLoaded.value = false
-  memberHistoryPagination.current = 1
-  memberHistoryPagination.pageSize = 20
-  memberHistoryPagination.total = 0
 }
 
 async function commitCreatedSystemTeam(created: SystemTeamListItem): Promise<void> {
@@ -749,7 +602,6 @@ function isCurrentMemberContext(teamId: string, generation: number): boolean {
 
 async function refreshTeamAfterMemberConflict(teamId: string, generation: number): Promise<void> {
   listMutationRevision += 1
-  resetMemberHistoryState()
   resetPagination()
   await loadData({ quiet: true })
   if (isCurrentMemberContext(teamId, generation)) {
@@ -804,8 +656,6 @@ watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), 
 watch(memberModalOpen, (open) => {
   if (open) return
   memberDetailGeneration += 1
-  resetMemberHistoryState()
-  memberView.value = 'active'
   memberDetailLoading.value = false
   selectedTeamId.value = undefined
   selectedTeamSnapshot.value = undefined

@@ -251,9 +251,8 @@ func TestW1OAccountsBusInvalidatorArms(t *testing.T) {
 		if err := nilInvalidator.InvalidateGroupAccountIds(); err == nil {
 			t.Error("InvalidateGroupAccountIds nil 总线必须报错")
 		}
-		if err := nilInvalidator.InvalidateAuthorizationQuota("r"); err == nil {
-			t.Error("InvalidateAuthorizationQuota nil 总线必须报错")
-		}
+		// （InvalidateAuthorizationQuota 臂随授权额度域退役删除：适配器不再
+		// 有额度主题通道。）
 		// 文档化 no-op 通道：永远 nil error。
 		if err := nilInvalidator.InvalidateAccountLookup("acc-1"); err != nil {
 			t.Errorf("InvalidateAccountLookup 必须恒为 nil error，实际 %v", err)
@@ -265,9 +264,9 @@ func TestW1OAccountsBusInvalidatorArms(t *testing.T) {
 
 	t.Run("真实总线发布与固定原因", func(t *testing.T) {
 		bus := inval.New(time.Now)
-		var runtimeReasons, quotaReasons, validationReasons []string
+		// （TopicAuthorizationQuota 订阅随授权额度域退役删除。）
+		var runtimeReasons, validationReasons []string
 		bus.Subscribe(inval.TopicGatewayRuntime, func(_, reason string) { runtimeReasons = append(runtimeReasons, reason) })
-		bus.Subscribe(inval.TopicAuthorizationQuota, func(_, reason string) { quotaReasons = append(quotaReasons, reason) })
 		bus.Subscribe(inval.TopicGatewayAPIKeyValidation, func(_, reason string) { validationReasons = append(validationReasons, reason) })
 		invalidator := accountsBusInvalidator{bus: bus}
 
@@ -279,9 +278,6 @@ func TestW1OAccountsBusInvalidatorArms(t *testing.T) {
 		}
 		if err := invalidator.InvalidateGroupAccountIds(); err != nil {
 			t.Fatalf("InvalidateGroupAccountIds = %v，want nil", err)
-		}
-		if err := invalidator.InvalidateAuthorizationQuota("配额失效"); err != nil {
-			t.Fatalf("InvalidateAuthorizationQuota = %v，want nil", err)
 		}
 		if err := invalidator.InvalidateAPIKeyValidation("密钥失效"); err != nil {
 			t.Fatalf("InvalidateAPIKeyValidation = %v，want nil", err)
@@ -295,9 +291,6 @@ func TestW1OAccountsBusInvalidatorArms(t *testing.T) {
 			if runtimeReasons[index] != want {
 				t.Fatalf("runtime 第 %d 条原因 = %q，want %q", index, runtimeReasons[index], want)
 			}
-		}
-		if len(quotaReasons) != 1 || quotaReasons[0] != "配额失效" {
-			t.Fatalf("authorization quota 主题发布 = %v，want [配额失效]", quotaReasons)
 		}
 		if len(validationReasons) != 1 || validationReasons[0] != "密钥失效" {
 			t.Fatalf("api-key validation 主题发布 = %v，want [密钥失效]", validationReasons)
@@ -538,19 +531,19 @@ func TestW1OComposeChainRuntimeServicesMemorySuccess(t *testing.T) {
 	t.Cleanup(services.Close)
 
 	nonNil := map[string]bool{
-		"Cache":                     services.Cache != nil,
-		"Circuits":                  services.Circuits != nil,
-		"IPPolicy":                  services.IPPolicy != nil,
-		"UserLimits":                services.UserLimits != nil,
-		"ModelsRateLimit":           services.ModelsRateLimit != nil,
-		"Avoidance":                 services.Avoidance != nil,
-		"Affinity":                  services.Affinity != nil,
+		"Cache":           services.Cache != nil,
+		"Circuits":        services.Circuits != nil,
+		"IPPolicy":        services.IPPolicy != nil,
+		"UserLimits":      services.UserLimits != nil,
+		"ModelsRateLimit": services.ModelsRateLimit != nil,
+		"Avoidance":       services.Avoidance != nil,
+		"Affinity":        services.Affinity != nil,
+		// （AuthzQuota/QuotaStats 两项随授权额度域退役：组合根不再装配
+		// 额度门服务，chainRuntimeServices 不再有这两个槽位。）
 		"APIKeyQuota":               services.APIKeyQuota != nil,
-		"AuthzQuota":                services.AuthzQuota != nil,
 		"InflightQuota":             services.InflightQuota != nil,
 		"Accounts":                  services.Accounts != nil,
 		"Identity":                  services.Identity != nil,
-		"QuotaStats":                services.QuotaStats != nil,
 		"LatencyDegradation":        services.LatencyDegradation != nil,
 		"AccountAPIKeyGuard":        services.AccountAPIKeyGuard != nil,
 		"AccountAPIKeyEffects":      services.AccountAPIKeyEffects != nil,

@@ -341,30 +341,7 @@ func TestW1AccountsSecretHelpers(t *testing.T) {
 	if got := chainResolveProxyURL("", nil); got.unavailable != nil {
 		t.Fatalf("空 ID = %+v", got)
 	}
-	// chainResourceAuthorizationQuotaLimited。
-	if got := chainResourceAuthorizationQuotaLimited(nil); got == nil || *got {
-		t.Fatal("nil limits 必须 false")
-	}
-	empty := ""
-	if got := chainResourceAuthorizationQuotaLimited(&empty); got == nil || *got {
-		t.Fatal("空白 limits 必须 false")
-	}
-	enabled := `{"hourly":{"enabled":true}}`
-	if got := chainResourceAuthorizationQuotaLimited(&enabled); got == nil || !*got {
-		t.Fatal("hourly 启用必须 true")
-	}
-	disabled := `{"hourly":{"enabled":false},"total":{"enabled":false}}`
-	if got := chainResourceAuthorizationQuotaLimited(&disabled); got == nil || *got {
-		t.Fatal("全禁用必须 false")
-	}
-	bad := "{not-json"
-	if got := chainResourceAuthorizationQuotaLimited(&bad); got == nil || *got {
-		t.Fatal("非法 JSON 必须 false")
-	}
-	monthly := `{"monthly":{"enabled":true}}`
-	if got := chainResourceAuthorizationQuotaLimited(&monthly); got == nil || !*got {
-		t.Fatal("monthly 启用必须 true")
-	}
+	// （chainResourceAuthorizationQuotaLimited 段随授权额度域退役删除。）
 	// nullInt64Ptr。
 	if nullInt64Ptr(sql.NullInt64{}) != nil {
 		t.Fatal("invalid 必须 nil")

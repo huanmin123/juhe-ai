@@ -1,248 +1,19 @@
 package playground
 
-// 媒体三执行器测试（设计 §3.4/§3.5/§3.6）：Mock 派发执行器回放固定上游响应，
-// 断言请求构造（generations/edits 分路、multipart 形状、videos 创建体、speech
-// 体）、响应归一（暂存产物条目形状、jobId、状态归一）与候选校验错误映射。
-// URL 回退下载经自定义 RoundTripper 回放，不触网。
+// 媒体执行器测试（设计 §3.5/§3.6）：Mock 派发执行器回放固定上游响应，断言
+// 请求构造（videos 创建体、speech 体）、响应归一（jobId、状态归一）与候选校
+// 验错误映射。v1.2 同步生图（POST /images）已退役——生图请求构造/URL 回退/
+// SSRF 拒绝面改由图像任务执行器测试覆盖（imagejob_runner_test.go）。
 
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
-	"io"
-	"mime"
-	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
-
-// TestImagesGenerationsRequestConstruction 文生图：断言 POST
-// /v1/images/generations 请求体（model/prompt/n/size/response_format）与暂存
-// 产物条目形状（id/url，不再内联 base64 dataUrl）。
-func TestImagesGenerationsRequestConstruction(t *testing.T) {
-	deps := playgroundFixtureDeps(t, false)
-	// 补一个 image 候选（gpt 家族 × gpt-image-2，api_key 账户可路由）。
-	catalog := deps.ProviderCatalog.(*staticCatalog)
-	catalog.byProvider["gpt"] = append(catalog.byProvider["gpt"], CatalogItem{Model: "gpt-image-2", SupportedAPIProtocols: []string{"image_generation"}})
-	transportView := deps.TransportAccounts.(*staticTransport)
-	// 五域退役修订：图像候选按域路由（image 域账户才列生图模型）。
-	transportView.views["acc_1"][0].CapabilityDomain = "image"
-	transportView.views["acc_1"][0].SupportedEndpointModes = append(transportView.views["acc_1"][0].SupportedEndpointModes, "images_json")
-	dispatch := deps.Dispatch.(*mockDispatch)
-	dispatch.script = []scriptedResponse{{
-		Body: []byte(`{"data":[{"b64_json":"` + base64Of(pngOnePixel) + `"}]}`),
-	}}
-	mux, _ := newTestRoutes(deps)
-	payload, _ := json.Marshal(map[string]any{
-		"accountId": "acc_1", "modelId": "gpt-image-2", "prompt": "一只赛博猫", "size": "1024x1024",
-	})
-	recorder := doJSON(mux, "POST", "/__aisys__/api/playground/images", payload)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("状态码 = %d（body %s）", recorder.Code, recorder.Body.String())
-	}
-	if len(dispatch.calls) != 1 {
-		t.Fatalf("派发次数 = %d", len(dispatch.calls))
-	}
-	call := dispatch.calls[0]
-	if call.Request.Path != "/v1/images/generations" || call.Request.Method != "POST" {
-		t.Fatalf("派发目标 = %s %s", call.Request.Method, call.Request.Path)
-	}
-	if call.Request.Headers["x-juhe-ai-purpose"] != "playground_images" {
-		t.Fatalf("purpose 头 = %q", call.Request.Headers["x-juhe-ai-purpose"])
-	}
-	var outbound struct {
-		Model          string `json:"model"`
-		Prompt         string `json:"prompt"`
-		Size           string `json:"size"`
-		ResponseFormat string `json:"response_format"`
-	}
-	if err := json.Unmarshal(call.Request.Body, &outbound); err != nil {
-		t.Fatalf("请求体解析失败: %v", err)
-	}
-	if outbound.Model != "gpt-image-2" || outbound.Prompt != "一只赛博猫" || outbound.Size != "1024x1024" {
-		t.Fatalf("出站体不符: %+v", outbound)
-	}
-	if outbound.ResponseFormat != "b64_json" {
-		t.Fatalf("response_format = %q，期望 b64_json", outbound.ResponseFormat)
-	}
-	var response struct {
-		Data struct {
-			Images []struct {
-				ID  string `json:"id"`
-				URL string `json:"url"`
-			} `json:"images"`
-			Model string `json:"model"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
-		t.Fatalf("响应解析失败: %v", err)
-	}
-	if len(response.Data.Images) != 1 || response.Data.Model != "gpt-image-2" {
-		t.Fatalf("响应形状不符: %+v", response.Data)
-	}
-	for _, image := range response.Data.Images {
-		if image.ID == "" || image.URL != "/playground/artifacts/"+image.ID+"/content" {
-			t.Fatalf("产物条目形状不符: %+v", image)
-		}
-	}
-	if strings.Contains(recorder.Body.String(), "dataUrl") || strings.Contains(recorder.Body.String(), base64Of(pngOnePixel)) {
-		t.Fatalf("响应不得再内联 base64 dataUrl: %s", recorder.Body.String())
-	}
-}
-
-// TestImagesEditsRequestConstruction 图生图：multipart POST /v1/images/edits，
-// 断言表单字段、参考图 part 的真实 MIME 与文件名。
-func TestImagesEditsRequestConstruction(t *testing.T) {
-	deps := playgroundFixtureDeps(t, false)
-	catalog := deps.ProviderCatalog.(*staticCatalog)
-	catalog.byProvider["gpt"] = append(catalog.byProvider["gpt"], CatalogItem{Model: "gpt-image-2", SupportedAPIProtocols: []string{"image_generation"}})
-	transportView := deps.TransportAccounts.(*staticTransport)
-	// 五域退役修订：图像候选按域路由（image 域账户才列生图模型）。
-	transportView.views["acc_1"][0].CapabilityDomain = "image"
-	transportView.views["acc_1"][0].SupportedEndpointModes = append(transportView.views["acc_1"][0].SupportedEndpointModes, "images_json")
-	dispatch := deps.Dispatch.(*mockDispatch)
-	dispatch.script = []scriptedResponse{{
-		Body: []byte(`{"data":[{"b64_json":"` + base64Of(pngOnePixel) + `"}]}`),
-	}}
-	mux, _ := newTestRoutes(deps)
-	payload, _ := json.Marshal(map[string]any{
-		"accountId": "acc_1", "modelId": "gpt-image-2", "prompt": "改成水彩风",
-		"inputImageBase64": base64Of(pngOnePixel),
-	})
-	recorder := doJSON(mux, "POST", "/__aisys__/api/playground/images", payload)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("状态码 = %d（body %s）", recorder.Code, recorder.Body.String())
-	}
-	call := dispatch.calls[0]
-	if call.Request.Path != "/v1/images/edits" {
-		t.Fatalf("派发目标 = %s", call.Request.Path)
-	}
-	mediaType, params, err := mime.ParseMediaType(call.Request.Headers["content-type"])
-	if err != nil || mediaType != "multipart/form-data" {
-		t.Fatalf("content-type = %q（err=%v）", call.Request.Headers["content-type"], err)
-	}
-	reader := multipart.NewReader(bytes.NewReader(call.Request.Body), params["boundary"])
-	var sawModel, sawPrompt, sawImage, sawB64Format bool
-	for {
-		part, partErr := reader.NextPart()
-		if partErr != nil {
-			break
-		}
-		data, _ := io.ReadAll(part)
-		switch part.FormName() {
-		case "model":
-			sawModel = string(data) == "gpt-image-2"
-		case "prompt":
-			sawPrompt = string(data) == "改成水彩风"
-		case "response_format":
-			sawB64Format = string(data) == "b64_json"
-		case "image":
-			sawImage = string(data) == string(pngOnePixel) &&
-				part.Header.Get("Content-Type") == "image/png" &&
-				strings.Contains(part.Header.Get("Content-Disposition"), "reference.png")
-		}
-	}
-	if !sawModel || !sawPrompt || !sawImage || !sawB64Format {
-		t.Fatalf("multipart 形状不符: model=%v prompt=%v image=%v b64=%v", sawModel, sawPrompt, sawImage, sawB64Format)
-	}
-}
-
-// TestImagesURLFallbackDownloads grok 只回临时 URL：经守卫客户端下载字节并转
-// dataUrl（本测试换装 RoundTripper 回放字节，不触网）。
-func TestImagesURLFallbackDownloads(t *testing.T) {
-	deps := playgroundFixtureDeps(t, false)
-	catalog := deps.ProviderCatalog.(*staticCatalog)
-	catalog.byProvider["gpt"] = append(catalog.byProvider["gpt"], CatalogItem{Model: "gpt-image-2", SupportedAPIProtocols: []string{"image_generation"}})
-	transportView := deps.TransportAccounts.(*staticTransport)
-	// 五域退役修订：图像候选按域路由（image 域账户才列生图模型）。
-	transportView.views["acc_1"][0].CapabilityDomain = "image"
-	transportView.views["acc_1"][0].SupportedEndpointModes = append(transportView.views["acc_1"][0].SupportedEndpointModes, "images_json")
-	dispatch := deps.Dispatch.(*mockDispatch)
-	dispatch.script = []scriptedResponse{{
-		Body: []byte(`{"data":[{"url":"https://93.184.216.34/img.png"}]}`),
-	}}
-	previousClient := imageUrlDownloadClient
-	t.Cleanup(func() { imageUrlDownloadClient = previousClient })
-	imageUrlDownloadClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		if request.URL.Host != "93.184.216.34" {
-			return nil, errors.New("测试仅回放 93.184.216.34")
-		}
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Header:     http.Header{"Content-Type": []string{"image/png"}},
-			Body:       io.NopCloser(bytes.NewReader(pngOnePixel)),
-		}, nil
-	})}
-	mux, _ := newTestRoutes(deps)
-	payload, _ := json.Marshal(map[string]any{
-		"accountId": "acc_1", "modelId": "gpt-image-2", "prompt": "一只赛博猫",
-	})
-	recorder := doJSON(mux, "POST", "/__aisys__/api/playground/images", payload)
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("状态码 = %d（body %s）", recorder.Code, recorder.Body.String())
-	}
-	var response struct {
-		Data struct {
-			Images []struct {
-				ID  string `json:"id"`
-				URL string `json:"url"`
-			} `json:"images"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
-		t.Fatalf("响应解析失败: %v", err)
-	}
-	if len(response.Data.Images) != 1 || response.Data.Images[0].URL != "/playground/artifacts/"+response.Data.Images[0].ID+"/content" {
-		t.Fatalf("URL 回退产物形状不符: %s", recorder.Body.String())
-	}
-}
-
-// TestImagesSSRFRejectsPrivateURL URL 回退指向内网地址：守卫拒绝（响应 502
-// 且 message 携带内网拒绝语义），不发真实请求。
-func TestImagesSSRFRejectsPrivateURL(t *testing.T) {
-	deps := playgroundFixtureDeps(t, false)
-	catalog := deps.ProviderCatalog.(*staticCatalog)
-	catalog.byProvider["gpt"] = append(catalog.byProvider["gpt"], CatalogItem{Model: "gpt-image-2", SupportedAPIProtocols: []string{"image_generation"}})
-	transportView := deps.TransportAccounts.(*staticTransport)
-	// 五域退役修订：图像候选按域路由（image 域账户才列生图模型）。
-	transportView.views["acc_1"][0].CapabilityDomain = "image"
-	transportView.views["acc_1"][0].SupportedEndpointModes = append(transportView.views["acc_1"][0].SupportedEndpointModes, "images_json")
-	dispatch := deps.Dispatch.(*mockDispatch)
-	dispatch.script = []scriptedResponse{{
-		Body: []byte(`{"data":[{"url":"http://127.0.0.1:8080/secret.png"}]}`),
-	}}
-	mux, _ := newTestRoutes(deps)
-	payload, _ := json.Marshal(map[string]any{
-		"accountId": "acc_1", "modelId": "gpt-image-2", "prompt": "内网图",
-	})
-	recorder := doJSON(mux, "POST", "/__aisys__/api/playground/images", payload)
-	if recorder.Code != http.StatusBadGateway {
-		t.Fatalf("状态码 = %d，期望 502", recorder.Code)
-	}
-	if !strings.Contains(recorder.Body.String(), "内网") {
-		t.Fatalf("错误面未透出 SSRF 拒绝语义: %s", recorder.Body.String())
-	}
-}
-
-// TestImagesValidation 生图校验面：n 越界 400、模型不在候选 400。
-func TestImagesValidation(t *testing.T) {
-	deps := playgroundFixtureDeps(t, false)
-	catalog := deps.ProviderCatalog.(*staticCatalog)
-	catalog.byProvider["gpt"] = append(catalog.byProvider["gpt"], CatalogItem{Model: "gpt-image-2", SupportedAPIProtocols: []string{"image_generation"}})
-	transportView := deps.TransportAccounts.(*staticTransport)
-	// 五域退役修订：图像候选按域路由（image 域账户才列生图模型）。
-	transportView.views["acc_1"][0].CapabilityDomain = "image"
-	transportView.views["acc_1"][0].SupportedEndpointModes = append(transportView.views["acc_1"][0].SupportedEndpointModes, "images_json")
-	mux, _ := newTestRoutes(deps)
-	noModel, _ := json.Marshal(map[string]any{"accountId": "acc_1", "modelId": "nope-image", "prompt": "x"})
-	recorder := doJSON(mux, "POST", "/__aisys__/api/playground/images", noModel)
-	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "playground_model_not_available") {
-		t.Fatalf("模型不在候选应 400 playground_model_not_available: %d %s", recorder.Code, recorder.Body.String())
-	}
-}
 
 // TestVideosCreateAndPoll 视频创建与轮询：创建体（model/prompt/size/seconds/
 // input_reference data URL）、响应 {jobId}；轮询 in_progress→running 归一、
@@ -548,6 +319,11 @@ func TestMediaEndpointsAccountNotFoundMaps404(t *testing.T) {
 		CatalogItem{Model: "grok-imagine-video-1.5", SupportedAPIProtocols: []string{"video"}},
 		CatalogItem{Model: "speech-2.8-hd", SupportedAPIProtocols: []string{"audio_speech"}},
 	)
+	// 图像任务面接线（账户校验先于派发，队列面未接线时端点 503 优先收敛）。
+	imageJobs := newFakeImageJobStore()
+	deps.ImageJobs = imageJobs
+	deps.ImageRunner = NewImageJobRunner(deps, imageJobs, nil)
+	t.Cleanup(deps.ImageRunner.Stop)
 	transportView := deps.TransportAccounts.(*staticTransport)
 	transportView.views["acc_1"][0].SupportedEndpointModes = []string{"chat_sse", "video_create", "audio_speech"}
 	transportView.views["acc_1"][0].SupportedModels = []string{"gpt-image-2", "grok-imagine-video-1.5", "speech-2.8-hd"}
@@ -558,7 +334,7 @@ func TestMediaEndpointsAccountNotFoundMaps404(t *testing.T) {
 		target string
 		body   []byte
 	}{
-		{"images", "/__aisys__/api/playground/images", mustJSON(map[string]any{"accountId": "acc_missing", "modelId": "gpt-image-2", "prompt": "一只猫"})},
+		{"images", "/__aisys__/api/playground/images/jobs", mustJSON(map[string]any{"accountId": "acc_missing", "modelId": "gpt-image-2", "prompt": "一只猫"})},
 		{"videos", "/__aisys__/api/playground/videos", mustJSON(map[string]any{"accountId": "acc_missing", "modelId": "grok-imagine-video-1.5", "prompt": "一只猫"})},
 		{"speech", "/__aisys__/api/playground/speech", mustJSON(map[string]any{"accountId": "acc_missing", "modelId": "speech-2.8-hd", "input": "文本"})},
 	}

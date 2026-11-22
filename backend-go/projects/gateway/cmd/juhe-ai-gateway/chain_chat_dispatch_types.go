@@ -4,10 +4,8 @@ package main
 // 退役迁入 cmd 包本地，字段与 JSON tag 保持逐字一致）：
 //
 //   - GenerationExecutor / GenerationDispatchRequest / GenerationDispatchResponse
-//     是 /v1 派发端口（chatGatewayExecutor 的 Dispatch 契约；演练场固定派发
-//     适配器与调度覆盖通道消费）。
-//   - ChatTransportAccount / ChatTransportModelMapping 是 runtime cache 账户
-//     快照到传输视图的投影（chat-pinned 直取端口返回形状）。
+//     是 /v1 派发端口（chatGatewayExecutor 的 Dispatch 契约；演练场派发
+//     适配器消费）。
 //   - ProviderModelCatalogItem / ChatGenerationParameterCapability 是供应商
 //     模型目录条目的传输小结构（与 gatewayruntimecache 大结构字段 tag 同形，
 //     纯 JSON 数据往返投影）。
@@ -21,8 +19,9 @@ import (
 	"net/http"
 )
 
-// GenerationExecutor 是上游派发端口（进程内直驱 /v1 链 handler；演练场固定
-// 派发与内部身份通道经该端口进入网关链）。组合根绑定生产实现，测试用 mock。
+// GenerationExecutor 是上游派发端口（进程内直驱 /v1 链 handler；演练场派发
+// 经该端口进入网关链，请求携带真实 API Key Bearer）。组合根绑定生产实现，
+// 测试用 mock。
 type GenerationExecutor interface {
 	Dispatch(ctx context.Context, req GenerationDispatchRequest) (*GenerationDispatchResponse, error)
 }
@@ -33,6 +32,9 @@ type GenerationDispatchRequest struct {
 	Method  string
 	Headers map[string]string
 	Body    []byte
+	// RemoteAddr 透传发起方客户端地址（进程内直调的 http.Request.RemoteAddr
+	// 不经 TCP 栈填充，IP 黑名单/单 IP 并发/审计按同一地址收敛需要显式透传）。
+	RemoteAddr string
 }
 
 // GenerationDispatchResponse 是上游响应的被消费子集：状态行加（流式）响应体。
@@ -40,28 +42,6 @@ type GenerationDispatchResponse struct {
 	Status int
 	Header http.Header
 	Body   io.ReadCloser
-}
-
-// ChatTransportAccount 是传输选型消费的运行时账户快照子集。
-type ChatTransportAccount struct {
-	ID                     string   `json:"id"`
-	Type                   string   `json:"type"`
-	ProviderCode           string   `json:"providerCode"`
-	SupportedEndpointModes []string `json:"supportedEndpointModes,omitempty"`
-	// CapabilityDomain 是账户能力域投影（五域退役修订：演练场媒体/对话账户
-	// 选择按域，不再按端点模式）。
-	CapabilityDomain string                      `json:"capabilityDomain,omitempty"`
-	SupportedModels  []string                    `json:"supportedModels,omitempty"`
-	ModelMappings    []ChatTransportModelMapping `json:"modelMappings,omitempty"`
-}
-
-// ChatTransportModelMapping 是账户模型映射子集。
-type ChatTransportModelMapping struct {
-	Enabled                *bool  `json:"enabled,omitempty"`
-	SourceModel            string `json:"sourceModel"`
-	UpstreamModel          string `json:"upstreamModel,omitempty"`
-	SourceEndpointFamily   string `json:"sourceEndpointFamily,omitempty"`
-	UpstreamEndpointFamily string `json:"upstreamEndpointFamily,omitempty"`
 }
 
 // ChatGenerationParameterCapability 是生成参数能力域条目。

@@ -66,7 +66,7 @@ func TestT93InflightQuotaDeniesBeforeUpstream(t *testing.T) {
 	}
 	chain, _ := composeChatDispatchChain(t, fixture)
 
-	status, body := chatDispatchRequest(t, chain, fixture, chatDispatchTarget{}, false)
+	status, body := chatDispatchRequest(t, chain, fixture)
 	if status != http.StatusTooManyRequests {
 		t.Fatalf("status=%d body=%s, want 429", status, body)
 	}
@@ -93,7 +93,7 @@ func TestT93InflightQuotaAllowsWithinLimit(t *testing.T) {
 	}
 	chain, _ := composeChatDispatchChain(t, fixture)
 
-	status, body := chatDispatchRequest(t, chain, fixture, chatDispatchTarget{}, false)
+	status, body := chatDispatchRequest(t, chain, fixture)
 	if status != http.StatusOK {
 		t.Fatalf("status=%d body=%s, want 200", status, body)
 	}
@@ -111,7 +111,7 @@ func TestT93InflightQuotaSkipsWithoutLimits(t *testing.T) {
 	// 无额度配置（fixture 默认 quota_limits_json 为空）：不预留、不拒绝。
 	chain, _ := composeChatDispatchChain(t, fixture)
 
-	status, body := chatDispatchRequest(t, chain, fixture, chatDispatchTarget{}, false)
+	status, body := chatDispatchRequest(t, chain, fixture)
 	if status != http.StatusOK {
 		t.Fatalf("status=%d body=%s, want 200", status, body)
 	}

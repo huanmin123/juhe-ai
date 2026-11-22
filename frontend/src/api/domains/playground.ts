@@ -1,10 +1,19 @@
 import type {
-  PlaygroundAccountsResult,
   PlaygroundArtifacts,
   PlaygroundChatStreamRequest,
+  PlaygroundEmbeddingsRequest,
+  PlaygroundEmbeddingsResult,
   PlaygroundErrorBody,
-  PlaygroundImageGenerationRequest,
-  PlaygroundImageResult,
+  PlaygroundImageArtifactRef,
+  PlaygroundImageJob,
+  PlaygroundImageJobCreateRequest,
+  PlaygroundImageJobCreateResult,
+  PlaygroundImageJobsPage,
+  PlaygroundImageJobsParams,
+  PlaygroundKeyModelsResult,
+  PlaygroundModelOption,
+  PlaygroundRerankRequest,
+  PlaygroundRerankResult,
   PlaygroundSpeechRequest,
   PlaygroundSpeechResult,
   PlaygroundStreamEvent,
@@ -20,32 +29,44 @@ import { apiUrl, http, readFetchErrorMessage, unwrap } from '../http'
  * 错误体为扁平 {"message","code"}（kernel messageCodePayload，与 chat 面同款）。
  */
 export const playgroundApi = {
-  /** 账户与模型目录（单请求，四页共用；前端在内存缓存本响应，会话内一次）。 */
-  accounts: async (): Promise<PlaygroundAccountsResult['accounts']> => {
-    const result = await unwrap<PlaygroundAccountsResult>(http.get('/playground/accounts'))
-    return result.accounts
+  /** 所选 Key 的模型目录（先选 Key 后选模型，六页共用；前端按 apiKeyId 在内存缓存，会话内一次）。 */
+  keyModels: async (apiKeyId: string): Promise<PlaygroundModelOption[]> => {
+    const result = await unwrap<PlaygroundKeyModelsResult>(http.get('/playground/key-models', { params: { apiKeyId } }))
+    return result.models
   },
-  /** 当前登录用户暂存清单（设计 §3.8）：刷新后凭此恢复图片网格、语音播放器与视频任务轮询。 */
+  /** 当前登录用户暂存清单（设计 §3.8）：v1.2 起移除 images 字段（图片历史改走 imagesJobs），刷新后凭此恢复语音播放器与视频任务轮询。 */
   artifacts: async (): Promise<PlaygroundArtifacts> => {
     const result = await unwrap<PlaygroundArtifacts>(http.get(`/playground/artifacts`))
     return {
-      images: result.images.map(withContentUrl),
       speech: result.speech ? withContentUrl(result.speech) : null,
       video: result.video
     }
   },
-  /** 同步生图：产物落服务端暂存（设计 §3.4/§3.8），响应 {images:[{id,url}],model}；生成耗时 30s+，禁用 axios 默认 15s 超时。 */
-  images: async (payload: PlaygroundImageGenerationRequest): Promise<PlaygroundImageResult> => {
-    const result = await unwrap<PlaygroundImageResult>(http.post('/playground/images', payload, { timeout: 0 }))
-    return { ...result, images: result.images.map(withContentUrl) }
+  /** 上传参考图（设计 §3.4.1）：纯 base64（无 data: 前缀），落暂存孤儿态，24h 内未绑定任务由懒清理删除。 */
+  imagesReferences: async (payload: { dataBase64: string }): Promise<PlaygroundImageArtifactRef> => {
+    const result = await unwrap<PlaygroundImageArtifactRef>(http.post('/playground/images/references', payload))
+    return withContentUrl(result)
+  },
+  /** 创建异步生成任务（设计 §3.4.2）：落库 queued 后立即返回，普通超时即可（无需 timeout:0）。 */
+  imagesCreateJob: (payload: PlaygroundImageJobCreateRequest): Promise<PlaygroundImageJobCreateResult> =>
+    unwrap<PlaygroundImageJobCreateResult>(http.post('/playground/images/jobs', payload)),
+  /** 生成历史列表（设计 §3.4.3）：按创建时间倒序，nextCursor 缺省 = 无更多。 */
+  imagesJobs: async (params: PlaygroundImageJobsParams = {}): Promise<PlaygroundImageJobsPage> => {
+    const result = await unwrap<PlaygroundImageJobsPage>(http.get('/playground/images/jobs', { params }))
+    return { jobs: result.jobs.map(withJobContentUrls), nextCursor: result.nextCursor }
+  },
+  /** 任务详情（设计 §3.4.4）：列表与详情同形卡片，前端对 queued/running 卡片 3s 轮询。 */
+  imagesJob: async (jobId: string): Promise<PlaygroundImageJob> => {
+    const job = await unwrap<PlaygroundImageJob>(http.get(`/playground/images/jobs/${encodeURIComponent(jobId)}`))
+    return withJobContentUrls(job)
   },
   /** 创建异步视频任务；任务引用随暂存区记录（设计 §3.5/§3.8），jobId 由前端持有。 */
   videosCreate: (payload: PlaygroundVideoCreateRequest) => unwrap<PlaygroundVideoCreateResult>(http.post('/playground/videos', payload, { timeout: 0 })),
-  /** 代理上游轮询并归一状态；网关重启后凭前端持有的 jobId 仍可轮询。 */
-  videosPoll: (jobId: string, accountId: string) => unwrap<PlaygroundVideoPollResult>(http.get(`/playground/videos/${encodeURIComponent(jobId)}`, { params: { accountId } })),
-  /** 流式代理视频字节并转为 blob URL 供 <video> 播放；调用方负责 URL.revokeObjectURL。 */
-  videosContent: async (jobId: string, accountId: string): Promise<string> => {
-    const blob = await playgroundBlob(`/playground/videos/${encodeURIComponent(jobId)}/content?accountId=${encodeURIComponent(accountId)}`)
+  /** 代理上游轮询并归一状态；网关重启后凭前端持有的 jobId 仍可轮询（传创建时记住的 Key）。 */
+  videosPoll: (jobId: string, apiKeyId: string) => unwrap<PlaygroundVideoPollResult>(http.get(`/playground/videos/${encodeURIComponent(jobId)}`, { params: { apiKeyId } })),
+  /** 流式代理视频字节并转为 blob URL 供 <video> 播放；调用方负责 URL.revokeObjectURL（传创建时记住的 Key）。 */
+  videosContent: async (jobId: string, apiKeyId: string): Promise<string> => {
+    const blob = await playgroundBlob(`/playground/videos/${encodeURIComponent(jobId)}/content?apiKeyId=${encodeURIComponent(apiKeyId)}`)
     return URL.createObjectURL(blob)
   },
   /** 同步语音合成：音频落服务端暂存（设计 §3.6/§3.8），响应 JSON 引用 {id,url,mimeType}；合成耗时可能超默认 15s，禁用 axios 超时。 */
@@ -53,6 +74,10 @@ export const playgroundApi = {
     const result = await unwrap<PlaygroundSpeechResult>(http.post(`/playground/speech`, payload, { timeout: 0 }))
     return withContentUrl(result)
   },
+  /** 同步向量生成（设计 §3.9）：完整向量随响应回传（相似度矩阵由前端本地计算，§4.3），纯 JSON 无产物落盘（响应无 url，不走 withContentUrl）；耗时可能超默认 15s，禁用 axios 超时。 */
+  embeddings: (payload: PlaygroundEmbeddingsRequest) => unwrap<PlaygroundEmbeddingsResult>(http.post('/playground/embeddings', payload, { timeout: 0 })),
+  /** 同步重排（设计 §3.10）：results 按分数降序、index 为请求 documents 下标，纯 JSON 无产物落盘（响应无 url，不走 withContentUrl）；禁用 axios 超时。 */
+  rerank: (payload: PlaygroundRerankRequest) => unwrap<PlaygroundRerankResult>(http.post('/playground/rerank', payload, { timeout: 0 })),
   /** 一次性对话（SSE）。事件经 onEvent 逐帧回调；error 事件同样以事件透出，由页面渲染错误条。 */
   chatStream: async (input: PlaygroundChatStreamRequest & {
     signal?: AbortSignal
@@ -63,7 +88,7 @@ export const playgroundApi = {
       credentials: 'include',
       headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
       body: JSON.stringify({
-        accountId: input.accountId,
+        apiKeyId: input.apiKeyId,
         modelId: input.modelId,
         messages: input.messages,
         system: input.system,
@@ -87,6 +112,11 @@ export const playgroundApi = {
  */
 function withContentUrl<T extends { url: string }>(entry: T): T {
   return { ...entry, url: `${http.defaults.baseURL ?? '/__aisys__/api'}${entry.url}` }
+}
+
+/** 图像任务卡片 references/images 的内容地址归一（同 withContentUrl 口径；失败/过期为空数组，天然跳过）。 */
+function withJobContentUrls(job: PlaygroundImageJob): PlaygroundImageJob {
+  return { ...job, references: job.references.map(withContentUrl), images: job.images.map(withContentUrl) }
 }
 
 /** 视频内容代理专用（图片/语音已改为服务端暂存 url 直引）：会话 Cookie 鉴权，错误响应按信封 JSON 解出 message 抛出。 */

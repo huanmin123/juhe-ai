@@ -16,7 +16,8 @@ import (
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewayruntimecache"
 )
 
-// 首个超级分组成员配额全被拒绝时，外层快照必须继续尝试普通分组目标。
+// 首个超级分组成员全部无候选时（解析期配额门已随授权额度域退役，成员级
+// 剔除通道只剩模型/能力过滤与成员停用），外层快照必须继续尝试普通分组目标。
 func TestSuperGroupOuterSnapshotFallsThroughToStandardTarget(t *testing.T) {
 	fixture := seedSuperOuterFixture(t, "weighted",
 		superOuterTarget{groupID: "grp_super_a", kind: "super", members: []superOuterMember{
@@ -25,6 +26,11 @@ func TestSuperGroupOuterSnapshotFallsThroughToStandardTarget(t *testing.T) {
 		}},
 		superOuterTarget{groupID: "group_standard_b", kind: "standard", accountID: "acc_sb"},
 	)
+	// 两个超级成员删支持模型 → 成员级 no_candidate，目标整段被剔空。
+	if _, err := fixture.db.Exec(`DELETE FROM account_supported_models WHERE account_id IN ('acc_sa1','acc_sa2')`); err != nil {
+		t.Fatal(err)
+	}
+	fixture.cache = w1FreshCacheFor(t, fixture)
 	normal := gatewayrouting.NewNormalModelRouteService(chainRoutingCache{cache: fixture.cache}, chainCapabilityFilter{})
 	record := &gatewayruntimecache.GatewayAPIKeyRow{
 		ID: "key_1", SystemAccountID: fixture.systemAccount,
@@ -36,7 +42,7 @@ func TestSuperGroupOuterSnapshotFallsThroughToStandardTarget(t *testing.T) {
 			{ID: "rsg_b", APIKeyID: "key_1", GroupID: "group_standard_b", Status: "active", GroupEnabled: 1, Priority: 2},
 		},
 	}
-	resolver := &chainRouteResolver{cache: fixture.cache, normal: normal, quota: &stubQuotaChecker{deniedAll: true}}
+	resolver := &chainRouteResolver{cache: fixture.cache, normal: normal}
 	result, err := resolver.ResolveNormalGatewayModelRoute(t.Context(), gatewaypreauth.NormalRouteInput{
 		Req: superReviewRouteRequest("gpt-test"), APIKeyRecord: record,
 	})
@@ -49,16 +55,19 @@ func TestSuperGroupOuterSnapshotFallsThroughToStandardTarget(t *testing.T) {
 	if result.GroupID != "group_standard_b" {
 		t.Fatalf("window group = %q, want group_standard_b", result.GroupID)
 	}
-	if len(result.TargetOutcomes) != 1 || result.TargetOutcomes[0].Classification != "capacity_exhausted" {
-		t.Fatalf("target outcomes = %+v, want super target capacity_exhausted", result.TargetOutcomes)
+	if len(result.TargetOutcomes) != 1 || result.TargetOutcomes[0].Classification != "no_candidate" {
+		t.Fatalf("target outcomes = %+v, want super target no_candidate", result.TargetOutcomes)
 	}
-	if len(result.TargetOutcomes[0].MemberSkips) != 2 {
-		t.Fatalf("member skips = %+v, want both members", result.TargetOutcomes[0].MemberSkips)
+	//（成员明细不随预选跳过投影：skippedSuperTargetOutcomes 只投影
+	// no_candidate 分类，成员级留证由 selected 通道 MemberSkips 承载。）
+	if len(result.TargetOutcomes[0].MemberSkips) != 0 {
+		t.Fatalf("member skips = %+v, want empty on skipped super projection", result.TargetOutcomes[0].MemberSkips)
 	}
 }
 
 // 全部目标都是 capacity 时终态必须是 429；全部 no_candidate 时是 503
-// model_target_group_unavailable。
+// model_target_group_unavailable（解析期配额门退役后，429 侧由纯函数钉值
+// 承载，HTTP 面可达通道为全 no_candidate）。
 func TestSuperGroupOuterTerminalClassification(t *testing.T) {
 	fixture := seedSuperOuterFixture(t, "weighted",
 		superOuterTarget{groupID: "grp_super_a", kind: "super", members: []superOuterMember{
@@ -70,7 +79,6 @@ func TestSuperGroupOuterTerminalClassification(t *testing.T) {
 			{groupID: "group_sb2", accountID: "acc_sb2"},
 		}},
 	)
-	normal := gatewayrouting.NewNormalModelRouteService(chainRoutingCache{cache: fixture.cache}, chainCapabilityFilter{})
 	record := &gatewayruntimecache.GatewayAPIKeyRow{
 		ID: "key_1", SystemAccountID: fixture.systemAccount,
 		RouteStrategyID: "rs_outer", RouteStrategyMode: gatewayruntimecache.RouteStrategyModeWeighted,
@@ -83,8 +91,9 @@ func TestSuperGroupOuterTerminalClassification(t *testing.T) {
 		},
 	}
 
-	// 两个目标都是超级分组且成员配额全被拒绝 → 全 capacity → 429。普通分组
-	// 目标不经解析期成员配额批查，故此处改用双超级分组绑定。
+	// 终态聚合直接钉值（解析期配额门已退役，成员级 capacity 通道随之删除；
+	// 任一 capacity_exhausted → 429 的固定优先级由 superTargetExhaustedResult
+	// 纯函数承载，HTTP 面可达的全 no_candidate 形态走下方解析臂）。
 	allSuper := *record
 	allSuper.GroupBindings = []gatewayruntimecache.GatewayAPIKeyGroupBindingRow{
 		record.GroupBindings[0],
@@ -92,16 +101,22 @@ func TestSuperGroupOuterTerminalClassification(t *testing.T) {
 			GroupKind: "super", MemberGroupIDs: []string{"group_sb1", "group_sb2"}},
 	}
 	record = &allSuper
-	denied := (&chainRouteResolver{cache: fixture.cache, normal: normal, quota: &stubQuotaChecker{deniedAll: true}})
-	quotaResult, err := denied.ResolveNormalGatewayModelRoute(t.Context(), gatewaypreauth.NormalRouteInput{
-		Req: superReviewRouteRequest("gpt-test"), APIKeyRecord: record,
+	aggregated := superTargetExhaustedResult("gpt-test", record, []gatewaypreauth.NormalRouteTargetOutcome{
+		{GroupID: "grp_super_a", Classification: "capacity_exhausted"},
+		{GroupID: "grp_super_b", Classification: "no_candidate"},
 	})
-	if err != nil {
-		t.Fatalf("resolve quota: %v", err)
+	if aggregated.Outcome != gatewaypreauth.NormalRouteOutcomeFailed || aggregated.StatusCode != http.StatusTooManyRequests ||
+		aggregated.Code != "rate_limit_exceeded" || aggregated.Message != gatewayCapacityQuotaExceededMessage {
+		t.Fatalf("capacity terminal = %+v, want 429 rate_limit_exceeded", aggregated)
 	}
-	if quotaResult.Outcome != gatewaypreauth.NormalRouteOutcomeFailed || quotaResult.StatusCode != 429 ||
-		quotaResult.Code != "rate_limit_exceeded" {
-		t.Fatalf("quota terminal = %+v, want 429 rate_limit_exceeded", quotaResult)
+
+	// 全 no_candidate → 503 model_target_group_unavailable。
+	allNoCandidate := superTargetExhaustedResult("gpt-test", record, []gatewaypreauth.NormalRouteTargetOutcome{
+		{GroupID: "grp_super_a", Classification: "no_candidate"},
+		{GroupID: "grp_super_b", Classification: "no_candidate"},
+	})
+	if allNoCandidate.StatusCode != http.StatusServiceUnavailable || allNoCandidate.Code != "model_target_group_unavailable" {
+		t.Fatalf("no-candidate terminal = %+v", allNoCandidate)
 	}
 
 	// 普通分组目标也没有模型能力 → 全 no_candidate。
@@ -109,8 +124,7 @@ func TestSuperGroupOuterTerminalClassification(t *testing.T) {
 		t.Fatal(err)
 	}
 	fixture.cache = w1FreshCacheFor(t, fixture)
-	noCandidate := (&chainRouteResolver{cache: fixture.cache, normal: gatewayrouting.NewNormalModelRouteService(chainRoutingCache{cache: fixture.cache}, chainCapabilityFilter{}),
-		quota: &stubQuotaChecker{}})
+	noCandidate := (&chainRouteResolver{cache: fixture.cache, normal: gatewayrouting.NewNormalModelRouteService(chainRoutingCache{cache: fixture.cache}, chainCapabilityFilter{})})
 	noCandidateResult, err := noCandidate.ResolveNormalGatewayModelRoute(t.Context(), gatewaypreauth.NormalRouteInput{
 		Req: superReviewRouteRequest("gpt-test"), APIKeyRecord: record,
 	})

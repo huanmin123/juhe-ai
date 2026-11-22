@@ -69,10 +69,11 @@ var goAddedAfterBalanceDetectJobNames = []string{
 
 // goAddedAfterRetentionJobNames 是插在 expired-deleted-account-cleanup
 // 登记位置之后的 Go 附加条目（retention 家族同族登记：media_jobs TTL 保留
-// 清理，媒体设计 §8.2 M2；工作室任务结算 worker，媒体工作室设计 §5——归档
-// 无对应 scheduled job）。
+// 清理，媒体设计 §8.2 M2；演练场图像产物保留清理，演练场设计 §3.8/§5.1
+// v1.2——归档无对应 scheduled job）。
 var goAddedAfterRetentionJobNames = []string{
 	"media-jobs-retention",
+	"playground-images-retention",
 }
 
 // goAddedBeforeAccountListAvailabilityProjectionJobNames 是插在
@@ -230,6 +231,47 @@ func TestMediaJobsRetentionRegistered(t *testing.T) {
 	}
 	if schedule.Lane != "storage-maintenance" || schedule.LeaseTTL <= 0 {
 		t.Fatalf("media-jobs-retention lane/lease 错误: %+v", schedule)
+	}
+}
+
+// TestPlaygroundImagesRetentionRegistered 显式锁定演练场图像产物保留清理
+// 注册（演练场设计 §3.4.5/§3.8/§5.1）：GoWired、storage-maintenance lane、
+// 每小时节拍、双表 Writes 登记。
+func TestPlaygroundImagesRetentionRegistered(t *testing.T) {
+	entry, ok := Find("playground-images-retention")
+	if !ok {
+		t.Fatal("playground-images-retention 未注册")
+	}
+	if entry.GoStatus != GoWired {
+		t.Fatalf("playground-images-retention GoStatus = %s, want go-wired", entry.GoStatus)
+	}
+	if entry.Category != CategoryScheduled || !entry.LeaseRequired || !entry.SingleOwner {
+		t.Fatalf("playground-images-retention 登记形态错误: %+v", entry)
+	}
+	hasImageJobsWrites, hasArtifactsWrites := false, false
+	for _, writes := range entry.Writes {
+		if writes == "business:playground_image_jobs" {
+			hasImageJobsWrites = true
+		}
+		if writes == "business:playground_artifacts" {
+			hasArtifactsWrites = true
+		}
+	}
+	if !hasImageJobsWrites || !hasArtifactsWrites {
+		t.Fatalf("playground-images-retention Writes 缺表登记: %v", entry.Writes)
+	}
+	schedule, ok := ScheduleFor("playground-images-retention")
+	if !ok {
+		t.Fatal("playground-images-retention 缺少调度参数")
+	}
+	if schedule.Interval != time.Hour {
+		t.Fatalf("playground-images-retention interval = %v, want 1h", schedule.Interval)
+	}
+	if schedule.Lane != "storage-maintenance" || schedule.LeaseTTL <= 0 {
+		t.Fatalf("playground-images-retention lane/lease 错误: %+v", schedule)
+	}
+	if schedule.ScheduleMode != "fixedDelay" || schedule.Timeout != 2*time.Minute {
+		t.Fatalf("playground-images-retention mode/timeout 错误: %+v", schedule)
 	}
 }
 

@@ -108,16 +108,10 @@ func TestW13GFindAdvancedDetailOwnerArms(t *testing.T) {
 }
 
 func TestW13GFindAdvancedDetailAuthorizedHappyPath(t *testing.T) {
-	env, authzStore, store, ownerID, memberID := w13gAdvancedAuthorizedEnv(t)
+	env, _, store, ownerID, memberID := w13gAdvancedAuthorizedEnv(t)
 	env.seedAccount(t, "acc-w13g-adv-src", ownerID, "w13g-adv-src", "active")
-	if _, err := authzStore.Create(context.Background(), authz.CreateInput{
-		ResourceType: "account", ResourceID: "acc-w13g-adv-src",
-		GranteeType: "team", GranteeID: "team-w13g-adv",
-	}, ownerID); err != nil {
-		t.Fatal(err)
-	}
-	runtimeID := env.queryCell(t, `SELECT id FROM resource_authorizations
-		WHERE grantee_system_account_id = ? AND resource_id = 'acc-w13g-adv-src'`, memberID)
+	// 授权大简化后发放不直接落 runtime 行；直接种已领取形态行。
+	runtimeID := env.seedAcceptedRuntimeAuthorization(t, "ra-w13g-adv", "acc-w13g-adv-src", ownerID, memberID, "team", "team-w13g-adv")
 	env.seedAuthorizationInstance(t, "acc-w13g-adv-inst", memberID, runtimeID, "acc-w13g-adv-src")
 	// 摘要 join 需要 owner stamp（resource_owner_system_account_id）。
 	env.exec(t, `UPDATE accounts SET authorization_instance_owner_system_account_id = ?

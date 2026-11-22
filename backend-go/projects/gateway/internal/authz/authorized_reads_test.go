@@ -23,8 +23,12 @@ const accountsFixtureDDL = `CREATE TABLE IF NOT EXISTS accounts (
 
 func (f *fixture) seedSourceAccount(t *testing.T, id, ownerID string) {
 	t.Helper()
-	if _, err := f.db.Exec(fixtureBind(`INSERT INTO accounts (id, system_account_id, name)
-		VALUES (?, ?, ?)`), id, ownerID, "源账户 "+id); err != nil {
+	//（accounts.credentials_encrypted 进入 material revision 的解密面
+	// （authzrevision.Compute fail-closed）：fixture 账户必须种有效 v1
+	// envelope，空值会让 CreateOffer 直接报解密失败。）
+	credentials := sealedTestCredentials(t, map[string]any{"api_key": "sk-" + id})
+	if _, err := f.db.Exec(fixtureBind(`INSERT INTO accounts (id, system_account_id, name, credentials_encrypted)
+		VALUES (?, ?, ?, ?)`), id, ownerID, "源账户 "+id, credentials); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -183,6 +187,18 @@ func TestAuthorizedReadableAccountIDsStatusMatrix(t *testing.T) {
 	grantID := f.claimAccountOffer(t, "acc-src", "grantee", "")
 	if ids := readableKeys(t, f, "grantee"); len(ids) < 1 {
 		t.Fatalf("active grant must expose the provisioned instance: %v", ids)
+	}
+	// 空 targetGroupId 走 grantee 默认组兜底：绑定必须落在 seedGranteeDefaultGroup
+	// 建的 is_default 组上（一步创建 + 绑定，无独立 bind 调用）。
+	var boundGroupID string
+	if err := f.db.QueryRow(fixtureBind(`SELECT ga.group_id FROM group_accounts ga
+		JOIN accounts a ON a.id = ga.account_id
+		WHERE a.authorization_instance_source_account_id = 'acc-src'
+		AND a.system_account_id = 'grantee'`)).Scan(&boundGroupID); err != nil {
+		t.Fatal(err)
+	}
+	if boundGroupID != "grp-default-grantee" {
+		t.Fatalf("default-group fallback binding = %q, want grp-default-grantee", boundGroupID)
 	}
 
 	// Paused offer → runtime paused → still readable (the management-list

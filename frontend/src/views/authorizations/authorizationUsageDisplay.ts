@@ -6,13 +6,13 @@ import type {
   AuthorizationUserUsageRow
 } from '@/types/domain'
 
+import { formatCost, formatNumber } from './authorizationFormatters'
 import {
-  emptyUsageSummary,
-  formatCost,
-  formatDateTime,
-  formatNumber,
-  formatUsageAmount
-} from './authorizationFormatters'
+  formatCompactInteger,
+  formatDurationSeconds,
+  formatInteger,
+  formatPercent
+} from '@/views/stats/statsFormatters'
 
 export function resourceTypeTag(resourceType: AuthorizationResourceType): { text: string; color: string } {
   return resourceType === 'group'
@@ -44,32 +44,45 @@ export function createAuthorizationUsageShowTotal(itemLabel: string) {
   }
 }
 
-export function buildAuthorizationUserUsageSummaryCards(options: {
-  hasMore?: boolean
-  loadedCount: number
-  rangeLabel: string
-  summary?: AuthorizationUsageAggregateSummary
-}): StatsSummaryCardItem[] {
-  const summary = options.summary ?? emptyUsageSummary()
+// 摘要卡片口径与「统计与监控 → 用量分析」4 卡一致（StatsView.summaryCards）：
+// 范围请求（成功/失败/失败率）、平均首 Token（平均总耗时）、Token 消耗
+// （输入/输出/缓存读）、成本（均次/每 1M Token）。
+const emptyAggregateSummary: AuthorizationUsageAggregateSummary = {
+  requestCount: 0,
+  totalTokens: 0,
+  totalCost: 0,
+  successCount: 0,
+  errorCount: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+  cacheWriteTokens: 0,
+  averageFirstTokenMs: 0,
+  averageDurationMs: 0
+}
+
+function usageSummaryCards(summary: AuthorizationUsageAggregateSummary): StatsSummaryCardItem[] {
+  const requestCount = summary.requestCount
+  const errorRatePercent = requestCount > 0 ? (summary.errorCount / requestCount) * 100 : 0
+  const averageRequestCost = requestCount > 0 ? summary.totalCost / requestCount : undefined
+  const costPerMillionTokens = summary.totalTokens > 0 ? (summary.totalCost / summary.totalTokens) * 1_000_000 : undefined
+  const optionalCost = (value?: number) => (typeof value === 'number' && Number.isFinite(value) ? formatCost(value) : '-')
   return [
-    { key: 'rows', label: '已加载明细', value: formatNumber(options.loadedCount), extra: options.hasMore ? '还有更多用户消耗' : `范围 ${options.rangeLabel}` },
-    { key: 'requests', label: '范围请求', value: formatNumber(summary.requestCount), extra: `最后使用 ${formatDateTime(summary.lastUsedAt)}` },
-    { key: 'tokens', label: 'Token 消耗', value: formatUsageAmount(summary.totalTokens), extra: `输入 ${formatUsageAmount(summary.inputTokens)} / 缓存写 ${formatUsageAmount(summary.cacheWriteTokens)}` },
-    { key: 'cost', label: '成本', value: formatCost(summary.totalCost), extra: `最后使用 ${formatDateTime(summary.lastUsedAt)}` }
+    { key: 'requests', label: '范围请求', value: formatInteger(summary.requestCount), extra: `成功 ${formatInteger(summary.successCount)} / 失败 ${formatInteger(summary.errorCount)} / 失败率 ${formatPercent(errorRatePercent)}` },
+    { key: 'firstToken', label: '平均首 Token', value: formatDurationSeconds(summary.averageFirstTokenMs), extra: `平均总耗时 ${formatDurationSeconds(summary.averageDurationMs)}` },
+    { key: 'tokens', label: 'Token 消耗', value: formatCompactInteger(summary.totalTokens), extra: `输入 ${formatCompactInteger(summary.inputTokens)} / 输出 ${formatCompactInteger(summary.outputTokens)} / 缓存读 ${formatCompactInteger(summary.cacheReadTokens)}` },
+    { key: 'cost', label: '成本', value: formatCost(summary.totalCost), extra: `均次 ${optionalCost(averageRequestCost)} / 每 1M Token ${optionalCost(costPerMillionTokens)}` }
   ]
 }
 
-export function buildAuthorizationTeamUsageSummaryCards(options: {
-  hasMore?: boolean
-  loadedCount: number
-  rangeLabel: string
+export function buildAuthorizationUserUsageSummaryCards(options: {
   summary?: AuthorizationUsageAggregateSummary
 }): StatsSummaryCardItem[] {
-  const summary = options.summary ?? emptyUsageSummary()
-  return [
-    { key: 'rows', label: '已加载明细', value: formatNumber(options.loadedCount), extra: options.hasMore ? '还有更多团队消耗' : `范围 ${options.rangeLabel}` },
-    { key: 'requests', label: '范围请求', value: formatNumber(summary.requestCount), extra: `最后使用 ${formatDateTime(summary.lastUsedAt)}` },
-    { key: 'tokens', label: 'Token 消耗', value: formatUsageAmount(summary.totalTokens), extra: `输入 ${formatUsageAmount(summary.inputTokens)} / 缓存写 ${formatUsageAmount(summary.cacheWriteTokens)}` },
-    { key: 'cost', label: '成本', value: formatCost(summary.totalCost), extra: `最后使用 ${formatDateTime(summary.lastUsedAt)}` }
-  ]
+  return usageSummaryCards(options.summary ?? emptyAggregateSummary)
+}
+
+export function buildAuthorizationTeamUsageSummaryCards(options: {
+  summary?: AuthorizationUsageAggregateSummary
+}): StatsSummaryCardItem[] {
+  return usageSummaryCards(options.summary ?? emptyAggregateSummary)
 }

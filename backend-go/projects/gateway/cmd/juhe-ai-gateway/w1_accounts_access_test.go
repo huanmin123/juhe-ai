@@ -29,12 +29,15 @@ func (s *chainAccountsSelector) w1SeedAuthorization(t *testing.T, id, resourceTy
 	if expiresAt != "" {
 		expiresArg = expiresAt
 	}
+	//（limits_json 列随授权额度域退役摘除：种子行只承载 7 值状态机字段。）
 	query := `INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id,
-		grantee_system_account_id, status, expires_at, effective_source_type, effective_source_team_id, limits_json)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 'team', 'team_1', '{"quotaLimited":true}')`
+		grantee_system_account_id, status, expires_at, effective_source_type, effective_source_team_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 'team', 'team_1')`
 	if _, err := s.db.Exec(query, id, resourceType, resourceID, owner, grantee, status, expiresArg); err != nil {
 		t.Fatalf("seed authorization: %v", err)
 	}
+	//（send-and-claim 门：authorized 臂需要 grant + grant 背书 source 在场。）
+	chainSeedAuthorizationClaimChain(t, s.db, id, resourceType, resourceID, owner, grantee, "team", "team_1", expiresAt)
 }
 
 func TestW1ActiveResourceAuthorizationByID(t *testing.T) {
@@ -96,8 +99,18 @@ func TestW1ResolveChainAccountAccessArms(t *testing.T) {
 	ctx := context.Background()
 	selector.w1SeedAuthorization(t, "authz_1", "account", "acc_1", "sys_owner", "sys_caller", "active", "")
 	groupAccessOwner := &gatewayruntimecache.GroupUsageAccessMetadata{GroupAccessType: gatewayruntimecache.GroupAccessTypeOwner}
+	//（send-and-claim 门：authorized 组元数据必须携带授权 ID 与 effective
+	// source 投影——runtimeSourceRevisionOK 按 runtime ID fail-closed；组级
+	// 授权的领取行同样要求在场（groupSnapshotAllows）。）
+	if _, err := selector.db.Exec(`INSERT INTO group_authorization_settings (authorization_id, system_account_id, group_id, group_type)
+		VALUES ('authz_1', 'sys_caller', 'group_main', 'personal')`); err != nil {
+		t.Fatalf("seed settings claim row: %v", err)
+	}
 	groupAccessAuthorized := &gatewayruntimecache.GroupUsageAccessMetadata{
 		GroupAccessType: gatewayruntimecache.GroupAccessTypeAuthorized, GroupOwnerSystemAccountID: "sys_owner",
+		GroupAuthorizationID:           strPtr("authz_1"),
+		GroupAuthorizationSourceType:   strPtr("team"),
+		GroupAuthorizationSourceTeamID: strPtr("team_1"),
 	}
 
 	// 授权实例 + prefetch 命中：authorized access（实例行的账户 owner 即

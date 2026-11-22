@@ -13,13 +13,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaycodex"
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/gatewaypreauth"
+	"github.com/huanminabc/juhe-ai/backend-go-platform/pgtestkit"
 )
 
 func TestW1ResetBridgePureMemoryFace(t *testing.T) {
-	bridge := &accountsRuntimeResetBridge{now: time.Now}
+	//（桥已无 now 字段：额度门时钟随授权额度域退役删除。）
+	bridge := &accountsRuntimeResetBridge{}
 	// 瞬态代次记忆：写后可读，键按账户+指纹隔离。
 	bridge.rememberTransientGeneration("acc_1", "fp_1", "gen_9")
 	if got := bridge.rememberedTransientGeneration("acc_1", "fp_1"); got != "gen_9" {
@@ -94,6 +95,6 @@ func TestW1ProbeOutboxWriterPG(t *testing.T) {
 		t.Fatalf("outbox rows = %d", rows)
 	}
 	// 运行态复位桥的派发：nil writer 时只告警不 panic（异步 goroutine）。
-	bridge := &accountsRuntimeResetBridge{now: time.Now}
+	bridge := &accountsRuntimeResetBridge{}
 	bridge.DispatchAccountHealthCheck("acc_x", "reset")
 }

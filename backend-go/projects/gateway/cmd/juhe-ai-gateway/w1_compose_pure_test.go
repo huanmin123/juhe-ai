@@ -707,33 +707,8 @@ func TestW1CChainResolveProxyURL(t *testing.T) {
 	}
 }
 
-func TestW1CChainResourceAuthorizationQuotaLimited(t *testing.T) {
-	cases := []struct {
-		name   string
-		limits *string
-		want   bool
-	}{
-		{"nil输入", nil, false},
-		{"空串", w1cStringPtr(""), false},
-		{"空白串", w1cStringPtr("   "), false},
-		{"非法JSON", w1cStringPtr("{bad"), false},
-		{"空对象", w1cStringPtr("{}"), false},
-		{"小时限额", w1cStringPtr(`{"hourly":{"enabled":true}}`), true},
-		{"总限额", w1cStringPtr(`{"total":{"enabled":true}}`), true},
-		{"全部关闭", w1cStringPtr(`{"hourly":{"enabled":false},"daily":{"enabled":false},"weekly":{"enabled":false},"monthly":{"enabled":false},"total":{"enabled":false}}`), false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := chainResourceAuthorizationQuotaLimited(tc.limits)
-			if got == nil {
-				t.Fatalf("应返回非 nil 布尔指针")
-			}
-			if *got != tc.want {
-				t.Fatalf("期望 %v 实际 %v", tc.want, *got)
-			}
-		})
-	}
-}
+// （TestW1CChainResourceAuthorizationQuotaLimited 随授权额度域退役：limits_json
+// 受限位解析函数已删除，runtime 元数据不再携带 GroupAuthorizationQuotaLimited。）
 
 // ---------------------------------------------------------------------------
 // chain_accounts_secret.go：分组类型与调度策略

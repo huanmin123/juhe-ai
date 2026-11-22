@@ -1,5 +1,5 @@
 // Package systemteams implements the M03 slice: team CRUD, membership
-// management, member history and access scoping, ported from Node
+// management and access scoping, ported from Node
 // system-team.repository.ts + system-teams.routes.ts. Team disable/enable
 // cascades into the authorization domain via the authz Store
 // (RevokeAllTeamSourcesTx / ReactivateTeamGrantsTx) inside the caller's
@@ -22,7 +22,7 @@ const (
 	MaxMemberBatchSize = 20
 	MaxMembersPerTeam  = 20
 	// maxSystemTeamListPageSize (system-team-limits.ts:1) caps page size on
-	// every M03 list surface (team list :1012-1014, member history :1023-1028,
+	// every M03 list surface (team list :1012-1014,
 	// member list :1030-1035); the default is the same 20.
 	defaultPageSize = 20
 	maxPageSize     = 20
@@ -220,7 +220,7 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, page, pageSize
 	if scopedID != "" {
 		clauses = append(clauses, `EXISTS (
 			SELECT 1 FROM `+s.table("system_team_members")+` m
-			WHERE m.team_id = t.id AND m.system_account_id = ? AND m.status = 'active')`)
+			WHERE m.team_id = t.id AND m.system_account_id = ?))`)
 		args = append(args, scopedID)
 	}
 	if keyword != "" {
@@ -231,7 +231,7 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, page, pageSize
 	where := strings.Join(clauses, " AND ")
 	query := `SELECT t.id, t.name, COALESCE(t.description,''), t.status, t.created_at, t.updated_at,
 		(SELECT COUNT(*) FROM ` + s.table("system_team_members") + ` m2
-		 WHERE m2.team_id = t.id AND m2.status = 'active') AS member_count
+		 WHERE m2.team_id = t.id) AS member_count
 		FROM ` + s.table("system_teams") + ` t
 		WHERE ` + where + ` ORDER BY t.status ASC, t.updated_at DESC, t.name ASC, t.id ASC LIMIT ? OFFSET ?`
 	rows, err := s.db.QueryContext(ctx, s.bind(query), append(args, pageSize+1, (page-1)*pageSize)...)
@@ -263,7 +263,7 @@ func (s *Store) ListPage(ctx context.Context, access AccessScope, page, pageSize
 }
 
 // normalizeListWindow mirrors normalizeSystemTeamListOptions and the shared
-// member/history option normalizers: page >= 1, pageSize clamped to
+// list option normalizers: page >= 1, pageSize clamped to
 // [1, maxSystemTeamListPageSize], defaults 20.
 func normalizeListWindow(page, pageSize int) (int, int) {
 	if page < 1 {
@@ -338,7 +338,7 @@ func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (
 	if scopedID != "" {
 		var count int
 		if err := s.db.QueryRowContext(ctx, s.bind(`SELECT COUNT(*) FROM `+s.table("system_team_members")+`
-			WHERE team_id = ? AND system_account_id = ? AND status = 'active'`), id, scopedID).Scan(&count); err != nil {
+			WHERE team_id = ? AND system_account_id = ?`), id, scopedID).Scan(&count); err != nil {
 			return nil, err
 		}
 		if count == 0 {
@@ -358,7 +358,7 @@ func (s *Store) FindDetail(ctx context.Context, id string, access AccessScope) (
 func (s *Store) memberCount(ctx context.Context, teamID string) (int, error) {
 	var count int
 	err := s.db.QueryRowContext(ctx, s.bind(`SELECT COUNT(*) FROM `+s.table("system_team_members")+`
-		WHERE team_id = ? AND status = 'active'`), teamID).Scan(&count)
+		WHERE team_id = ?`), teamID).Scan(&count)
 	return count, err
 }
 
@@ -382,7 +382,7 @@ func (s *Store) ListMembers(ctx context.Context, id string, access AccessScope, 
 	if scopedID != "" {
 		var count int
 		if err := s.db.QueryRowContext(ctx, s.bind(`SELECT COUNT(*) FROM `+s.table("system_team_members")+`
-			WHERE team_id = ? AND system_account_id = ? AND status = 'active'`), id, scopedID).Scan(&count); err != nil {
+			WHERE team_id = ? AND system_account_id = ?`), id, scopedID).Scan(&count); err != nil {
 			return nil, err
 		}
 		if count == 0 {
@@ -397,7 +397,7 @@ func (s *Store) ListMembers(ctx context.Context, id string, access AccessScope, 
 	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT m.id, m.system_account_id, a.display_name, m.joined_at
 		FROM `+s.table("system_team_members")+` m
 		INNER JOIN `+s.table("system_accounts")+` a ON a.id = m.system_account_id
-		WHERE m.team_id = ? AND m.status = 'active'
+		WHERE m.team_id = ?
 		ORDER BY m.joined_at ASC, m.id ASC LIMIT ? OFFSET ?`), id, pageSize+1, (page-1)*pageSize)
 	if err != nil {
 		return nil, err
@@ -430,87 +430,9 @@ func (s *Store) ListMembers(ctx context.Context, id string, access AccessScope, 
 	}, nil
 }
 
-// HistoryEntry mirrors SystemTeamMemberHistoryItem
-// (systemTeamMemberHistoryResult :1210-1225): a member detail plus the
-// hardcoded status 'removed' and removedAt.
-type HistoryEntry struct {
-	ID                string  `json:"id"`
-	SystemAccountID   string  `json:"systemAccountId"`
-	SystemAccountName *string `json:"systemAccountName"`
-	JoinedAt          string  `json:"joinedAt"`
-	Status            string  `json:"status"`
-	RemovedAt         *string `json:"removedAt,omitempty"`
-}
-
-// HistoryPage mirrors SystemTeamMemberHistoryResult (:1217-1224).
-type HistoryPage struct {
-	ID       string         `json:"id"`
-	Items    []HistoryEntry `json:"items"`
-	Total    int            `json:"total"`
-	HasMore  bool           `json:"hasMore"`
-	Page     int            `json:"page"`
-	PageSize int            `json:"pageSize"`
-}
-
-// ListHistory mirrors listSystemTeamMemberHistoryAsync (:334-374): only
-// status='removed' rows, ordered joined_at DESC, id DESC (C4).
-func (s *Store) ListHistory(ctx context.Context, id string, access AccessScope, page, pageSize int) (*HistoryPage, error) {
-	ctx = ensureCtx(ctx)
-	page, pageSize = normalizeListWindow(page, pageSize)
-	var teamID string
-	err := s.db.QueryRowContext(ctx, s.bind(`SELECT id FROM `+s.table("system_teams")+` WHERE id = ?`), id).Scan(&teamID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	scopedID := access.ScopedID()
-	if scopedID != "" {
-		var count int
-		if err := s.db.QueryRowContext(ctx, s.bind(`SELECT COUNT(*) FROM `+s.table("system_team_members")+`
-			WHERE team_id = ? AND system_account_id = ? AND status = 'active'`), id, scopedID).Scan(&count); err != nil {
-			return nil, err
-		}
-		if count == 0 {
-			return nil, nil
-		}
-	}
-	rows, err := s.db.QueryContext(ctx, s.bind(`SELECT m.id, m.system_account_id, a.display_name, m.joined_at, m.status, m.removed_at
-		FROM `+s.table("system_team_members")+` m
-		INNER JOIN `+s.table("system_accounts")+` a ON a.id = m.system_account_id
-		WHERE m.team_id = ? AND m.status = 'removed'
-		ORDER BY m.joined_at DESC, m.id DESC LIMIT ? OFFSET ?`), id, pageSize+1, (page-1)*pageSize)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	entries := []HistoryEntry{}
-	for rows.Next() {
-		var entry HistoryEntry
-		var removedAt sql.NullString
-		if err := rows.Scan(&entry.ID, &entry.SystemAccountID, &entry.SystemAccountName, &entry.JoinedAt, &entry.Status, &removedAt); err != nil {
-			return nil, err
-		}
-		if removedAt.Valid {
-			entry.RemovedAt = &removedAt.String
-		}
-		entries = append(entries, entry)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	hasMore := len(entries) > pageSize
-	if hasMore {
-		entries = entries[:pageSize]
-	}
-	// pagedTotalUpperBound (:23-28).
-	total := (page-1)*pageSize + len(entries)
-	if hasMore {
-		total++
-	}
-	return &HistoryPage{ID: id, Items: entries, Total: total, HasMore: hasMore, Page: page, PageSize: pageSize}, nil
-}
+// 历史成员读取面已随「团队不记录历史成员」裁决退役（2026-11-22）：成员移除
+// 即硬删除，不再保留 status='removed' 行，HistoryEntry/HistoryPage/ListHistory
+// 与对应路由一并移除。
 
 func normalizeName(name string) (string, error) {
 	trimmed := strings.TrimSpace(name)

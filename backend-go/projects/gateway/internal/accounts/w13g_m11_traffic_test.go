@@ -48,22 +48,14 @@ func w13gTrafficAuthorizedEnv(t *testing.T) (*testEnv, *authz.Store, *Store) {
 	return base, authzStore, store
 }
 
-// w13gSeedTrafficInstance 建立一个授权实例：源账户 + team 授权 + grantee 侧
-// 实例行 + 绑定 grantee 默认组。返回实例 ID。
-func w13gSeedTrafficInstance(t *testing.T, env *testEnv, authzStore *authz.Store, ownerID, memberID, sourceID, suffix string) string {
+// w13gSeedTrafficInstance 建立一个授权实例：源账户 + 已领取形态的 team
+// runtime 授权行 + grantee 侧实例行 + 绑定 grantee 默认组。返回实例 ID。
+// （授权大简化后发放不再直接落 runtime 行；流量迁移域只关心读面，直接种行。
+// authzStore 参数保留以兼容既有调用方，新契约下不再经由发放口。）
+func w13gSeedTrafficInstance(t *testing.T, env *testEnv, _ *authz.Store, ownerID, memberID, sourceID, suffix string) string {
 	t.Helper()
 	env.seedAccount(t, sourceID, ownerID, "w13g-tm-src-"+suffix, "active")
-	if _, err := authzStore.Create(context.Background(), authz.CreateInput{
-		ResourceType: "account", ResourceID: sourceID,
-		GranteeType: "team", GranteeID: "team-w13g-tm",
-	}, ownerID); err != nil {
-		t.Fatal(err)
-	}
-	runtimeID := env.queryCell(t, `SELECT id FROM resource_authorizations
-		WHERE grantee_system_account_id = ? AND resource_id = ?`, memberID, sourceID)
-	if runtimeID == "" {
-		t.Fatalf("runtime row missing：%s", suffix)
-	}
+	runtimeID := env.seedAcceptedRuntimeAuthorization(t, "ra-w13g-"+suffix, sourceID, ownerID, memberID, "team", "team-w13g-tm")
 	instanceID := "acc-w13g-inst-" + suffix
 	env.seedAuthorizationInstance(t, instanceID, memberID, runtimeID, sourceID)
 	groupID := env.queryCell(t, `SELECT id FROM groups WHERE system_account_id = ? AND is_default = 1`, memberID)

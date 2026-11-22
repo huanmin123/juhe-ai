@@ -978,7 +978,7 @@ var authzClaimRetiredColumns = []struct{ table, column string }{
 }
 
 // authzClaimRetiredChecks 是先于状态收敛显式 DROP 的退役/旧值 CHECK 约束
-//（列 DROP 也会自动带走引用退役列的 CHECK，显式列举保证收敛路径确定）。
+// （列 DROP 也会自动带走引用退役列的 CHECK，显式列举保证收敛路径确定）。
 var authzClaimRetiredChecks = []struct{ table, constraint string }{
 	{"resource_authorization_grants", "resource_authorization_grants_status_check"},
 	{"resource_authorization_grants", "resource_authorization_grants_acceptance_mode_check"},
@@ -995,6 +995,97 @@ var authzClaimRetiredChecks = []struct{ table, constraint string }{
 // CHECK 已无旧审批词表（pending_owner_approval）、授权来源 quota scope
 // binding 行清零。Apply 单事务原子性保证判据达成时列/CHECK/数据收敛与
 // 绑定清除已同批完成。
+// teamMemberHistoryRetirementSatisfied 判定 revision 32 目标形状：成员表
+// status/removed_at 两列已删（历史行随列消失）、全列唯一索引在位。
+func teamMemberHistoryRetirementSatisfied(ctx context.Context, dsn string) (bool, error) {
+	db, err := openPG(dsn)
+	if err != nil {
+		return false, err
+	}
+	defer db.Close()
+	var statusCol, removedCol, uniqueIdx int
+	if err := db.QueryRowContext(ctx,
+		`SELECT
+		   (SELECT count(*) FROM information_schema.columns
+		     WHERE table_schema = 'juhe_business' AND table_name = 'system_team_members' AND column_name = 'status'),
+		   (SELECT count(*) FROM information_schema.columns
+		     WHERE table_schema = 'juhe_business' AND table_name = 'system_team_members' AND column_name = 'removed_at'),
+		   (SELECT count(*) FROM pg_indexes
+		     WHERE schemaname = 'juhe_business' AND tablename = 'system_team_members'
+		       AND indexname = 'idx_system_team_members_team_account_unique')`).
+		Scan(&statusCol, &removedCol, &uniqueIdx); err != nil {
+		return false, err
+	}
+	return statusCol == 0 && removedCol == 0 && uniqueIdx == 1, nil
+}
+
+// applyTeamMemberHistoryRetirement 在单事务内完成：DELETE 存量历史成员行 →
+// DROP 旧索引与支撑列 → CREATE 新形状索引。
+func applyTeamMemberHistoryRetirement(ctx context.Context, dsn string) (upgradepipeline.Detail, error) {
+	satisfied, err := teamMemberHistoryRetirementSatisfied(ctx, dsn)
+	if err != nil {
+		return nil, err
+	}
+	if satisfied {
+		return upgradepipeline.Detail{"removedRows": 0, "droppedColumns": 0, "alreadyRetired": true}, nil
+	}
+	db, err := openPG(dsn)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// 历史成员行先清（列仍在时按 status 判定；行随列退役一并消失）。
+	result, err := tx.ExecContext(ctx,
+		`DELETE FROM juhe_business.system_team_members WHERE status = 'removed'`)
+	if err != nil {
+		return nil, err
+	}
+	removedRows, _ := result.RowsAffected()
+
+	// 旧索引显式退役（DROP COLUMN 对多列索引的隐式瘦身不如显式重建可控）。
+	for _, idx := range []string{
+		"idx_system_team_members_team",
+		"idx_system_team_members_team_status_joined",
+		"idx_system_team_members_account",
+		"idx_system_team_members_active_unique",
+	} {
+		if _, err := tx.ExecContext(ctx, `DROP INDEX IF EXISTS juhe_business.`+idx); err != nil {
+			return nil, err
+		}
+	}
+
+	// 支撑列退役。
+	if _, err := tx.ExecContext(ctx,
+		`ALTER TABLE juhe_business.system_team_members
+		 DROP COLUMN IF EXISTS status,
+		 DROP COLUMN IF EXISTS removed_at`); err != nil {
+		return nil, err
+	}
+
+	// 新形状索引（成员列表排序 / 账号反查 / 全列唯一）。
+	for _, ddl := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_system_team_members_team_joined ON juhe_business.system_team_members(team_id, joined_at ASC, id ASC)`,
+		`CREATE INDEX IF NOT EXISTS idx_system_team_members_account ON juhe_business.system_team_members(system_account_id)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_system_team_members_team_account_unique ON juhe_business.system_team_members(team_id, system_account_id)`,
+	} {
+		if _, err := tx.ExecContext(ctx, ddl); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(os.Stderr, "revision 32 历史成员退役：清理历史成员 %d 行、DROP status/removed_at 两列、重建成员表索引", removedRows)
+	return upgradepipeline.Detail{"removedRows": removedRows, "droppedColumns": 2}, nil
+}
+
 func authzClaimSimplificationSatisfied(ctx context.Context, dsn string) (bool, error) {
 	for _, table := range authzClaimRetiredTables {
 		exists, err := tableExists(ctx, dsn, "juhe_business", table)
@@ -1177,16 +1268,16 @@ func applyAuthzClaimSimplification(ctx context.Context, dsn string) (upgradepipe
 		droppedTables, droppedColumns, droppedChecks, rebuiltChecks,
 		grantsPending, sourcesPending, sourcesSuperseded, runtimePending, deletedBindings)
 	return upgradepipeline.Detail{
-		"droppedTables":              droppedTables,
-		"droppedColumns":             droppedColumns,
-		"droppedChecks":              droppedChecks,
-		"statusChecksRebuilt":        rebuiltChecks,
-		"grantsPendingNormalized":    grantsPending,
-		"sourcesPendingNormalized":   sourcesPending,
-		"sourcesSupersededReturned":  sourcesSuperseded,
-		"runtimePendingNormalized":   runtimePending,
-		"quotaScopeBindingsDeleted":  int(deletedBindings),
-		"alreadyRetired":             false,
+		"droppedTables":             droppedTables,
+		"droppedColumns":            droppedColumns,
+		"droppedChecks":             droppedChecks,
+		"statusChecksRebuilt":       rebuiltChecks,
+		"grantsPendingNormalized":   grantsPending,
+		"sourcesPendingNormalized":  sourcesPending,
+		"sourcesSupersededReturned": sourcesSuperseded,
+		"runtimePendingNormalized":  runtimePending,
+		"quotaScopeBindingsDeleted": int(deletedBindings),
+		"alreadyRetired":            false,
 	}, nil
 }
 
@@ -1472,6 +1563,37 @@ func upgradeSteps(primaryDSN, secret string) []upgradepipeline.Step {
 			},
 			Verify: func(ctx context.Context, _ upgradepipeline.Env) error {
 				return verifyAuthzClaimSimplification(ctx, primaryDSN)
+			},
+		},
+		{
+			// 2026-11-22 用户裁决：授权团队不记录历史成员——成员移除即硬删除，
+			// 「已移除」历史读取面（members/history 路由族）与软删除支撑列一并
+			// 退役。Destructive=true：contract/all 相在单事务内 DELETE 存量
+			// status='removed' 历史行、DROP status/removed_at 两列、重建成员表
+			// 索引（partial 唯一索引改全列唯一）。Satisfied/Verify 同源（两列
+			// 缺席 + 新唯一索引在位）；fresh 库 ensure 即目标形状，删除不可
+			// 回滚，执行前必须完成可恢复备份。
+			Revision: 32, ID: "team-member-history-retirement",
+			Title:                 "授权团队历史成员退役（移除即硬删除 + 支撑列/索引收敛）",
+			Target:                upgradepipeline.TargetPrimary,
+			Destructive:           true,
+			RequiredBeforeStartup: true,
+			ImplVersion:           1,
+			Satisfied: func(ctx context.Context, _ upgradepipeline.Env) (bool, error) {
+				return teamMemberHistoryRetirementSatisfied(ctx, primaryDSN)
+			},
+			Apply: func(ctx context.Context, _ upgradepipeline.Env) (upgradepipeline.Detail, error) {
+				return applyTeamMemberHistoryRetirement(ctx, primaryDSN)
+			},
+			Verify: func(ctx context.Context, _ upgradepipeline.Env) error {
+				satisfied, err := teamMemberHistoryRetirementSatisfied(ctx, primaryDSN)
+				if err != nil {
+					return err
+				}
+				if !satisfied {
+					return fmt.Errorf("revision 32 历史成员退役核验未通过：成员表支撑列或唯一索引未收敛")
+				}
+				return nil
 			},
 		},
 		{

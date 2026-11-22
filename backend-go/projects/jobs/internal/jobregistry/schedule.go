@@ -171,6 +171,18 @@ func schedules() map[string]Schedule {
 			PassiveJitter: true, ScheduleMode: "fixedDelay", Lane: "storage-maintenance", Timeout: 2 * minute,
 			BackoffBase: 30 * second, BackoffMax: 10 * minute, LeaseTTL: 5 * minute,
 		},
+		// playground-images-retention：Go 新增任务（演练场设计 §3.4.5/§3.8/
+		// §5.1，v1.2 异步生图；归档无对应 scheduled job 可对照）。到期图像
+		// 字节清理量级小（每用户 7 天窗口封顶），interval=1h、fixedDelay、
+		// storage-maintenance lane、timeout 2min/LeaseTTL 5min/Backoff 全部
+		// 与 media-jobs-retention 同款；initial delay 17min 与同 lane 邻居
+		//（data-retention 7.5min、media-jobs 9min）及分钟级档位
+		//（11/14/37min）错峰。
+		"playground-images-retention": {
+			Interval: hour, InitialDelay: 17 * minute, StablePhaseWindow: 30 * second,
+			PassiveJitter: true, ScheduleMode: "fixedDelay", Lane: "storage-maintenance", Timeout: 2 * minute,
+			BackoffBase: 30 * second, BackoffMax: 10 * minute, LeaseTTL: 5 * minute,
+		},
 
 		// ops-worker（探针与恢复）
 		"account-balance-refresh": {

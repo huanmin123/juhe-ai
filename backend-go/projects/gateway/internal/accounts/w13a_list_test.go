@@ -4,11 +4,8 @@ package accounts
 // 启用/停用/缺失、授权实例来源代理）、标签/锁态/用量快照水合、分页边界。
 
 import (
-	"context"
 	"net/http"
 	"testing"
-
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authz"
 )
 
 func TestW13AListFilterMatrixAndHydration(t *testing.T) {
@@ -132,7 +129,7 @@ func TestW13AListFilterMatrixAndHydration(t *testing.T) {
 }
 
 func TestW13AListAuthorizedProxyProjection(t *testing.T) {
-	env, authzStore := newAuthorizedTestEnv(t)
+	env, _ := newAuthorizedTestEnv(t)
 	ownerID := env.login(t, "w13a-lo", "owner-pass", "user")
 	memberID := env.login(t, "w13a-me", "member-pass", "user")
 	env.seedAccount(t, "acc-w13a-lsrc", ownerID, "w13a-lsrc", "active")
@@ -143,14 +140,8 @@ func TestW13AListAuthorizedProxyProjection(t *testing.T) {
 	env.exec(t, `UPDATE accounts SET proxy_profile_id = 'proxy-w13a-lsrc' WHERE id = 'acc-w13a-lsrc'`)
 	env.seedProviderAndDefaultGroup(t, memberID)
 	env.seedTeamMember(t, "team-w13a-list", ownerID, memberID)
-	if _, err := authzStore.Create(context.Background(), authz.CreateInput{
-		ResourceType: "account", ResourceID: "acc-w13a-lsrc",
-		GranteeType: "team", GranteeID: "team-w13a-list",
-	}, ownerID); err != nil {
-		t.Fatal(err)
-	}
-	runtimeID := env.queryCell(t, `SELECT id FROM resource_authorizations
-		WHERE grantee_system_account_id = ? AND resource_id = 'acc-w13a-lsrc'`, memberID)
+	// 授权大简化后团队发放不直接落 runtime 行；直接种已领取形态行。
+	runtimeID := env.seedAcceptedRuntimeAuthorization(t, "ra-w13a-linst", "acc-w13a-lsrc", ownerID, memberID, "team", "team-w13a-list")
 	env.seedAuthorizationInstance(t, "acc-w13a-linst", memberID, runtimeID, "acc-w13a-lsrc")
 
 	// 成员面读取实例：来源代理已解析且启用 → 投影名称/类型/启用。

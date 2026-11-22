@@ -45,7 +45,7 @@ func seedMediaVolcengineSyncASRAccount(t *testing.T, fixture *chainFixture, id, 
 		},
 	}
 	seed(`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('group_volc_sync_asr', ?, 1, 'personal')`, fixture.systemAccount)
-	seed(`INSERT INTO accounts (id, system_account_id, vendor_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at) VALUES (?, ?, 'volcengine', 'profile_volcengine_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
+	seed(`INSERT INTO accounts (id, system_account_id, vendor_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, priority, capability_domain, credentials_encrypted, deleted_at) VALUES (?, ?, 'volcengine', 'profile_volcengine_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, 'audio', ?, NULL)`,
 		id, fixture.systemAccount, id, mustEncryptCredentials(t, credentials))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
 		VALUES ('group_volc_sync_asr', ?, ?, 1, '2026-11-20T00:00:00.000Z')`, fixture.systemAccount, id)
@@ -73,6 +73,9 @@ func TestChainMediaVolcengineASRSyncTranscription(t *testing.T) {
 	mock := platformmock.New()
 	t.Setenv(chainVolcengineSpeechUpstreamEnv, mock.URL)
 	apiKey := seedMediaVolcengineSyncASRAccount(t, fixture, "acc_volc_sync_asr", "sk-volc-sync-asr-a", "ark-test-sync-speech-token")
+	// 同步转写分支按派发候选的 SupportedEndpointModes 判定 openspeech 域根
+	// 改写；种子连接行在 fixture 建缓存之后落库，重建缓存装载新 mode 集。
+	fixture.cache = w1FreshCacheFor(t, fixture)
 
 	spoolDir := filepath.Join(t.TempDir(), "spool")
 	chain := composeMediaVideoChain(t, fixture, spoolDir)

@@ -172,17 +172,45 @@ func gkmSeedAuthorization(t *testing.T, db *sql.DB, id, resourceType, resourceID
 	if !expiresAt.IsZero() {
 		expires = gkmTS(expiresAt)
 	}
-	if _, err := db.Exec(fixtureBind(`INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id,
-			grantee_system_account_id, status, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)`),
-		id, resourceType, resourceID, owner, grantee, status, expires); err != nil {
-		t.Fatalf("seed authorization %s: %v", id, err)
+	//（revision 31 send-and-claim：active 授权行走完整领取链——runtime 行带
+	// effective source 投影 + grant + grant 背书 source；组级再落 settings
+	// 领取行。非 active 行（revoked/expired 臂）不带链，门按 runtime 状态
+	// 先拒，链缺席不改变拒绝语义。）
+	if status != "active" {
+		if _, err := db.Exec(fixtureBind(`INSERT INTO resource_authorizations (id, resource_type, resource_id, resource_owner_system_account_id,
+				grantee_system_account_id, status, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)`),
+			id, resourceType, resourceID, owner, grantee, status, expires); err != nil {
+			t.Fatalf("seed authorization %s: %v", id, err)
+		}
+		return
+	}
+	expiresText := ""
+	if !expiresAt.IsZero() {
+		expiresText = gkmTS(expiresAt)
+	}
+	chainSeedAuthorizationClaimChain(t, db, id, resourceType, resourceID, owner, grantee, "manual", "", expiresText)
+	if resourceType == "group" {
+		gkmSeedGroupSettings(t, db, id, grantee, resourceID)
 	}
 }
 
-func gkmSeedGroupSettings(t *testing.T, db *sql.DB, authzID, grantee, groupID string, enabled int) {
+// gkmSeedAuthorizationClaimChainNoSettings 只种授权链（runtime 行 + grant +
+// source），不落 settings 领取行：领取行门用例自行控制行在场与收件人身份。
+func gkmSeedAuthorizationClaimChainNoSettings(t *testing.T, db *sql.DB, id, resourceType, resourceID, owner, grantee string, expiresAt time.Time) {
 	t.Helper()
-	if _, err := db.Exec(fixtureBind(`INSERT INTO group_authorization_settings (authorization_id, system_account_id, group_id, enabled, group_type)
-		VALUES (?, ?, ?, ?, 'personal')`), authzID, grantee, groupID, enabled); err != nil {
+	expiresText := ""
+	if !expiresAt.IsZero() {
+		expiresText = gkmTS(expiresAt)
+	}
+	chainSeedAuthorizationClaimChain(t, db, id, resourceType, resourceID, owner, grantee, "manual", "", expiresText)
+}
+
+// gkmSeedGroupSettings 种领取行（send-and-claim）：settings 行在场即领取，
+// 无 enabled 开关（revision 31 已删列）。
+func gkmSeedGroupSettings(t *testing.T, db *sql.DB, authzID, grantee, groupID string) {
+	t.Helper()
+	if _, err := db.Exec(fixtureBind(`INSERT INTO group_authorization_settings (authorization_id, system_account_id, group_id, group_type)
+		VALUES (?, ?, ?, 'personal')`), authzID, grantee, groupID); err != nil {
 		t.Fatalf("seed group settings %s: %v", authzID, err)
 	}
 }
@@ -443,8 +471,10 @@ func TestGKMUnionLoaderAuthorizationRevocation(t *testing.T) {
 	gkmAssertModels(t, entry)
 }
 
-// 分组授权本地设置三态（§8.15）：不存在放行、enabled=0 拒绝、恢复后重现。
-func TestGKMUnionLoaderGroupSettingsTriState(t *testing.T) {
+// 分组授权领取行门（§8.15，revision 31 收敛后的 send-and-claim 契约）：
+// 领取行缺失/收件人不匹配 → 拒绝；领取行在场且 receiver/group 匹配 → 放行。
+// （原 enabled 三态随授权额度域退役：settings 已无 enabled 列与开关语义。）
+func TestGKMUnionLoaderGroupSettingsClaimGate(t *testing.T) {
 	fixture := newChainFixture(t)
 	db := fixture.db
 	loader := gkmUnionLoader(t, fixture)
@@ -453,23 +483,23 @@ func TestGKMUnionLoaderGroupSettingsTriState(t *testing.T) {
 	gkmSeedAccount(t, db, gkmAccountSeed{id: "acc_set", owner: "sys_other"})
 	gkmSeedSupportedModel(t, db, "acc_set", "openai", "m-set")
 	gkmSeedBinding(t, db, "gkm_settings", "sys_other", "acc_set", "", 1)
-	gkmSeedAuthorization(t, db, "authz_set", "group", "gkm_settings", "sys_other", "sys_owner", "active", time.Time{})
+	gkmSeedAuthorizationClaimChainNoSettings(t, db, "authz_set", "group", "gkm_settings", "sys_other", "sys_owner", time.Time{})
 
-	// 不存在 → 放行。
+	// 领取行缺失 → 拒绝（fail-closed，不回退为放行）。
 	entry := gkmLoad(t, loader, "sys_owner", "gkm_settings")
-	gkmAssertModels(t, entry, "m-set")
-
-	// enabled=0 → 拒绝。
-	gkmSeedGroupSettings(t, db, "authz_set", "sys_owner", "gkm_settings", 0)
-	entry = gkmLoad(t, loader, "sys_owner", "gkm_settings")
 	gkmAssertModels(t, entry)
 
-	// 恢复 enabled=1 → 重新出现。
-	if _, err := db.Exec(`UPDATE group_authorization_settings SET enabled = 1 WHERE authorization_id = 'authz_set'`); err != nil {
-		t.Fatalf("restore settings: %v", err)
-	}
+	// 授权接收方领取 → 放行。
+	gkmSeedGroupSettings(t, db, "authz_set", "sys_owner", "gkm_settings")
 	entry = gkmLoad(t, loader, "sys_owner", "gkm_settings")
 	gkmAssertModels(t, entry, "m-set")
+
+	// 领取行写成组 owner（非收件人）→ 拒绝。
+	if _, err := db.Exec(`UPDATE group_authorization_settings SET system_account_id = 'sys_other' WHERE authorization_id = 'authz_set'`); err != nil {
+		t.Fatalf("retarget settings: %v", err)
+	}
+	entry = gkmLoad(t, loader, "sys_owner", "gkm_settings")
+	gkmAssertModels(t, entry)
 }
 
 // ---------------------------------------------------------------------------

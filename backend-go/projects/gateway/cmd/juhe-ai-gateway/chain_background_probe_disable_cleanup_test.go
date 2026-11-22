@@ -90,8 +90,9 @@ func TestChainBackgroundProbeDisableClosesCircuitIncidents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("accounts store: %v", err)
 	}
-	// 生产桥作为清理端口（compose.go 同款装配）。
-	resetBridge, err := newAccountsRuntimeResetBridge(&composition{db: db}, nil, &chainRuntimeServices{}, secret, nil)
+	// 生产桥作为清理端口（compose.go 同款装配；settings 读取器参数已随
+	// 授权额度域退役从桥构造摘除）。
+	resetBridge, err := newAccountsRuntimeResetBridge(&composition{db: db}, &chainRuntimeServices{}, secret, nil)
 	if err != nil {
 		t.Fatalf("reset bridge: %v", err)
 	}

@@ -1307,6 +1307,12 @@ func (w *businessWriter) seedAccounts(tx *sql.Tx, guard businessGuard, users []m
 			modelSlots: []int{1, 2},
 			tags:       []string{"授权共享"},
 			notes:      "Mockdata 运维用户自有账号，用于暂停授权分组展示"},
+		{id: CleanupIDPrefix + "acc_ops_invite", name: CleanupNamePrefix + "运维邀请共享账户",
+			owner: CleanupIDPrefix + "user_ops", group: groups["default_ops"], slug: "ops-invite",
+			typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive, priority: 16, concurrency: 30,
+			modelSlots: []int{1, 2},
+			tags:       []string{"授权共享"},
+			notes:      "Mockdata 运维用户自有账号，用于待领取直发授权样本（领取校验资源属主）"},
 		{id: CleanupIDPrefix + "acc_tester_shared", name: CleanupNamePrefix + "测试共享给超级管理员账户",
 			owner: CleanupIDPrefix + "user_tester", group: groups["tester_granted"], slug: "tester-admin-grant",
 			typ: contracts.AccountTypeAPIKey, status: mockAccountStatusActive, priority: 40, concurrency: 12,
@@ -2142,14 +2148,14 @@ func (w *businessWriter) seedAccountRuntimeSamples(tx *sql.Tx, guard businessGua
 	return nil
 }
 
-// mockTeamSeed 是一条团队样本。
+// mockTeamSeed 是一条团队样本（2026-11-22 用户裁决：团队不记录历史成员，
+// 移除即硬删除，无 removed 历史样本）。
 type mockTeamSeed struct {
 	id      string
 	name    string
 	desc    string
 	status  string
 	members []string
-	removed []string
 }
 
 // seedTeams 写入团队与成员（含停用团队与已移除的历史成员）。
@@ -2162,13 +2168,15 @@ func (w *businessWriter) seedTeams(tx *sql.Tx, guard businessGuard, users []mock
 	seeds := []mockTeamSeed{
 		{id: CleanupIDPrefix + "team_dev", name: CleanupNamePrefix + "研发协作团队",
 			desc: "Mockdata 研发协作团队，承接团队级分组授权", status: "active",
-			members: []string{CleanupIDPrefix + "user_admin", dev, tester, ops}},
+			// guard.adminID（当前环境的超级管理员）入队：授权中心 self 视角
+			// 「我的授权团队」按成员身份过滤，管理员不在任何团队时该页永远为空。
+			members: []string{CleanupIDPrefix + "user_admin", dev, tester, ops, guard.adminID}},
 		{id: CleanupIDPrefix + "team_ops", name: CleanupNamePrefix + "运维保障团队",
 			desc: "Mockdata 运维保障团队，承接备用分组授权", status: "active",
 			members: []string{ops, viewer}},
 		{id: CleanupIDPrefix + "team_disabled", name: CleanupNamePrefix + "停用历史团队",
-			desc: "Mockdata 停用团队，用于状态展示与历史成员样本", status: "disabled",
-			members: []string{finance}, removed: []string{tester}},
+			desc: "Mockdata 停用团队，用于状态展示", status: "disabled",
+			members: []string{finance}},
 	}
 	now := w.stamp()
 	ids := map[string]string{}
@@ -2184,21 +2192,9 @@ func (w *businessWriter) seedTeams(tx *sql.Tx, guard businessGuard, users []mock
 			if err := w.put(tx, "system_team_members", map[string]any{
 				"id":      fmt.Sprintf("%steam_member_%s_%d", CleanupIDPrefix, seed.id, index),
 				"team_id": seed.id, "system_account_id": member, "member_role": "member",
-				"status": "active", "joined_at": w.at(-30 * 24 * time.Hour),
+				"joined_at": w.at(-30 * 24 * time.Hour),
 				"created_by": guard.adminID, "created_at": w.at(-30 * 24 * time.Hour),
 				"updated_at": now,
-			}); err != nil {
-				return nil, err
-			}
-		}
-		for index, member := range seed.removed {
-			if err := w.put(tx, "system_team_members", map[string]any{
-				"id":      fmt.Sprintf("%steam_member_removed_%s_%d", CleanupIDPrefix, seed.id, index),
-				"team_id": seed.id, "system_account_id": member, "member_role": "member",
-				"status": "removed", "joined_at": w.at(-60 * 24 * time.Hour),
-				"removed_at": w.at(-7 * 24 * time.Hour),
-				"created_by": guard.adminID, "created_at": w.at(-60 * 24 * time.Hour),
-				"updated_at": w.at(-7 * 24 * time.Hour),
 			}); err != nil {
 				return nil, err
 			}
@@ -2239,6 +2235,10 @@ type mockInstanceSeed struct {
 	sourceAccountID string
 	owner           string
 	grantee         string
+	// paused 为 true 时实例落暂停形态（accounts disabled+schedulable=0、
+	// group_accounts enabled=0），与 gateway pause 的 disableRuntimeBindings
+	// 运行时投影一致。
+	paused bool
 }
 
 // seedAuthorizations 写入授权三表：业务授予（grants）、运行时投影
@@ -2361,16 +2361,27 @@ func (w *businessWriter) seedAuthorizations(tx *sql.Tx, guard businessGuard, use
 		// 直发+领取样本：grantee=admin 的两条 pending 停在接收方领取位
 		// （「收到的授权」入口），declined 一条是拒绝领取终态。
 		// 组合 (resource_type, resource_id, grantee) 均避开 open 状态唯一索引。
-		{key: "invite_group_tester_pending", resourceType: "group", resourceID: groups["experiment"],
+		// 直发样本的资源必须与 seed.owner 的真实属主一致：领取时会校验资源
+		// 仍归授权方所有（ensureResourceStillOwned），不一致会在领取时被
+		// fail-closed 撤销（resource_changed）。
+		{key: "invite_group_tester_pending", resourceType: "group", resourceID: groups["default_tester"],
 			owner: tester, grantee: admin, status: mockAuthorizationPending,
-			remark: CleanupNamePrefix + "测试用户邀请管理员使用实验分组"},
-		{key: "invite_account_temp_pending", resourceType: "account",
-			resourceID: CleanupIDPrefix + "acc_temporary", owner: ops, grantee: admin,
+			remark: CleanupNamePrefix + "测试用户邀请管理员使用自有分组"},
+		{key: "invite_account_invite_pending", resourceType: "account",
+			resourceID: CleanupIDPrefix + "acc_ops_invite", owner: ops, grantee: admin,
 			status: mockAuthorizationPending,
-			remark: CleanupNamePrefix + "运维用户邀请管理员使用临时账户"},
-		{key: "declined_group_viewer", resourceType: "group", resourceID: groups["main"],
+			remark: CleanupNamePrefix + "运维用户邀请管理员使用自有账户"},
+		{key: "declined_group_viewer", resourceType: "group", resourceID: groups["default_viewer"],
 			owner: viewer, grantee: admin, status: mockAuthorizationDeclined,
-			remark: CleanupNamePrefix + "管理员已拒绝观察用户的主力分组邀请"},
+			remark: CleanupNamePrefix + "管理员已拒绝观察用户自有分组的邀请"},
+		// 超级分组授权样本：超级分组作为分组域资源走同一授权面（直发+领取），
+		// pending 样本同时携带 expires_at，覆盖「待领取 + 有领取截止」形态。
+		{key: "super_group_dev", resourceType: "group", resourceID: groups["super"],
+			owner: admin, grantee: dev, status: mockAuthorizationActive,
+			remark: CleanupNamePrefix + "研发用户已领取超级分组授权"},
+		{key: "super_group_tester_pending", resourceType: "group", resourceID: groups["super"],
+			owner: admin, grantee: tester, status: mockAuthorizationPending, expiresIn: 7 * 24 * time.Hour,
+			remark: CleanupNamePrefix + "测试用户待领取超级分组授权（7 天内有效）"},
 	}
 	now := w.stamp()
 	var instances []mockInstanceSeed
@@ -2504,10 +2515,12 @@ func (w *businessWriter) seedAuthorizations(tx *sql.Tx, guard businessGuard, use
 			if err := w.put(tx, "resource_authorization_sources", source); err != nil {
 				return nil, err
 			}
-			if seed.resourceType == "account" && seed.status == mockAuthorizationActive && seed.team == "" {
+			if seed.resourceType == "account" && seed.team == "" &&
+				(seed.status == mockAuthorizationActive || seed.status == mockAuthorizationPaused) {
 				instances = append(instances, mockInstanceSeed{
 					authorizationID: authorizationID, sourceAccountID: seed.resourceID,
 					owner: seed.owner, grantee: granteeUser,
+					paused: seed.status == mockAuthorizationPaused,
 				})
 			}
 		}
@@ -2575,18 +2588,24 @@ func (w *businessWriter) seedAuthorizationInstances(tx *sql.Tx, guard businessGu
 		instanceName := CleanupNamePrefix + strings.TrimPrefix(source.name, CleanupNamePrefix) + "（授权实例）"
 		instanceID := CleanupIDPrefix + "accinst_" + userSlug(instance.grantee) + "_" + source.slug
 		connectionID := CleanupIDPrefix + "conn_accinst_" + userSlug(instance.grantee) + "_" + source.slug
+		// 暂停授权的实例形态与 gateway disableRuntimeBindings 一致：实例账户
+		// disabled 且不可调度，分组绑定行 enabled=0；active 实例照常生效。
+		instanceStatus, instanceSchedulable := mockAccountStatusActive, 1
+		if instance.paused {
+			instanceStatus, instanceSchedulable = mockAccountStatusDisabled, 0
+		}
 		sourceVendor, _ := mockConnectorIdentity(&source)
 		if err := w.put(tx, "accounts", map[string]any{
 			"id": instanceID, "config_revision": 1, "dispatch_revision": 1,
 			"circuit_projection_revision": 0, "system_account_id": instance.grantee,
 			"vendor_code": nullString(sourceVendor), "connection_driver_code": connectorDriverFor(&source),
 			"oauth_type": nil, "protocol_code": "openai", "protocol_version": "v1",
-			"name": instanceName, "type": source.typ, "status": mockAccountStatusActive,
+			"name": instanceName, "type": source.typ, "status": instanceStatus,
 			"credentials_encrypted": sealed, "credential_mask": maskSecret("sk-mockdata-instance-" + userSlug(instance.grantee)),
 			"oauth_refresh_token_present": 0, "concurrency_limit": source.concurrency,
 			"rpm_limit": source.rpm,
 			"priority":  source.priority, "super_priority_enabled": 0, "fallback_enabled": 0,
-			"schedulable":       1,
+			"schedulable":       instanceSchedulable,
 			"capability_domain": contracts.DomainChat,
 			"notes":             "Mockdata 授权账户实例，归属被授权人，用于" + "授权给我的账号" + "视图",
 			"authorization_instance_source_account_id":       instance.sourceAccountID,
@@ -2649,12 +2668,16 @@ func (w *businessWriter) seedAuthorizationInstances(tx *sql.Tx, guard businessGu
 		if err != nil {
 			return err
 		}
+		instanceEnabled := 1
+		if instance.paused {
+			instanceEnabled = 0
+		}
 		if err := w.put(tx, "group_accounts", map[string]any{
 			"system_account_id": instance.grantee,
 			"group_id":          defaultGroupID,
 			"account_id":        instanceID, "account_authorization_id": instance.authorizationID,
 			"local_priority": 0, "local_super_priority_enabled": 0, "local_fallback_enabled": 0,
-			"enabled": 1, "created_at": now, "updated_at": now,
+			"enabled": instanceEnabled, "created_at": now, "updated_at": now,
 		}); err != nil {
 			return err
 		}

@@ -2,26 +2,27 @@
   <a-card class="page-card responsive-page-card">
     <div class="playground-media-layout">
       <a-form layout="vertical" class="playground-media-form">
-        <a-form-item label="账户" required>
+        <a-form-item label="API Key" required>
           <a-select
-            v-model:value="accountId"
-            :options="accountOptions"
-            :loading="accountsLoading"
+            v-model:value="apiKeyId"
+            :options="keyOptions"
+            :loading="keysLoading"
             allow-clear
             show-search
             option-filter-prop="label"
-            placeholder="选择要试玩的账户"
-            @change="handleAccountChange"
+            placeholder="选择要试玩的 API Key"
+            @change="handleApiKeyChange"
           />
         </a-form-item>
         <a-form-item label="模型" required>
           <a-select
             v-model:value="modelId"
             :options="modelOptions"
-            :disabled="!accountId || !modelOptions.length"
+            :loading="modelsLoading"
+            :disabled="!apiKeyId || modelsLoading || !modelOptions.length"
             show-search
             option-filter-prop="label"
-            :placeholder="accountId ? '选择语音模型' : '先选择账户'"
+            :placeholder="apiKeyId ? '选择语音模型' : '先选择 API Key'"
           />
         </a-form-item>
         <a-form-item label="合成文本" required>
@@ -44,7 +45,7 @@
         >
           合成语音
         </a-button>
-        <div v-if="accountsLoadError" class="playground-form-error">{{ accountsLoadError }}</div>
+        <div v-if="keysLoadError || modelsLoadError" class="playground-form-error">{{ keysLoadError || modelsLoadError }}</div>
       </a-form>
 
       <section class="playground-media-result">
@@ -70,17 +71,19 @@ import { api } from '@/api/client'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { usePlaygroundCatalog } from './usePlaygroundCatalog'
 
-// 语音合成（演练场设计 §4.2）：账户 × audio 模型同步合成，音频落服务端暂存
+// 语音合成（演练场设计 §4.2）：API Key × audio 模型同步合成，音频落服务端暂存
 // （§3.6/§3.8），响应 JSON 引用 url 直播播放与下载；刷新后经 artifacts 恢复最近一条。
 
 const {
-  accountsLoading,
-  accountsLoadError,
-  accountId,
+  keysLoading,
+  keysLoadError,
+  modelsLoading,
+  modelsLoadError,
+  apiKeyId,
   modelId,
-  accountOptions,
+  keyOptions,
   modelOptions,
-  handleAccountChange,
+  handleApiKeyChange,
   loadCatalog
 } = usePlaygroundCatalog('audio')
 
@@ -90,7 +93,7 @@ const synthesizing = ref(false)
 const audioUrl = ref('')
 const audioExtension = ref('mp3')
 
-const canSynthesize = computed(() => Boolean(inputText.value.trim() && voice.value.trim() && accountId.value && modelId.value && !synthesizing.value))
+const canSynthesize = computed(() => Boolean(inputText.value.trim() && voice.value.trim() && apiKeyId.value && modelId.value && !synthesizing.value))
 
 onMounted(() => {
   void restoreOnLoad()
@@ -120,14 +123,14 @@ async function synthesize(): Promise<void> {
     message.warning('请输入音色')
     return
   }
-  if (!accountId.value || !modelId.value) {
-    message.warning('请先选择账户与模型')
+  if (!apiKeyId.value || !modelId.value) {
+    message.warning('请先选择 API Key 与模型')
     return
   }
   synthesizing.value = true
   try {
     const result = await api.playground.speech({
-      accountId: accountId.value,
+      apiKeyId: apiKeyId.value,
       modelId: modelId.value,
       input: content,
       voice: voice.value.trim()

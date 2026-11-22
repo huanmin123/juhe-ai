@@ -217,7 +217,7 @@ func TestRemoveMemberAtomicity_C11(t *testing.T) {
 
 	// Atomicity: the member is still active and the team version is
 	// unchanged (the whole transaction rolled back).
-	if got := mustQueryInt(t, env, `SELECT COUNT(*) FROM system_team_members WHERE id = ? AND status = 'active'`, memberRowID); got != 1 {
+	if got := mustQueryInt(t, env, `SELECT COUNT(*) FROM system_team_members WHERE id = ?`, memberRowID); got != 1 {
 		t.Fatalf("member was deleted despite revocation failure")
 	}
 	if got := env.teamRevision(t, teamID); got != revision {
@@ -236,8 +236,8 @@ func TestRemoveMemberAtomicity_C11(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("removeMember second: %d %v", code, payload)
 	}
-	if got := mustQueryInt(t, env, `SELECT COUNT(*) FROM system_team_members WHERE id = ? AND status = 'removed'`, secondRowID); got != 1 {
-		t.Fatalf("second member not removed")
+	if got := mustQueryInt(t, env, `SELECT COUNT(*) FROM system_team_members WHERE id = ?`, secondRowID); got != 0 {
+		t.Fatalf("second member row survived removal (must hard delete)")
 	}
 }
 
@@ -310,7 +310,7 @@ func TestAddMembersFanoutAndSideEffects_C6_C9(t *testing.T) {
 	}
 	if got := mustQueryInt(t, env, `SELECT COUNT(*) FROM resource_authorization_sources
 		WHERE authorization_id IN (SELECT id FROM resource_authorizations WHERE grantee_system_account_id = ?)
-		AND source_type = 'team' AND source_team_id = ? AND status = 'pending' AND acceptance_mode = 'recipient'`,
+		AND source_type = 'team' AND source_team_id = ? AND status = 'pending'`,
 		memberAccountID, teamID); got != 1 {
 		t.Fatalf("member team pending source count = %d", got)
 	}
@@ -326,8 +326,9 @@ func TestAddMembersFanoutAndSideEffects_C6_C9(t *testing.T) {
 	}
 	calls := env.inval.recorded()
 	joined := strings.Join(calls, ";")
-	if !strings.Contains(joined, "topic:gateway_runtime_cache|team_members_changed") ||
-		!strings.Contains(joined, "topic:authorization_quota_cache|team_members_changed") {
+	//（authorization_quota_cache 主题随授权额度域退役：K5 总线只扇出
+	// gateway_runtime / api_key_validation / api_key_quota。）
+	if !strings.Contains(joined, "topic:gateway_runtime_cache|team_members_changed") {
 		t.Fatalf("invalidations = %v", calls)
 	}
 	_ = adminID
@@ -388,7 +389,7 @@ func TestPatchDisableEnableCascade_C7_C8(t *testing.T) {
 	if got := mustQueryInt(t, env, `SELECT COUNT(*) FROM resource_authorizations WHERE id = 'auth_cas' AND status = 'revoked'`); got != 1 {
 		t.Fatalf("re-enable must not resurrect the member runtime")
 	}
-	if got := mustQueryInt(t, env, `SELECT COUNT(*) FROM system_team_members WHERE id = ? AND status = 'active'`, memberRowID); got != 1 {
+	if got := mustQueryInt(t, env, `SELECT COUNT(*) FROM system_team_members WHERE id = ?`, memberRowID); got != 1 {
 		t.Fatalf("member must stay active through the cascade")
 	}
 }
@@ -533,49 +534,6 @@ func TestMembersListPagination_C2(t *testing.T) {
 	}
 	if items := page2["items"].([]any); len(items) != 1 || items[0].(map[string]any)["systemAccountId"] != c {
 		t.Fatalf("page2 items = %v", items)
-	}
-}
-
-// TestMemberHistoryFilterOrder_C4 pins the removed-only filter and the
-// joined_at DESC, id DESC ordering (repo :338-348).
-func TestMemberHistoryFilterOrder_C4(t *testing.T) {
-	env := newTestEnv(t)
-	env.login(t, "admin", "admin-pass", "super_admin")
-	keeper := env.login(t, "keeper", "keeper-pass", "user")
-	leaver1 := env.login(t, "leaver1", "leaver-pass", "user")
-	leaver2 := env.login(t, "leaver2", "leaver-pass", "user")
-	env.as("admin")
-	teamID, revision := env.createTeamViaRoute(t, "历史组")
-	insertActiveMember(t, env, teamID, keeper, revision)
-	row1 := insertActiveMember(t, env, teamID, leaver1, "2024-01-01T00:00:00.000Z")
-	row2 := insertActiveMember(t, env, teamID, leaver2, "2024-02-01T00:00:00.000Z")
-	// Seed removed rows directly (the C4 history filter is read-side).
-	mustExec(t, env, `UPDATE system_team_members SET status = 'removed', removed_at = '2024-03-01T00:00:00.000Z' WHERE id IN (?, ?)`, row1, row2)
-
-	code, payload := env.do(t, http.MethodGet, "/__aisys__/api/system-teams/"+teamID+"/members/history", "")
-	if code != 200 {
-		t.Fatalf("history: %d %v", code, payload)
-	}
-	data := payload["data"].(map[string]any)
-	items := data["items"].([]any)
-	if len(items) != 2 {
-		t.Fatalf("history items = %v", items)
-	}
-	// joined_at DESC: leaver2 (2024-02) before leaver1 (2024-01).
-	if items[0].(map[string]any)["systemAccountId"] != leaver2 || items[1].(map[string]any)["systemAccountId"] != leaver1 {
-		t.Fatalf("history order = %v", items)
-	}
-	for _, item := range items {
-		entry := item.(map[string]any)
-		if entry["status"] != "removed" || entry["removedAt"] == nil {
-			t.Fatalf("history entry = %v", entry)
-		}
-	}
-	// The active member is filtered out.
-	for _, item := range items {
-		if item.(map[string]any)["systemAccountId"] == keeper {
-			t.Fatalf("active member leaked into history: %v", item)
-		}
 	}
 }
 

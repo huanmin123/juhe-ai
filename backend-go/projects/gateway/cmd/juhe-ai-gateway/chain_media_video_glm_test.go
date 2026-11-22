@@ -104,7 +104,7 @@ func seedMediaGlmVideoAccount(t *testing.T, fixture *chainFixture, id, baseURL, 
 		},
 	}
 	seed(`INSERT INTO groups (id, system_account_id, enabled, group_type) VALUES ('group_glm_video', ?, 1, 'personal')`, fixture.systemAccount)
-	seed(`INSERT INTO accounts (id, system_account_id, vendor_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, priority, credentials_encrypted, deleted_at) VALUES (?, ?, 'glm', 'profile_glm_general_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, ?, NULL)`,
+	seed(`INSERT INTO accounts (id, system_account_id, vendor_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, schedulable, concurrency_limit, priority, capability_domain, credentials_encrypted, deleted_at) VALUES (?, ?, 'glm', 'profile_glm_general_openai_v1', 'openai', 'v1', ?, 'api_key', 'active', 1, 0, 0, 'video', ?, NULL)`,
 		id, fixture.systemAccount, id, mustEncryptCredentials(t, credentials))
 	seed(`INSERT INTO group_accounts (group_id, system_account_id, account_id, enabled, created_at)
 		VALUES ('group_glm_video', ?, ?, 1, '2026-10-04T00:00:00.000Z')`, fixture.systemAccount, id)
@@ -254,15 +254,16 @@ func TestChainMediaGlmVideoFullFlowLifecycle(t *testing.T) {
 		}
 	}
 
-	// 终态 usage：spool 链异步落盘，completed 有请求自算秒计量（快照 seconds
-	// 6 生效）但目录无价（2025 前模型清理批移除 cogvideox 行）：usage 行计量
-	// 照落 outputVideoSeconds=6、无 costUsd、不打 usage_missing（契约 §2.8：
-	// 计量照落成本不虚计）。
+	// 终态 usage：spool 链异步落盘，completed 有请求自算秒计量但目录无价
+	// （2025 前模型清理批移除 cogvideox 行）：usage 行计量照落、无 costUsd、
+	// 不打 usage_missing（契约 §2.8：计量照落成本不虚计）。请求 seconds=6
+	// 经 GLM adapter 档位量化（P1，glmDurationSecondsOf 就近取档）折到 5s
+	// 档出站口径，快照与计量按量化后的 5 落行。
 	record := waitGlmSpoolRecord(t, spoolDir, func(text string) bool {
 		return strings.Contains(text, `"endpoint":"/v1/video/generations"`) && strings.Contains(text, `"model":"cogvideox-3"`)
 	}, "glm completed 无价兜底终态记录")
-	if !strings.Contains(record, `"outputVideoSeconds":6`) {
-		t.Fatalf("glm 无价 usage 行缺少 outputVideoSeconds=6（请求自算计量照落）: %s", record)
+	if !strings.Contains(record, `"outputVideoSeconds":5`) {
+		t.Fatalf("glm 无价 usage 行缺少 outputVideoSeconds=5（seconds=6 档位量化）: %s", record)
 	}
 	if strings.Contains(record, `"costUsd"`) {
 		t.Fatalf("glm 无价 usage 行不得落 costUsd: %s", record)

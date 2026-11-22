@@ -17,7 +17,6 @@ import (
 	"testing"
 
 	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/accounts/accountscore"
-	"github.com/huanminabc/juhe-ai/backend-go-gateway/internal/authz"
 )
 
 func TestW13GTestTreeSegmentsAndScopes(t *testing.T) {
@@ -189,24 +188,15 @@ func TestW13GTestAccountAuthAndDraftGates(t *testing.T) {
 }
 
 func TestW13GTestAccountAuthorizedGates(t *testing.T) {
-	env, authzStore := newAuthorizedTestEnv(t)
+	env, _ := newAuthorizedTestEnv(t)
 	ownerID := env.login(t, "owner-w13g", "owner-pass", "user")
 	memberID := env.login(t, "member-w13g", "member-pass", "user")
 	env.seedProviderAndDefaultGroup(t, ownerID)
 	env.seedAccount(t, "acc-w13g-src", ownerID, "w13g-源账户", "active")
 	env.seedProviderAndDefaultGroup(t, memberID)
 	env.seedTeamMember(t, "team-w13g", ownerID, memberID)
-	if _, err := authzStore.Create(context.Background(), authz.CreateInput{
-		ResourceType: "account", ResourceID: "acc-w13g-src",
-		GranteeType: "team", GranteeID: "team-w13g",
-	}, ownerID); err != nil {
-		t.Fatal(err)
-	}
-	runtimeID := env.queryCell(t, `SELECT id FROM resource_authorizations
-		WHERE grantee_system_account_id = ? AND resource_id = 'acc-w13g-src'`, memberID)
-	if runtimeID == "" {
-		t.Fatal("team runtime row missing")
-	}
+	// 授权大简化后发放不直接落 runtime 行；直接种已领取形态行。
+	runtimeID := env.seedAcceptedRuntimeAuthorization(t, "ra-w13g-test", "acc-w13g-src", ownerID, memberID, "team", "team-w13g")
 	env.seedAuthorizationInstance(t, "acc-w13g-inst", memberID, runtimeID, "acc-w13g-src")
 	env.login(t, "member-w13g", "member-pass", "user")
 

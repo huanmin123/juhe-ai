@@ -626,27 +626,22 @@ var postgresSchemaBusinessIndexes = []PGStatement{
 	{
 		SchemaName: "juhe_business",
 		Source:     "business",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_system_team_members_team ON system_team_members(team_id, status)`,
-	},
-	{
-		SchemaName: "juhe_business",
-		Source:     "business",
 		SQL:        `CREATE INDEX IF NOT EXISTS idx_system_teams_list_order ON system_teams(status, updated_at DESC, name ASC, id ASC)`,
 	},
 	{
 		SchemaName: "juhe_business",
 		Source:     "business",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_system_team_members_team_status_joined ON system_team_members(team_id, status, joined_at ASC, id ASC)`,
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_system_team_members_team_joined ON system_team_members(team_id, joined_at ASC, id ASC)`,
 	},
 	{
 		SchemaName: "juhe_business",
 		Source:     "business",
-		SQL:        `CREATE INDEX IF NOT EXISTS idx_system_team_members_account ON system_team_members(system_account_id, status)`,
+		SQL:        `CREATE INDEX IF NOT EXISTS idx_system_team_members_account ON system_team_members(system_account_id)`,
 	},
 	{
 		SchemaName: "juhe_business",
 		Source:     "business",
-		SQL:        `CREATE UNIQUE INDEX IF NOT EXISTS idx_system_team_members_active_unique ON system_team_members(team_id, system_account_id) WHERE status = 'active'`,
+		SQL:        `CREATE UNIQUE INDEX IF NOT EXISTS idx_system_team_members_team_account_unique ON system_team_members(team_id, system_account_id)`,
 	},
 	{
 		SchemaName: "juhe_business",

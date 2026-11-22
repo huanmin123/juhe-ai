@@ -271,13 +271,13 @@ func (s *Store) buildFilters(filters Filters) (string, []any) {
 			clauses = append(clauses, `(g.grantee_system_account_id = ? OR (
 				g.grantee_type = 'team' AND EXISTS (
 					SELECT 1 FROM `+s.table("system_team_members")+` m
-					WHERE m.team_id = g.grantee_team_id AND m.system_account_id = ? AND m.status = 'active')))`)
+					WHERE m.team_id = g.grantee_team_id AND m.system_account_id = ?)))`)
 			args = append(args, viewer, viewer)
 		default:
 			clauses = append(clauses, `(g.resource_owner_system_account_id = ? OR g.grantee_system_account_id = ? OR (
 				g.grantee_type = 'team' AND EXISTS (
 					SELECT 1 FROM `+s.table("system_team_members")+` m
-					WHERE m.team_id = g.grantee_team_id AND m.system_account_id = ? AND m.status = 'active')))`)
+					WHERE m.team_id = g.grantee_team_id AND m.system_account_id = ?)))`)
 			args = append(args, viewer, viewer, viewer)
 		}
 	}

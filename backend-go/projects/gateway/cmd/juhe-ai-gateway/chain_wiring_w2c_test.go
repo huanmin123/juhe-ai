@@ -750,7 +750,7 @@ func TestChainHotQualityLifecycleAuthorizedRuntimeKeyMatches(t *testing.T) {
 
 func TestChainQuotaDBServiceBridgesInProcessReads(t *testing.T) {
 	runtime := readSource(t, "chain_runtime.go")
-	needle := "DBService: newChainQuotaDBService(apiKeyQuota, authzQuota)"
+	needle := "DBService: newChainQuotaDBService(apiKeyQuota)"
 	if !sourceContains(runtime, needle) {
 		t.Fatalf("chain_runtime.go must inject the process-local quota db-service fallback: %s", needle)
 	}
@@ -782,21 +782,12 @@ func TestComposeWiresW2CChainPorts(t *testing.T) {
 	}
 }
 
-// 追加接线（W2-B → W2-C compose 移交）：M11 实例归还路由的终态授权归还写
-// 必须接到 authz Store（生产可达 + 自动继承写后失效扇出），且注入发生在
-// account store 构造之后。
-func TestComposeWiresAuthorizationGrantReturner(t *testing.T) {
+// TestComposeWiresAuthzCommittedWriteInvalidator 钉住 W2-B 仍然存活的授权
+// 提交写失效扇出接线。（原 TestComposeWiresAuthorizationGrantReturner 的
+// M11 实例归还桥接线随授权大简化退役：authzGrantReturner 与归还路由已删，
+// 归还语义收敛为领取后的 7 值状态机，接线断言一并摘除。）
+func TestComposeWiresAuthzCommittedWriteInvalidator(t *testing.T) {
 	compose := readSource(t, "compose.go")
-	needle := "accountStore.SetAuthorizationGrantReturner(authzGrantReturner{store: authzStore})"
-	if !strings.Contains(compose, needle) {
-		t.Fatal("compose.go must wire the M11 return-authorization port onto the authz store")
-	}
-	storePos := strings.Index(compose, "accountStore, err := accounts.NewStore")
-	wirePos := strings.Index(compose, needle)
-	if storePos < 0 || wirePos < storePos {
-		t.Fatal("the grant returner must be wired after the account store construction")
-	}
-	// The authz committed-write invalidator hunk (W2-B) stays intact.
 	if !strings.Contains(compose, "authzStore.AttachWriteInvalidator(groupStatsDirtyMarker, bus)") {
 		t.Fatal("the W2-B AttachWriteInvalidator hunk must stay wired")
 	}

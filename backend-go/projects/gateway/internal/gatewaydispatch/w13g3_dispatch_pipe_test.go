@@ -210,20 +210,8 @@ func TestW13g3GroupFallbackNilRecordAndErrors(t *testing.T) {
 			t.Fatalf("capability mismatch must skip: found %v err %v", found, err)
 		}
 	})
-	t.Run("quota denied skip group", func(t *testing.T) {
-		pipeline, engine, _, _ := newPipeline(t)
-		engine.Cache = &w13g3FallbackCache{accounts: map[string][]AccountCandidate{"group-2": testAccounts("b-1")}}
-		record := &gatewayruntimecache.GatewayAPIKeyRow{ID: "k", GroupBindings: []gatewayruntimecache.GatewayAPIKeyGroupBindingRow{
-			{GroupID: "group-1", Status: "active", GroupEnabled: 1},
-			{GroupID: "group-2", Status: "active", GroupEnabled: 1},
-		}}
-		if _, found, err := pipeline.ResolveNextGroupFallbackCandidateForArgs(context.Background(), GroupFallbackArgs{
-			Req: req, Reason: "upstream_accounts_exhausted", APIKeyRecord: record,
-			SystemAccountID: "s", GroupID: "group-1", RequestLane: "text",
-		}); err != nil || found {
-			t.Fatalf("quota denied must skip: found %v err %v", found, err)
-		}
-	})
+	// （"quota denied skip group" 子测随授权额度域退役：分组回退链不再有
+	// quota 门，候选解析只做能力与模型过滤，见上方 capability 子测。）
 }
 
 // w13g3FallbackCache 是带错误注入的分组缓存。
